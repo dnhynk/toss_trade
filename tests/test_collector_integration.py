@@ -6,8 +6,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from tests.test_collector_helpers import (MIN_MS, FrozenClock, build_client, make_config,
                                           mock_server)
 from tossmon.collector import loops

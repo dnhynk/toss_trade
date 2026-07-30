@@ -2,9 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-
-import pytest
 
 from tests.test_collector_helpers import (MIN_MS, FrozenClock, ReplayClient,
                                           calendar_dict, make_config, simple_day)

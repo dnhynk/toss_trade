@@ -16,8 +16,6 @@ import asyncio
 import json
 import time
 
-import pytest
-
 from tests import synth
 from tests.test_collector_helpers import (MIN_MS, ReplayClient, VirtualClock, make_config)
 from tossmon.api.models import Candle
