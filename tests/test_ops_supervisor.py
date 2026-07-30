@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
 from pathlib import Path
 
 from ops.opsconfig import DiskThresholds, OpsConfig
@@ -97,3 +99,29 @@ def test_supervisor_gives_up_after_restart_budget_exceeded(tmp_path):
     assert rc == 1
     # max_restarts=2 -> 최초 실행(재시작 아님) + 재시작 2회까지 허용, 3번째 재시작 시 중단.
     assert len(sup.budget._events) <= 3
+
+
+def test_supervisor_terminates_running_child_when_stop_file_appears(tmp_path):
+    """라이브 리허설 중 발견된 결함의 회귀 테스트: STOP 파일은 자식이 살아있는 동안에도
+    감지돼야 한다 (기존엔 `wait()`가 자식 종료까지 무한 대기해 절대 반응하지 않았다)."""
+    stop_file = tmp_path / "STOP"
+    # 30초 슬립 — STOP 감지 없이는 테스트가 30초 넘게 걸려야 끝난다.
+    cfg = _cfg(tmp_path, [sys.executable, "-c", "import time; time.sleep(30)"])
+    sup = Supervisor(cfg, stop_file=stop_file, stop_poll_s=0.05)
+
+    result = {}
+
+    def _run():
+        result["rc"] = sup.run()
+
+    t = threading.Thread(target=_run, daemon=True)
+    started = time.monotonic()
+    t.start()
+    time.sleep(0.3)  # 자식이 확실히 뜬 뒤에 STOP 을 건다
+    stop_file.write_text("stop")
+    t.join(timeout=10)
+
+    assert not t.is_alive(), "supervisor did not exit promptly after STOP file appeared"
+    elapsed = time.monotonic() - started
+    assert elapsed < 5.0, f"took {elapsed:.1f}s — STOP file was not detected while child ran"
+    assert result["rc"] == 0
