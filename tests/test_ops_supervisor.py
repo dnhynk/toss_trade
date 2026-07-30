@@ -6,6 +6,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from ops.opsconfig import DiskThresholds, OpsConfig
 from ops.supervisor import RestartBudget, Supervisor, backoff_delay, stop_requested
 
@@ -125,3 +127,45 @@ def test_supervisor_terminates_running_child_when_stop_file_appears(tmp_path):
     elapsed = time.monotonic() - started
     assert elapsed < 5.0, f"took {elapsed:.1f}s — STOP file was not detected while child ran"
     assert result["rc"] == 0
+
+
+def test_main_reconfigures_stdio_so_emdash_messages_dont_crash_on_cp949(tmp_path, monkeypatch):
+    """회귀 테스트: supervisor.py의 상태 메시지에는 em-dash(—)가 들어 있는데, 콘솔 인코딩이
+    cp949(Windows 기본)면 reconfigure 없이는 UnicodeEncodeError로 죽는다 — 하필 STOP 감지
+    직후 print()가 터져서 뒤따르는 terminate() 호출까지 막혀버릴 뻔했다(라이브 리허설 중 발견).
+
+    sys.stdout/stderr를 cp949 TextIOWrapper로 직접 바꿔치기해 main()이 이를 utf-8로
+    reconfigure하는지 인프로세스로 검증한다(subprocess+env 방식은 파이프 인코딩 해석이
+    플랫폼마다 달라 이 버그를 안정적으로 재현하지 못했다 — 대신 이 방식을 쓴다).
+    """
+    import io
+
+    from ops import supervisor as sup_mod
+
+    cp949_out = io.TextIOWrapper(io.BytesIO(), encoding="cp949", errors="strict")
+    cp949_err = io.TextIOWrapper(io.BytesIO(), encoding="cp949", errors="strict")
+    monkeypatch.setattr(sys, "stdout", cp949_out)
+    monkeypatch.setattr(sys, "stderr", cp949_err)
+
+    # reconfigure 없이 em-dash를 cp949로 쓰면 실제로 죽는다는 것부터 확인(가짜 통과 방지).
+    with pytest.raises(UnicodeEncodeError):
+        print("stop file detected — exiting", file=cp949_err)
+
+    ops_cfg = tmp_path / "ops_config.yaml"
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    stop_file = state_dir / "STOP"
+    stop_file.write_text("stop")
+    ops_cfg.write_text(
+        f"""
+db_path: "{(tmp_path / 'tossmon.db').as_posix()}"
+log_dir: "{(tmp_path / 'logs').as_posix()}"
+state_dir: "{state_dir.as_posix()}"
+archive_dir: "{(tmp_path / 'archive').as_posix()}"
+collector_cmd: ["python", "-c", "pass"]
+""",
+        encoding="utf-8",
+    )
+    rc = sup_mod.main(["--config", str(ops_cfg)])
+    assert rc == 0
+    assert cp949_err.encoding.lower().replace("-", "") == "utf8"

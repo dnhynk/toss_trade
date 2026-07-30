@@ -168,6 +168,16 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default=None)
     args = ap.parse_args(argv)
+
+    # Windows 콘솔 기본 cp949 로는 이 모듈의 안내 문구(em-dash 등)를 못 찍어 UnicodeEncodeError로
+    # 죽는다 — 그러면 STOP 감지 print()가 터지면서 뒤따르는 terminate() 호출 자체가 실행되지 않아
+    # 자식(collector)이 고아 프로세스로 남는다(라이브 리허설 중 실제로 겪을 뻔했다 — docs/11 §5).
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
+
     cfg = load_ops_config(args.config)
     stop_file = cfg.state_dir / "STOP"
     log_path = cfg.log_dir / "collector.stdout.log"

@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -82,6 +83,11 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default=None)
     args = ap.parse_args(argv)
+    for stream in (sys.stdout, sys.stderr):  # Windows 콘솔 기본 cp949 대응
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
     cfg = load_ops_config(args.config)
     result = run(cfg.log_dir, cfg.log_max_bytes, cfg.log_retention_days)
     print(f"rotated: {len(result['rotated'])}, skipped(busy): {len(result['rotate_skipped_busy'])}, "
