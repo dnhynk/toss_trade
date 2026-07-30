@@ -1,0 +1,58 @@
+{
+  "endpoint": "GET /api/v1/orderbook",
+  "case": "default",
+  "status": 200,
+  "source": "synthetic",
+  "note": "레벨 수는 실측 미확정 — docs/06_live_facts.md 참조. 두 배열 모두 가격 내림차순(스펙 예시 기준)",
+  "captured_at_ms": 1785398400000,
+  "body": {
+    "result": {
+      "timestamp": "2026-07-30T00:05:00.000+09:00",
+      "currency": "USD",
+      "asks": [
+        {
+          "price": "1.9200",
+          "volume": "4271"
+        },
+        {
+          "price": "1.9100",
+          "volume": "3862"
+        },
+        {
+          "price": "1.9000",
+          "volume": "1765"
+        },
+        {
+          "price": "1.8900",
+          "volume": "1126"
+        },
+        {
+          "price": "1.8800",
+          "volume": "3179"
+        }
+      ],
+      "bids": [
+        {
+          "price": "1.8600",
+          "volume": "9196"
+        },
+        {
+          "price": "1.8500",
+          "volume": "7512"
+        },
+        {
+          "price": "1.8400",
+          "volume": "1034"
+        },
+        {
+          "price": "1.8300",
+          "volume": "8696"
+        },
+        {
+          "price": "1.8200",
+          "volume": "2897"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "endpoint": "GET /api/v1/market-calendar/US",
+  "case": "holiday",
+  "status": 200,
+  "source": "synthetic",
+  "note": "spec-derived (openapi.json v1.2.5 examples); replaced by live capture where available",
+  "captured_at_ms": 1785398400000,
+  "body": {
+    "result": {
+      "today": {
+        "date": "2026-07-30",
+        "dayMarket": null,
+        "preMarket": null,
+        "regularMarket": null,
+        "afterMarket": null
+      },
+      "previousBusinessDay": {
+        "date": "2026-07-29",
+        "dayMarket": {
+          "startTime": "2026-07-29T09:00:00+09:00",
+          "endTime": "2026-07-29T16:50:00+09:00"
+        },
+        "preMarket": {
+          "startTime": "2026-07-29T17:00:00+09:00",
+          "endTime": "2026-07-29T22:30:00+09:00"
+        },
+        "regularMarket": {
+          "startTime": "2026-07-29T22:30:00+09:00",
+          "endTime": "2026-07-30T05:00:00+09:00"
+        },
+        "afterMarket": {
+          "startTime": "2026-07-30T05:00:00+09:00",
+          "endTime": "2026-07-30T07:00:00+09:00"
+        }
+      },
+      "nextBusinessDay": {
+        "date": "2026-08-03",
+        "dayMarket": {
+          "startTime": "2026-08-03T09:00:00+09:00",
+          "endTime": "2026-08-03T16:50:00+09:00"
+        },
+        "preMarket": {
+          "startTime": "2026-08-03T17:00:00+09:00",
+          "endTime": "2026-08-03T22:30:00+09:00"
+        },
+        "regularMarket": {
+          "startTime": "2026-08-03T22:30:00+09:00",
+          "endTime": "2026-08-04T05:00:00+09:00"
+        },
+        "afterMarket": {
+          "startTime": "2026-08-04T05:00:00+09:00",
+          "endTime": "2026-08-04T07:00:00+09:00"
+        }
+      }
+    }
+  }
+}

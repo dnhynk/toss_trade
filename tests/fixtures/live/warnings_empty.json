@@ -1,0 +1,11 @@
+{
+  "endpoint": "GET /api/v1/stocks/{symbol}/warnings",
+  "case": "default",
+  "status": 200,
+  "source": "synthetic",
+  "note": "미국 종목은 사실상 항상 빈 배열 — 실측은 docs/06 참조",
+  "captured_at_ms": 1785398400000,
+  "body": {
+    "result": []
+  }
+}

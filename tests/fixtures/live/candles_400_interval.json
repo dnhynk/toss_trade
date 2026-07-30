@@ -1,0 +1,22 @@
+{
+  "endpoint": "GET /api/v1/candles",
+  "case": "bad_interval",
+  "status": 400,
+  "source": "synthetic",
+  "note": "spec-derived (openapi.json v1.2.5 examples); replaced by live capture where available",
+  "captured_at_ms": 1785398400000,
+  "body": {
+    "error": {
+      "requestId": "01HXYZABCDEFG123456789",
+      "code": "invalid-request",
+      "message": "지원하지 않는 캔들 주기입니다.",
+      "data": {
+        "field": "interval",
+        "allowedValues": [
+          "1m",
+          "1d"
+        ]
+      }
+    }
+  }
+}

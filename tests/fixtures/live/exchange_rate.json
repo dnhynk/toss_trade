@@ -1,0 +1,20 @@
+{
+  "endpoint": "GET /api/v1/exchange-rate",
+  "case": "default",
+  "status": 200,
+  "source": "synthetic",
+  "note": "spec-derived (openapi.json v1.2.5 examples); replaced by live capture where available",
+  "captured_at_ms": 1785398400000,
+  "body": {
+    "result": {
+      "baseCurrency": "USD",
+      "quoteCurrency": "KRW",
+      "rate": "1384.20",
+      "midRate": "1381.50",
+      "basisPoint": "27",
+      "rateChangeType": "UP",
+      "validFrom": "2026-07-30T00:05:00+09:00",
+      "validUntil": "2026-07-30T00:06:00+09:00"
+    }
+  }
+}

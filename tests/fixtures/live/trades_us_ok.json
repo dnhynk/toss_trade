@@ -1,0 +1,312 @@
+{
+  "endpoint": "GET /api/v1/trades",
+  "case": "default",
+  "status": 200,
+  "source": "synthetic",
+  "note": "50건, 최신 → 과거 순",
+  "captured_at_ms": 1785398400000,
+  "body": {
+    "result": [
+      {
+        "price": "1.8513",
+        "volume": "3727",
+        "timestamp": "2026-07-30T00:04:59.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8606",
+        "volume": "2421",
+        "timestamp": "2026-07-30T00:04:57.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8532",
+        "volume": "2236",
+        "timestamp": "2026-07-30T00:04:53.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8663",
+        "volume": "960",
+        "timestamp": "2026-07-30T00:04:50.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8513",
+        "volume": "1568",
+        "timestamp": "2026-07-30T00:04:48.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8513",
+        "volume": "3183",
+        "timestamp": "2026-07-30T00:04:43.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8812",
+        "volume": "850",
+        "timestamp": "2026-07-30T00:04:41.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8663",
+        "volume": "1853",
+        "timestamp": "2026-07-30T00:04:38.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8831",
+        "volume": "3309",
+        "timestamp": "2026-07-30T00:04:36.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8868",
+        "volume": "1068",
+        "timestamp": "2026-07-30T00:04:33.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8794",
+        "volume": "2540",
+        "timestamp": "2026-07-30T00:04:28.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8625",
+        "volume": "2531",
+        "timestamp": "2026-07-30T00:04:27.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8756",
+        "volume": "898",
+        "timestamp": "2026-07-30T00:04:24.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8606",
+        "volume": "3478",
+        "timestamp": "2026-07-30T00:04:19.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8794",
+        "volume": "3021",
+        "timestamp": "2026-07-30T00:04:17.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8719",
+        "volume": "550",
+        "timestamp": "2026-07-30T00:04:15.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8775",
+        "volume": "1669",
+        "timestamp": "2026-07-30T00:04:10.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8700",
+        "volume": "2683",
+        "timestamp": "2026-07-30T00:04:07.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8794",
+        "volume": "2978",
+        "timestamp": "2026-07-30T00:04:06.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8513",
+        "volume": "1890",
+        "timestamp": "2026-07-30T00:04:02.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8588",
+        "volume": "775",
+        "timestamp": "2026-07-30T00:03:58.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8775",
+        "volume": "1507",
+        "timestamp": "2026-07-30T00:03:57.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8756",
+        "volume": "1022",
+        "timestamp": "2026-07-30T00:03:54.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8663",
+        "volume": "2573",
+        "timestamp": "2026-07-30T00:03:49.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8756",
+        "volume": "1600",
+        "timestamp": "2026-07-30T00:03:47.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8513",
+        "volume": "3724",
+        "timestamp": "2026-07-30T00:03:44.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8794",
+        "volume": "1919",
+        "timestamp": "2026-07-30T00:03:40.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8606",
+        "volume": "2032",
+        "timestamp": "2026-07-30T00:03:37.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8700",
+        "volume": "226",
+        "timestamp": "2026-07-30T00:03:36.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8532",
+        "volume": "6",
+        "timestamp": "2026-07-30T00:03:33.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8569",
+        "volume": "3516",
+        "timestamp": "2026-07-30T00:03:29.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8625",
+        "volume": "3056",
+        "timestamp": "2026-07-30T00:03:27.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8775",
+        "volume": "3430",
+        "timestamp": "2026-07-30T00:03:22.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8681",
+        "volume": "1874",
+        "timestamp": "2026-07-30T00:03:20.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8569",
+        "volume": "1602",
+        "timestamp": "2026-07-30T00:03:17.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8831",
+        "volume": "651",
+        "timestamp": "2026-07-30T00:03:15.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8513",
+        "volume": "136",
+        "timestamp": "2026-07-30T00:03:11.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8513",
+        "volume": "628",
+        "timestamp": "2026-07-30T00:03:08.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8831",
+        "volume": "3525",
+        "timestamp": "2026-07-30T00:03:06.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8700",
+        "volume": "2003",
+        "timestamp": "2026-07-30T00:03:02.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8812",
+        "volume": "3582",
+        "timestamp": "2026-07-30T00:02:58.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8756",
+        "volume": "2264",
+        "timestamp": "2026-07-30T00:02:55.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8625",
+        "volume": "3587",
+        "timestamp": "2026-07-30T00:02:54.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8550",
+        "volume": "752",
+        "timestamp": "2026-07-30T00:02:51.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8794",
+        "volume": "3570",
+        "timestamp": "2026-07-30T00:02:48.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8513",
+        "volume": "1971",
+        "timestamp": "2026-07-30T00:02:45.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8513",
+        "volume": "855",
+        "timestamp": "2026-07-30T00:02:42.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8719",
+        "volume": "15",
+        "timestamp": "2026-07-30T00:02:37.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8663",
+        "volume": "3305",
+        "timestamp": "2026-07-30T00:02:35.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "1.8663",
+        "volume": "43",
+        "timestamp": "2026-07-30T00:02:32.000+09:00",
+        "currency": "USD"
+      }
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "endpoint": "GET /api/v1/price-limits",
+  "case": "default",
+  "status": 200,
+  "source": "synthetic",
+  "note": "미국 종목은 상/하한가 없음 (스펙 예시 기준)",
+  "captured_at_ms": 1785398400000,
+  "body": {
+    "result": {
+      "timestamp": "2026-07-30T00:05:00.000+09:00",
+      "upperLimitPrice": null,
+      "lowerLimitPrice": null,
+      "currency": "USD"
+    }
+  }
+}

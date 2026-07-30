@@ -1,0 +1,42 @@
+{
+  "endpoint": "GET /api/v1/candles",
+  "case": "last_page",
+  "status": 200,
+  "source": "synthetic",
+  "note": "페이지네이션 종단: nextBefore = null",
+  "captured_at_ms": 1785398400000,
+  "body": {
+    "result": {
+      "candles": [
+        {
+          "timestamp": "2026-07-29T22:32:00+09:00",
+          "openPrice": "1.9633",
+          "highPrice": "1.9712",
+          "lowPrice": "1.9281",
+          "closePrice": "1.9358",
+          "volume": "64809",
+          "currency": "USD"
+        },
+        {
+          "timestamp": "2026-07-29T22:31:00+09:00",
+          "openPrice": "1.9381",
+          "highPrice": "1.9575",
+          "lowPrice": "1.9303",
+          "closePrice": "1.9497",
+          "volume": "80018",
+          "currency": "USD"
+        },
+        {
+          "timestamp": "2026-07-29T22:30:00+09:00",
+          "openPrice": "1.8962",
+          "highPrice": "1.9171",
+          "lowPrice": "1.8886",
+          "closePrice": "1.9095",
+          "volume": "80416",
+          "currency": "USD"
+        }
+      ],
+      "nextBefore": null
+    }
+  }
+}
