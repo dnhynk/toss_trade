@@ -209,6 +209,27 @@ CRKN은 `before` 없이(최신) 조회해도 1분봉 마지막이 `2025-03-05`�
   티어 재구성(`reconfigure_tiers`, `SESSION_TIER_SCALE`) 동작 여부를 여기 기록한다(미완).
 - **계획된 정지·재시작(§4 A-1 프로브 겸용)**: 23:30~00:30 사이 실행 예정. 재시작 후 이어받기
   검증 결과는 여기 기록한다(미완).
+- **뜻밖의(비계획) 정지·재시작 검증 — `확인됨`**: 정밀도 텔레메트리를 실사용해보다가
+  `ops/healthcheck.py`(테이블별 staleness 게이트가 candles_1d/events/promotions처럼 사건성
+  테이블에도 걸려 오탐 CRIT를 냄)와 `ops/supervisor.py`(상태 메시지의 em-dash가 Windows 콘솔
+  기본 cp949에서 `UnicodeEncodeError`를 내는 버그 — 하필 STOP 감지 직후라 방치하면 재시작
+  실험 자체가 깨질 뻔했다) 버그 2건을 발견해 수정했다(커밋 `5da390f`). 수정을 반영하려면
+  이미 떠 있던 collector를 재기동해야 해서, 계획보다 이르게 **21:52 KST에 첫 정지·재시작을
+  실행**했다:
+  - `taskkill /PID <supervisor 최상위 PID> /T /F`로 안전하게 종료(파일락은 프로세스 종료 시
+    OS가 자동 반납 — 종료 직후 `filelock.FileLock(...).acquire(timeout=0)`로 직접 확인해
+    락이 실제로 풀렸음을 검증했다).
+  - 재기동 로그: `resumed from data\collector_state.json: watch=32 tier2+=32
+    saved_ms=1785415856886` — **워치리스트 32종목·tier2 승격 32건이 정확히 복원됐다.**
+    `_resume_candle_ms`/`last_trade_ms`/`missing_streak`/`counters` 도 상태파일에 저장된
+    그대로 이어받는 구조(계약 C-8, `CollectorContext.load_state`)이므로 이 결과는 무인 운영의
+    핵심 요구사항(재시작 이어받기)이 라이브에서 실제로 동작함을 보여준다.
+  - DB 무결성: 강제 종료(taskkill) 직후 healthcheck로 확인한 결과 손상 없음(WAL 모드,
+    계약 C-6 그대로) — `candles_1m`/`rankings_snap`/`trades_snap` 카운트가 재기동 후에도
+    끊김 없이 이어졌다.
+  - **주의**: 이 정지·재시작은 §4의 계획된 A-1 프로브용 정지가 아니다(그건 23:30~00:30에 별도
+    실행 예정). 이번엔 순수히 버그 수정 반영이 목적이었고, 결과적으로 재시작 이어받기 검증을
+    한 번 더(그것도 실제 프로세스 킬로) 얻은 것이다.
 - 세션 종료(05:00 KST 이후) 후 `tools/dryrun_night.py`로 최종 리포트 생성 예정(미완).
 
 ## 6. 토큰 위생
