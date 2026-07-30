@@ -5,6 +5,7 @@ DB 접근은 `Reader`(W2 소유)를 통해서만, **read-only** 로 한다 (계�
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -148,11 +149,35 @@ def render_report(sections: dict[str, pd.DataFrame], *,
 # DB 경유 엔트리포인트
 # --------------------------------------------------------------------------- #
 def _safe(fn):
-    """W2 미구현/스키마 미비에도 리포트 생성이 죽지 않게 감싼다."""
+    """DB 부재/스키마 미비에도 리포트 생성이 죽지 않게 감싼다."""
     try:
         return fn()
-    except Exception:                     # NotImplementedError, sqlite3.* 등
+    except Exception:                     # sqlite3.OperationalError, KeyError 등
         return None
+
+
+def expand_meta_json(events: pd.DataFrame) -> pd.DataFrame:
+    """`events.meta_json` 안의 A1 §4 추가 라벨을 다시 컬럼으로 펼친다.
+
+    C-6 의 `events` 테이블은 계약 C-7 의 7컬럼 + `meta_json` 만 갖는다. 따라서 DB 를 거쳐
+    오면 `t0_min_from_open`·`rvol_gated`·`hod_ms` 같은 컬럼이 사라지고 q6·기저율 대조가
+    통째로 비어버린다. 이미 존재하는 컬럼은 덮어쓰지 않는다.
+    """
+    if events is None or len(events) == 0 or "meta_json" not in events.columns:
+        return events if events is not None else pd.DataFrame()
+    parsed: list[dict] = []
+    for raw in events["meta_json"].tolist():
+        if isinstance(raw, str) and raw.strip():
+            try:
+                got = json.loads(raw)
+            except (TypeError, ValueError):
+                got = {}
+        else:
+            got = raw if isinstance(raw, dict) else {}
+        parsed.append({k: v for k, v in got.items()} if isinstance(got, dict) else {})
+    extra = pd.DataFrame(parsed, index=events.index)
+    new_cols = [c for c in extra.columns if c not in events.columns]
+    return pd.concat([events, extra[new_cols]], axis=1) if new_cols else events
 
 
 def generate_report(db_path: Path, out_path: Path, t_from_ms: int, t_to_ms: int) -> Path:
@@ -162,22 +187,28 @@ def generate_report(db_path: Path, out_path: Path, t_from_ms: int, t_to_ms: int)
     미구현이어도 예외를 던지지 않고 "데이터 없음" 리포트를 쓴다 — 무인 실행 파이프라인이
     리포트 생성 때문에 죽지 않도록.
     """
-    from ..store.reader import Reader     # 지연 import (W2 구현 진행 중)
+    from ..store.reader import Reader     # 지연 import (analysis → store 단방향)
 
-    reader = Reader(Path(db_path))
     notes: list[str] = []
-    events = _safe(lambda: reader.read_events(t_from_ms, t_to_ms))
-    rankings = _safe(lambda: reader.read_rankings("TOSS_SECURITIES_TRADING_AMOUNT",
-                                                 t_from_ms, t_to_ms))
+    # Reader 는 생성자에서 read-only 커넥션을 연다 → DB 부재 시 여기서 이미 예외.
+    reader = _safe(lambda: Reader(Path(db_path)))
+    if reader is None:
+        notes.append(f"DB 를 열 수 없어 빈 리포트를 생성했다: {db_path}")
+    events = _safe(lambda: reader.read_events(t_from_ms, t_to_ms)) if reader else None
+    rankings = (_safe(lambda: reader.read_rankings("TOSS_SECURITIES_TRADING_AMOUNT",
+                                                  t_from_ms, t_to_ms))
+                if reader else None)
     if events is None:
         notes.append("`Reader.read_events` 를 사용할 수 없어 빈 리포트를 생성했다.")
         events = pd.DataFrame()
+    else:
+        events = expand_meta_json(events)
     if rankings is None:
         notes.append("`Reader.read_rankings` 를 사용할 수 없어 Q2 는 미가용으로 표기된다.")
         rankings = pd.DataFrame()
 
     df_1m = pd.DataFrame()
-    if len(events) and "symbol" in events.columns:
+    if reader is not None and len(events) and "symbol" in events.columns:
         frames = []
         for sym in events["symbol"].dropna().unique():
             got = _safe(lambda s=sym: reader.read_candles_1m(str(s), t_from_ms, t_to_ms))
@@ -198,5 +229,5 @@ def generate_report(db_path: Path, out_path: Path, t_from_ms: int, t_to_ms: int)
     return out
 
 
-__all__ = ["render_report", "generate_report", "df_to_markdown", "SECTION_META",
-           "LIMITATIONS"]
+__all__ = ["render_report", "generate_report", "df_to_markdown",
+           "expand_meta_json", "SECTION_META", "LIMITATIONS"]

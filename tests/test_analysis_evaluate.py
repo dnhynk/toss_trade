@@ -428,6 +428,66 @@ def test_generate_report_survives_missing_db(tmp_path: Path) -> None:
     text = out.read_text(encoding="utf-8")
     assert "이벤트 수: **0**" in text
     assert "빈 리포트" in text or "사용할 수 없어" in text
+    assert "과거 조회 불가" in text, "Q2 는 랭킹 미가용으로 명시돼야 한다"
+
+
+def test_expand_meta_json_restores_extra_labels() -> None:
+    """C-6 events 테이블은 7컬럼 + meta_json 뿐 — 추가 라벨은 meta 에서 복원돼야 한다."""
+    ev = pd.DataFrame([{"symbol": "A", "t0_ms": 1000, "kind": "win", "peak_ms": 2000,
+                        "peak_ret": 0.2, "ret_30m": 0.1, "ret_close": -0.1,
+                        "session": "regular",
+                        "meta_json": '{"t0_min_from_open": 5, "rvol_gated": true,'
+                                     ' "hod_ms": 2000, "session": "IGNORED"}'}])
+    out = R.expand_meta_json(ev)
+    assert out.loc[0, "t0_min_from_open"] == 5
+    assert bool(out.loc[0, "rvol_gated"]) is True
+    assert out.loc[0, "session"] == "regular", "기존 컬럼은 덮어쓰지 않는다"
+    # 깨진 JSON·빈 값에도 죽지 않아야 한다
+    broken = pd.DataFrame([{"t0_ms": 1, "meta_json": "{not json"},
+                           {"t0_ms": 2, "meta_json": None}])
+    assert len(R.expand_meta_json(broken)) == 2
+    assert R.expand_meta_json(pd.DataFrame()).empty
+
+
+def test_generate_report_end_to_end_through_real_store(tmp_path: Path) -> None:
+    """W2 Store 에 실제로 적재 → Reader 로 읽어 리포트 생성 (통합 경로)."""
+    from tossmon.api.models import Candle
+    from tossmon.store.writer import Store
+
+    bundle, events, _feats = _pipeline({"coil_pop": 1, "dump": 1}, seed=11)
+    assert len(events) >= 2
+
+    db = tmp_path / "t.db"
+    store = Store(db)
+    try:
+        for sym, g in bundle.df_1m.groupby("symbol"):
+            store.upsert_candles_1m(
+                Candle(symbol=str(sym), ts_ms=int(r.ts_ms), open_u=int(r.open_u),
+                       high_u=int(r.high_u), low_u=int(r.low_u), close_u=int(r.close_u),
+                       vol_qu=int(r.vol_qu)) for r in g.itertuples())
+        for _i, e in events.iterrows():
+            base = {k: e[k] for k in ("symbol", "t0_ms", "kind", "peak_ms", "peak_ret",
+                                      "ret_30m", "ret_close", "session")}
+            base["meta_json"] = {k: (None if pd.isna(e[k]) else
+                                     (bool(e[k]) if isinstance(e[k], bool) else e[k]))
+                                 for k in ("t0_min_from_open", "hod_ms", "rvol_gated",
+                                           "retrace_close", "halt_gap_count")}
+            base["t0_ms"] = int(base["t0_ms"])
+            base["peak_ms"] = int(base["peak_ms"])
+            store.record_event(base)
+    finally:
+        store.close()
+
+    lo = int(bundle.df_1m["ts_ms"].min()) - 1
+    hi = int(bundle.df_1m["ts_ms"].max()) + 1
+    out = R.generate_report(db, tmp_path / "r.md", lo, hi)
+    text = out.read_text(encoding="utf-8")
+    assert f"이벤트 수: **{len(events)}**" in text
+    for key in R.SECTION_META:
+        assert R.SECTION_META[key][0] in text
+    assert "Q6. 시간대 효과" in text
+    # meta_json 복원이 되면 q6 버킷에 이벤트가 실제로 분류된다
+    assert "pre_or_day" in text
 
 
 def test_report_cli_range_resolution() -> None:
