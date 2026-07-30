@@ -9,16 +9,20 @@
 - 호가: `bids` 는 가격 내림차순, `asks` 는 가격 오름차순 — 양쪽 모두 **index 0 == 최우선호가**.
 - 400/404 응답은 재시도 대상이 아니므로 `SchemaMismatch(detail="http-400 code=...")` 로 올린다
   (계약 C-5 표에 해당 칸이 없어 "재시도 금지 + caller 가 로그·스킵" 정책이 같은 SchemaMismatch 에 매핑).
+- 마이크로달러보다 미세한 가격(동전주의 소수 8자리)은 거부하지 않고 반올림한다 (계약 C-2 개정 A4).
+  반올림 건수는 `counters["precision_rounded"]` 에 누적되어 조용히 넘어가지 않는다.
 """
 from __future__ import annotations
 
 import asyncio
 import random
+from contextlib import contextmanager
 from decimal import Decimal
 from typing import Any, Literal, Mapping, Sequence
 
 import httpx
 
+from . import models
 from .endpoints import canonical_path, check_allowed, group_of
 from .errors import (
     AuthExpired,
@@ -81,8 +85,10 @@ class TossClient:
             transport=_GuardedTransport(),
         )
         # 관측용 카운터 (BudgetGuard·리포트에서 읽는다).
+        # precision_rounded: 계약 A4 의 초과 정밀도 반올림 건수 (조용한 반올림 방지).
         self.counters: dict[str, int] = {
             "requests": 0, "retries": 0, "http_429": 0, "http_5xx": 0, "auth_refresh": 0,
+            "precision_rounded": 0,
         }
         # 진단 전용: 마지막 응답의 상태/헤더. 동시 요청 중에는 어느 요청의 것인지 보장하지 않는다
         # (tools/live_probe.py 처럼 순차 실행하는 경우에만 의미가 있다).
@@ -145,6 +151,20 @@ class TossClient:
         self.last_headers = dict(resp.headers)
         return _classify(resp)
 
+    @contextmanager
+    def _track_rounding(self):
+        """이 블록에서 일어난 초과 정밀도 반올림을 client 카운터에 귀속시킨다 (계약 A4).
+
+        `dec_to_u` 는 모듈 함수라 client 를 모른다. 정규화 구간을 감싸 모듈 카운터의
+        증분만 가져온다. 단일 asyncio 루프에서 정규화는 동기 구간이라 교차 오염이 없다.
+        """
+        before = models.precision_rounded_total()
+        try:
+            yield
+        finally:
+            self.counters["precision_rounded"] += (
+                models.precision_rounded_total() - before)
+
     async def aclose(self) -> None:
         await self._http.aclose()
 
@@ -156,12 +176,13 @@ class TossClient:
         for chunk in _chunks(symbols, BATCH_MAX):
             body = await self._request("GET", "/api/v1/prices",
                                        params={"symbols": ",".join(chunk)})
-            for item in _as_list(body, "prices"):
-                out.append(Price(
-                    symbol=_req_str(item, "symbol", "prices"),
-                    ts_ms=_opt_ms(item.get("timestamp")),
-                    last_u=_req_u(item, "lastPrice", "prices"),
-                ))
+            with self._track_rounding():
+                for item in _as_list(body, "prices"):
+                    out.append(Price(
+                        symbol=_req_str(item, "symbol", "prices"),
+                        ts_ms=_opt_ms(item.get("timestamp")),
+                        last_u=_req_u(item, "lastPrice", "prices"),
+                    ))
         return out
 
     async def get_candles(self, symbol: str, interval: Literal["1m", "1d"],
@@ -180,18 +201,19 @@ class TossClient:
         raw = result.get("candles")
         if not isinstance(raw, list):
             raise SchemaMismatch("candles: result.candles is not a list")
-        candles = [
-            Candle(
-                symbol=symbol,
-                ts_ms=_req_ms(item, "timestamp", "candles"),
-                open_u=_req_u(item, "openPrice", "candles"),
-                high_u=_req_u(item, "highPrice", "candles"),
-                low_u=_req_u(item, "lowPrice", "candles"),
-                close_u=_req_u(item, "closePrice", "candles"),
-                vol_qu=_req_u(item, "volume", "candles"),
-            )
-            for item in raw
-        ]
+        with self._track_rounding():
+            candles = [
+                Candle(
+                    symbol=symbol,
+                    ts_ms=_req_ms(item, "timestamp", "candles"),
+                    open_u=_req_u(item, "openPrice", "candles"),
+                    high_u=_req_u(item, "highPrice", "candles"),
+                    low_u=_req_u(item, "lowPrice", "candles"),
+                    close_u=_req_u(item, "closePrice", "candles"),
+                    vol_qu=_req_u(item, "volume", "candles"),
+                )
+                for item in raw
+            ]
         candles.sort(key=lambda c: c.ts_ms)   # 과거 → 최신
         return CandlePage(candles=candles, next_before_ms=_opt_ms(result.get("nextBefore")))
 
@@ -199,23 +221,25 @@ class TossClient:
         body = await self._request("GET", "/api/v1/trades",
                                    params={"symbol": symbol,
                                            "count": min(int(count), TRADES_MAX)})
-        trades = [
-            Trade(
-                symbol=symbol,
-                ts_ms=_req_ms(item, "timestamp", "trades"),
-                price_u=_req_u(item, "price", "trades"),
-                qty_u=_req_u(item, "volume", "trades"),
-            )
-            for item in _as_list(body, "trades")
-        ]
+        with self._track_rounding():
+            trades = [
+                Trade(
+                    symbol=symbol,
+                    ts_ms=_req_ms(item, "timestamp", "trades"),
+                    price_u=_req_u(item, "price", "trades"),
+                    qty_u=_req_u(item, "volume", "trades"),
+                )
+                for item in _as_list(body, "trades")
+            ]
         trades.sort(key=lambda t: t.ts_ms)
         return trades
 
     async def get_orderbook(self, symbol: str) -> Orderbook:
         body = await self._request("GET", "/api/v1/orderbook", params={"symbol": symbol})
         result = _as_obj(body, "orderbook")
-        bids = _levels(result.get("bids"), "orderbook.bids")
-        asks = _levels(result.get("asks"), "orderbook.asks")
+        with self._track_rounding():
+            bids = _levels(result.get("bids"), "orderbook.bids")
+            asks = _levels(result.get("asks"), "orderbook.asks")
         bids.sort(key=lambda lv: lv.price_u, reverse=True)   # index 0 = 최우선 매수
         asks.sort(key=lambda lv: lv.price_u)                 # index 0 = 최우선 매도
         return Orderbook(symbol=symbol, ts_ms=_opt_ms(result.get("timestamp")),
@@ -238,20 +262,21 @@ class TossClient:
         if not isinstance(raw, list):
             raise SchemaMismatch("rankings: result.rankings is not a list")
         rows: list[RankingRow] = []
-        for item in raw:
-            price = item.get("price")
-            if not isinstance(price, dict):
-                raise SchemaMismatch("rankings: row.price missing")
-            change = price.get("changeRate")
-            rows.append(RankingRow(
-                rank=_req_int(item, "rank", "rankings"),
-                symbol=_req_str(item, "symbol", "rankings"),
-                last_u=_req_u(price, "lastPrice", "rankings.price"),
-                base_u=_req_u(price, "basePrice", "rankings.price"),
-                change_rate=None if change is None else float(Decimal(str(change))),
-                vol_qu=_req_u(item, "tradingVolume", "rankings"),
-                amount_u=_req_u(item, "tradingAmount", "rankings"),
-            ))
+        with self._track_rounding():
+            for item in raw:
+                price = item.get("price")
+                if not isinstance(price, dict):
+                    raise SchemaMismatch("rankings: row.price missing")
+                change = price.get("changeRate")
+                rows.append(RankingRow(
+                    rank=_req_int(item, "rank", "rankings"),
+                    symbol=_req_str(item, "symbol", "rankings"),
+                    last_u=_req_u(price, "lastPrice", "rankings.price"),
+                    base_u=_req_u(price, "basePrice", "rankings.price"),
+                    change_rate=None if change is None else float(Decimal(str(change))),
+                    vol_qu=_req_u(item, "tradingVolume", "rankings"),
+                    amount_u=_req_u(item, "tradingAmount", "rankings"),
+                ))
         return RankingPage(
             ranking_type=ranking_type,
             duration=duration,
@@ -265,18 +290,19 @@ class TossClient:
         for chunk in _chunks(symbols, BATCH_MAX):
             body = await self._request("GET", "/api/v1/stocks",
                                        params={"symbols": ",".join(chunk)})
-            for item in _as_list(body, "stocks"):
-                list_date = item.get("listDate")
-                out.append(StockMeta(
-                    symbol=_req_str(item, "symbol", "stocks"),
-                    name=_req_str(item, "name", "stocks"),
-                    market=_req_str(item, "market", "stocks"),
-                    security_type=_req_str(item, "securityType", "stocks"),
-                    is_common=bool(item.get("isCommonShare", False)),
-                    status=_req_str(item, "status", "stocks"),
-                    list_date=None if list_date is None else str(list_date),
-                    shares_outstanding_qu=_req_u(item, "sharesOutstanding", "stocks"),
-                ))
+            with self._track_rounding():
+                for item in _as_list(body, "stocks"):
+                    list_date = item.get("listDate")
+                    out.append(StockMeta(
+                        symbol=_req_str(item, "symbol", "stocks"),
+                        name=_req_str(item, "name", "stocks"),
+                        market=_req_str(item, "market", "stocks"),
+                        security_type=_req_str(item, "securityType", "stocks"),
+                        is_common=bool(item.get("isCommonShare", False)),
+                        status=_req_str(item, "status", "stocks"),
+                        list_date=None if list_date is None else str(list_date),
+                        shares_outstanding_qu=_req_u(item, "sharesOutstanding", "stocks"),
+                    ))
         return out
 
     # ---- 시장 정보 ------------------------------------------------------

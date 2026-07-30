@@ -57,7 +57,6 @@ def test_display_helpers_are_same_instant():
     ("185.70", 185_700_000),
     ("0.000001", 1),
     ("0", 0),
-    ("-1.5", -1_500_000),
     (Decimal("1.234567"), 1_234_567),
     ("1041436650000", 1_041_436_650_000_000_000),      # KRW 거래대금 — 기본 정밀도 초과 구간
     ("1E+3", 1_000_000_000),
@@ -66,8 +65,12 @@ def test_dec_to_u(raw, expect_u):
     assert dec_to_u(raw) == expect_u
 
 
-@pytest.mark.parametrize("raw", ["0.0000001", "1.2345678", "NaN", "Infinity", "abc", ""])
-def test_dec_to_u_rejects(raw):
+@pytest.mark.parametrize("raw", [
+    "NaN", "Infinity", "-Infinity", "abc", "", "   ", "1.2.3", "$1.50",
+    "-1.5",          # 음수 가격·수량은 유효하지 않다 (계약 A4)
+])
+def test_dec_to_u_rejects_unparseable(raw):
+    """A4 이후에도 '파싱 불가능한 값'은 여전히 SchemaMismatch 다."""
     with pytest.raises(SchemaMismatch):
         dec_to_u(raw)
 

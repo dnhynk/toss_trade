@@ -1,0 +1,30 @@
+{
+  "endpoint": "GET /api/v1/prices",
+  "case": "subpenny",
+  "status": 200,
+  "source": "live-derived",
+  "captured_at_ms": 1785402855314,
+  "note": "계약 C-2 개정 A4 회귀 방지. 라이브 관측(W5 리허설): CRKN 2025-03-05T08:00 KST 1분봉이 adjusted=true 에서 openPrice='0.10461614'(8자리), adjusted=false 에서 '1.9889'(4자리). 비율 약 19.01 = 리버스 스플릿 보정. 수정주가의 분할 보정 곱셈이 임의 정밀도를 만든다. dec_to_u 가 이를 거부하면(A4 이전 동작) 표적 종목군이 조용히 스킵되므로 반드시 반올림되어 통과해야 한다. 실측상 /prices 는 4자리 이하로 깨끗하나, 정책은 전 경로 적용이므로 방어적으로 검증한다.",
+  "body": {
+    "result": [
+      {
+        "symbol": "CRKN",
+        "timestamp": "2026-07-30T18:14:11.000+09:00",
+        "lastPrice": "0.10461614",
+        "currency": "USD"
+      },
+      {
+        "symbol": "SNTI",
+        "timestamp": null,
+        "lastPrice": "0.00374829",
+        "currency": "USD"
+      },
+      {
+        "symbol": "AAPL",
+        "timestamp": "2026-07-30T18:14:11.000+09:00",
+        "lastPrice": "338.7488",
+        "currency": "USD"
+      }
+    ]
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "endpoint": "GET /api/v1/rankings",
+  "case": "subpenny",
+  "status": 200,
+  "source": "live-derived",
+  "captured_at_ms": 1785402855314,
+  "note": "계약 C-2 개정 A4 회귀 방지. 라이브 관측(W5 리허설): CRKN 2025-03-05T08:00 KST 1분봉이 adjusted=true 에서 openPrice='0.10461614'(8자리), adjusted=false 에서 '1.9889'(4자리). 비율 약 19.01 = 리버스 스플릿 보정. 수정주가의 분할 보정 곱셈이 임의 정밀도를 만든다. dec_to_u 가 이를 거부하면(A4 이전 동작) 표적 종목군이 조용히 스킵되므로 반드시 반올림되어 통과해야 한다. 랭킹의 lastPrice/basePrice/tradingAmount 전부 초과 정밀도.",
+  "body": {
+    "result": {
+      "rankedAt": "2026-07-30T18:14:58.008+09:00",
+      "rankings": [
+        {
+          "rank": 1,
+          "symbol": "CRKN",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.10461614",
+            "basePrice": "0.05123456",
+            "changeRate": "1.0419"
+          },
+          "tradingVolume": "36515.789",
+          "tradingAmount": "4932.98102299"
+        },
+        {
+          "rank": 2,
+          "symbol": "SNTI",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.00374829",
+            "basePrice": "0.00299999",
+            "changeRate": "0.2494"
+          },
+          "tradingVolume": "1000000.5",
+          "tradingAmount": "3748.2900001"
+        }
+      ]
+    }
+  }
+}
