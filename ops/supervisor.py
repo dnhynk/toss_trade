@@ -1,0 +1,148 @@
+"""프로세스 감시·자동 재시작 — 소유: W5.
+
+collector(W4, `tossmon.collector`)를 자식 프로세스로 띄우고 죽으면 재시작한다.
+Windows 작업 스케줄러의 "실패 시 재시작" 옵션과 별개로(그건 태스크 전체가 죽었을 때만
+반응하고 폴링 주기가 김), 이 supervisor는 프로세스 내에서 즉시 재시작 여부를 판단해
+크래시 후 수 초 안에 재기동한다. 두 메커니즘은 상호 보완적이며 둘 다 등록해도 된다
+(`ops/register_task_scheduler.ps1` 참고).
+
+정지 방법: `ops/state/STOP` 파일을 만들면 다음 체크 시점(자식 종료 후 또는 폴링 간격)에
+정상 종료한다. 콘솔에서는 Ctrl+C(SIGINT)도 동작한다.
+
+재시작 폭주 방지: `restart_window_s` 안에 `max_restarts_per_window` 회를 넘겨 죽으면
+"고장"으로 간주하고 재시작을 멈춘다 — 무한 재시작이 rate limit/디스크를 반복 두들기는
+사고를 막기 위함(계약 C-8 budget.py 의 취지와 동일하게 "초과는 사고"로 취급).
+"""
+from __future__ import annotations
+
+import argparse
+import signal
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from .opsconfig import OpsConfig, load_ops_config
+
+
+def backoff_delay(attempt: int, base_s: float, cap_s: float) -> float:
+    """attempt(0부터) 회 연속 실패 후 대기할 시간. 지수 증가 + 상한."""
+    if attempt <= 0:
+        return 0.0
+    return min(base_s * (2 ** (attempt - 1)), cap_s)
+
+
+@dataclass
+class RestartBudget:
+    """롤링 윈도 안의 재시작 횟수를 추적해 폭주를 감지한다."""
+
+    max_restarts: int
+    window_s: float
+    _events: list[float] = field(default_factory=list)
+
+    def record(self, now: float) -> None:
+        self._events.append(now)
+        cutoff = now - self.window_s
+        self._events = [t for t in self._events if t >= cutoff]
+
+    def over_limit(self, now: float) -> bool:
+        cutoff = now - self.window_s
+        recent = [t for t in self._events if t >= cutoff]
+        return len(recent) > self.max_restarts
+
+
+def stop_requested(stop_file: Path) -> bool:
+    return stop_file.exists()
+
+
+class Supervisor:
+    """테스트 용이성을 위해 subprocess 생성/대기를 얇게 래핑한다."""
+
+    def __init__(self, cfg: OpsConfig, stop_file: Path, log_path: Path | None = None,
+                 sleep_fn=time.sleep, now_fn=time.monotonic):
+        self.cfg = cfg
+        self.stop_file = stop_file
+        self.log_path = log_path
+        self._sleep = sleep_fn
+        self._now = now_fn
+        self.budget = RestartBudget(cfg.max_restarts_per_window, cfg.restart_window_s)
+        self._child: subprocess.Popen | None = None
+        self._should_exit = False
+
+    def _spawn(self) -> subprocess.Popen:
+        log_fh = None
+        if self.log_path is not None:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_fh = open(self.log_path, "ab", buffering=0)
+        return subprocess.Popen(
+            self.cfg.collector_cmd,
+            stdout=log_fh or subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if log_fh else subprocess.DEVNULL,
+        )
+
+    def _handle_signal(self, signum, frame) -> None:
+        self._should_exit = True
+        if self._child is not None and self._child.poll() is None:
+            self._child.terminate()
+
+    def run(self, max_iterations: int | None = None) -> int:
+        """메인 루프. max_iterations는 테스트 전용(무한루프 방지), 실사용은 None."""
+        try:
+            signal.signal(signal.SIGINT, self._handle_signal)
+        except (ValueError, OSError):
+            pass  # 메인 스레드가 아니거나 플랫폼 미지원이면 시그널 훅 생략
+
+        attempt = 0
+        iterations = 0
+        while not self._should_exit:
+            if stop_requested(self.stop_file):
+                print("[supervisor] stop file detected — exiting", file=sys.stderr)
+                return 0
+
+            self._child = self._spawn()
+            code = self._child.wait()
+            iterations += 1
+            now = self._now()
+
+            if self._should_exit:
+                return 0
+            if code == 0:
+                print("[supervisor] collector exited cleanly (0) — not restarting",
+                      file=sys.stderr)
+                return 0
+
+            self.budget.record(now)
+            if self.budget.over_limit(now):
+                print(f"[supervisor] restart budget exceeded "
+                      f"({self.cfg.max_restarts_per_window}/{self.cfg.restart_window_s}s) — "
+                      "giving up, manual intervention required", file=sys.stderr)
+                return 1
+
+            attempt += 1
+            delay = backoff_delay(attempt, self.cfg.restart_backoff_base_s,
+                                   self.cfg.restart_backoff_cap_s)
+            print(f"[supervisor] collector exited (code={code}), attempt={attempt}, "
+                  f"backoff={delay:.1f}s", file=sys.stderr)
+            if delay > 0:
+                self._sleep(delay)
+
+            if max_iterations is not None and iterations >= max_iterations:
+                return 1
+        return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--config", default=None)
+    args = ap.parse_args(argv)
+    cfg = load_ops_config(args.config)
+    stop_file = cfg.state_dir / "STOP"
+    log_path = cfg.log_dir / "collector.stdout.log"
+    stop_file.parent.mkdir(parents=True, exist_ok=True)
+    sup = Supervisor(cfg, stop_file, log_path)
+    return sup.run()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
