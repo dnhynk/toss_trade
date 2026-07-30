@@ -14,10 +14,13 @@ from tests.test_collector_helpers import MIN_MS
 from tossmon.analysis.baselines import compute_daily_baseline, minute_of_session_volume_curve
 from tossmon.analysis.features import extract_precursor_features, feature_names
 from tossmon.api.models import Price
+from tossmon.analysis.labeling import EventParams
+from tossmon.collector import detector as detector_module
 from tossmon.collector.detector import (DEFAULT_THRESHOLDS, EVENT_CORE_COLUMNS,
-                                        PriceActivityTracker, TierStateMachine,
-                                        activity_score, confirm_score, event_record,
-                                        precursor_score, score_paths)
+                                        EventDetector, PriceActivityTracker,
+                                        TierStateMachine, activity_score, confirm_score,
+                                        event_record, label_hash, precursor_score,
+                                        score_paths)
 
 TIER2_UP = DEFAULT_THRESHOLDS[2][0]
 TIER3_UP = DEFAULT_THRESHOLDS[3][0]
@@ -260,6 +263,102 @@ def test_seed_restores_tier_without_recording_a_promotion():
     assert sm.tier_of("AAA") == 3
     assert sm.drain_changes() == []
     assert sm.reason_of("AAA") == "resume"
+
+
+# --------------------------------------------------------------------------- #
+# 재검출 억제 — 같은 이벤트를 매 사이클 다시 기록하지 않는다 (라이브 실측 40% 중복)
+# --------------------------------------------------------------------------- #
+def _row(t0=111, **over):
+    row = {"t0_ms": t0, "kind": "win", "peak_ms": None, "peak_ret": None,
+           "ret_30m": None, "ret_close": None, "session": "regular", "symbol": "ABCD",
+           "shape": "coil_pop", "outcome": None, "rvol_gated": True}
+    row.update(over)
+    return row
+
+
+def test_label_hash_ignores_our_own_bookkeeping():
+    """해시에 detected_ms/score_* 가 섞이면 매 사이클 값이 달라져 억제가 무력화된다."""
+    assert label_hash(_row()) == label_hash(_row())
+    assert label_hash(_row()) != label_hash(_row(peak_ret=0.31))
+    # event_record 의 메타는 해시 입력이 아니다 — 같은 라벨이면 같은 해시여야 한다
+    rec_a = event_record(_row(), "ABCD", extra_meta={"detected_ms": 1, "score_path": "a"})
+    rec_b = event_record(_row(), "ABCD", extra_meta={"detected_ms": 999, "score_path": "b"})
+    assert rec_a["meta_json"] != rec_b["meta_json"]         # 메타는 다르지만
+    assert label_hash(_row()) == label_hash(_row())         # 라벨 해시는 같다
+
+
+class _StubEvents:
+    """detect_events 를 대신해 지정한 행을 돌려주는 검출기 (억제 로직만 시험한다)."""
+
+    def __init__(self, detector, rows):
+        self.detector = detector
+        self.rows = rows
+
+    def emit(self, now_ms=1_000_000):
+        import pandas as pd
+
+        found = pd.DataFrame(self.rows)
+        original = detector_module.detect_events
+        detector_module.detect_events = lambda *a, **k: found
+        try:
+            return self.detector._new_events(
+                "ABCD", pd.DataFrame(), rankings=None, calendar=None, rvol=None,
+                prev_close_u=None, shares_outstanding_qu=None,
+                scores=(0.5, 0.4, "precursor"), now_ms=now_ms)
+        finally:
+            detector_module.detect_events = original
+
+
+def _detector():
+    return EventDetector(EventParams(), notifier=None)
+
+
+def test_identical_relabel_is_suppressed():
+    det = _detector()
+    stub = _StubEvents(det, [_row()])
+    first = stub.emit()
+    assert len(first) == 1 and first[0].is_new is True
+
+    for _ in range(5):                                  # 매 사이클 같은 라벨로 재검출
+        assert stub.emit() == []
+    assert det.counters["suppressed"] == 5
+    assert det.counters["events"] == 1                  # 최초 1건뿐
+    assert det.counters["updated"] == 0
+
+
+def test_changed_labels_are_re_emitted_as_updates():
+    """T0 시점엔 peak/ret 이 미확정이다 — 장이 진행되며 채워지면 갱신해야 한다."""
+    det = _detector()
+    stub = _StubEvents(det, [_row()])
+    stub.emit()
+
+    stub.rows = [_row(peak_ms=222, peak_ret=0.31)]       # 라벨이 실제로 바뀌었다
+    update = stub.emit()
+    assert len(update) == 1
+    assert update[0].is_new is False                     # 최초 검출이 아니라 갱신
+    assert det.counters["updated"] == 1
+    assert det.counters["events"] == 1
+
+    assert stub.emit() == []                             # 같은 갱신은 다시 억제
+
+
+def test_emission_memory_is_bounded():
+    det = EventDetector(EventParams(), seen_limit=10)
+    stub = _StubEvents(det, [])
+    for i in range(25):
+        stub.rows = [_row(t0=i)]
+        stub.emit()
+    assert det.emitted_count() == 10                     # 오래된 것부터 버린다
+
+
+def test_forget_is_explicit_and_not_used_for_demotion():
+    """강등에서 이력을 지우면 재승격 직후 전부 재검출된다 — 그게 라이브 버그였다."""
+    det = _detector()
+    stub = _StubEvents(det, [_row()])
+    stub.emit()
+    assert stub.emit() == []
+    assert det.forget("ABCD") == 1                       # 명시 호출로만 지워진다
+    assert len(stub.emit()) == 1                         # 지운 뒤에는 다시 잡힌다
 
 
 # --------------------------------------------------------------------------- #
