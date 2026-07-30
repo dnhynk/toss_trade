@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS orderbook_snap (
     ask1_u INTEGER, ask1_qu INTEGER,
     depth_json TEXT NOT NULL,
     spread_u INTEGER,
-    imbalance REAL
+    imbalance_signed REAL
 );
 CREATE INDEX IF NOT EXISTS ix_ob_symbol_ms ON orderbook_snap (symbol, snap_ms);
 

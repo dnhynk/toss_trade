@@ -111,7 +111,7 @@ def test_all_snapshot_writes_and_deduplication(tmp_path):
         orderbook_id = store.insert_orderbook(1001, orderbook)
         assert orderbook_id > 0
         values = store._conn.execute(
-            "SELECT spread_u, imbalance FROM orderbook_snap WHERE id=?",
+            "SELECT spread_u, imbalance_signed FROM orderbook_snap WHERE id=?",
             (orderbook_id,),
         ).fetchone()
         assert values[0] == 20_000
@@ -126,6 +126,30 @@ def test_all_snapshot_writes_and_deduplication(tmp_path):
         assert len(reader.symbols(tier=1)) == 1
         assert len(reader.read_rankings("TOP_GAINERS", 1000, 1000)) == 1
         assert len(reader.read_events(1003, 1003)) == 1
+
+
+def test_imbalance_signed_sign_convention(tmp_path):
+    """계약 C-6 개정 A3: 중립 0, 양수 = 매수 우위, 음수 = 매도 우위."""
+    db_path = tmp_path / "monitor.db"
+
+    def imbalance_for(bid_qty_u: int, ask_qty_u: int) -> float | None:
+        orderbook = Orderbook(
+            "ABCD",
+            1000,
+            [OrderbookLevel(990_000, bid_qty_u)] if bid_qty_u else [],
+            [OrderbookLevel(1_010_000, ask_qty_u)] if ask_qty_u else [],
+        )
+        with Store(db_path) as store:
+            orderbook_id = store.insert_orderbook(1001, orderbook)
+            return store._conn.execute(
+                "SELECT imbalance_signed FROM orderbook_snap WHERE id=?",
+                (orderbook_id,),
+            ).fetchone()[0]
+
+    assert imbalance_for(3_000_000, 1_000_000) == pytest.approx(0.5)
+    assert imbalance_for(1_000_000, 1_000_000) == pytest.approx(0.0)
+    assert imbalance_for(1_000_000, 3_000_000) == pytest.approx(-0.5)
+    assert imbalance_for(0, 0) is None
 
 
 def test_bulk_candle_write_performance_smoke(tmp_path):

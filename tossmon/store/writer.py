@@ -193,6 +193,12 @@ class Store:
         return self._conn.total_changes - before
 
     def insert_orderbook(self, snap_ms: int, ob: Orderbook) -> int:
+        """호가 스냅샷 저장. ``imbalance_signed`` (계약 C-6 개정 A3):
+
+        ``(bid_qty_u - ask_qty_u) / (bid_qty_u + ask_qty_u)``, 범위 ``[-1, 1]``,
+        중립 = 0, 양수 = 매수 우위. 잔량 합이 0이면 NULL. 미국 호가는 1레벨뿐이라
+        ``bid_qty_u == bid1_qu`` 이지만, 다레벨 시장 확장을 위해 전 레벨 합산을 유지한다.
+        """
         self._require_writer()
         bids = [
             {"price_u": level.price_u, "qty_u": level.qty_u}
@@ -207,16 +213,18 @@ class Store:
         spread_u = (
             ask1.price_u - bid1.price_u if bid1 is not None and ask1 is not None else None
         )
-        bid_qty = sum(level.qty_u for level in ob.bids)
-        ask_qty = sum(level.qty_u for level in ob.asks)
-        total_qty = bid_qty + ask_qty
-        imbalance = (bid_qty - ask_qty) / total_qty if total_qty else None
+        bid_qty_u = sum(level.qty_u for level in ob.bids)
+        ask_qty_u = sum(level.qty_u for level in ob.asks)
+        total_qty_u = bid_qty_u + ask_qty_u
+        imbalance_signed = (
+            (bid_qty_u - ask_qty_u) / total_qty_u if total_qty_u else None
+        )
         with self._conn:
             cursor = self._conn.execute(
                 """
                 INSERT INTO orderbook_snap
                     (symbol, snap_ms, ts_ms, bid1_u, bid1_qu, ask1_u, ask1_qu,
-                     depth_json, spread_u, imbalance)
+                     depth_json, spread_u, imbalance_signed)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -233,7 +241,7 @@ class Store:
                         sort_keys=True,
                     ),
                     spread_u,
-                    imbalance,
+                    imbalance_signed,
                 ),
             )
         return int(cursor.lastrowid)
