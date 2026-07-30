@@ -137,6 +137,92 @@ def test_render_markdown_end_to_end(tmp_path):
     assert "rvol_gated=False" in report
 
 
+def _write_collector_log(log_dir: Path, lines: list[str]) -> Path:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    p = log_dir / "collector.log"
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
+
+
+def test_parse_telemetry_lines_extracts_fields_and_budget(tmp_path):
+    lines = [
+        "2026-07-30 22:30:05,001 INFO    collector start base_url=https://openapi.tossinvest.com "
+        "live=True db=data/tossmon.db watch=0",
+        "2026-07-30 22:35:00,123 INFO    telemetry session=regular watch=42 tier2=5 tier3=2 "
+        "events=0 promotions=1 tape_gaps=0 api_errors=0 precision_rounded=3 precision_parsed=120 "
+        "precision_rounded_pct=2.5 precision_max_digits=7 | budget MARKET_DATA=1.20/7.00 "
+        "MARKET_DATA_CHART=0.50/3.50 RANKING=0.33/3.50",
+        "2026-07-30 22:40:00,456 INFO    telemetry session=regular watch=45 tier2=6 tier3=3 "
+        "events=1 promotions=2 tape_gaps=0 api_errors=0 precision_rounded=5 precision_parsed=240 "
+        "precision_rounded_pct=2.1 precision_max_digits=8 | budget MARKET_DATA=1.50/7.00 "
+        "MARKET_DATA_CHART=0.60/3.50 RANKING=0.33/3.50",
+    ]
+    _write_collector_log(tmp_path, lines)
+
+    entries = dn.parse_telemetry_lines(tmp_path)
+    assert len(entries) == 2
+    assert entries[0]["fields"]["session"] == "regular"
+    assert entries[0]["fields"]["watch"] == "42"
+    assert entries[0]["budget"]["MARKET_DATA"] == "1.20/7.00"
+    assert entries[1]["fields"]["precision_max_digits"] == "8"
+
+    assert dn.count_collector_starts(tmp_path) == 1
+
+
+def test_count_collector_starts_detects_restart(tmp_path):
+    lines = [
+        "2026-07-30 22:30:05,001 INFO    collector start base_url=https://openapi.tossinvest.com "
+        "live=True db=data/tossmon.db watch=0",
+        "2026-07-30 23:10:00,000 INFO    collector start base_url=https://openapi.tossinvest.com "
+        "live=True db=data/tossmon.db watch=12",
+    ]
+    _write_collector_log(tmp_path, lines)
+    assert dn.count_collector_starts(tmp_path) == 2
+
+
+def test_parse_telemetry_lines_missing_log_returns_empty(tmp_path):
+    assert dn.parse_telemetry_lines(tmp_path) == []
+    assert dn.count_collector_starts(tmp_path) == 0
+
+
+def test_summarize_telemetry_tracks_max_digits_and_last_sample(tmp_path):
+    lines = [
+        "2026-07-30 22:35:00,123 INFO    telemetry session=regular watch=42 tier2=5 tier3=2 "
+        "events=0 promotions=1 tape_gaps=0 api_errors=0 precision_rounded=3 precision_parsed=120 "
+        "precision_rounded_pct=2.5 precision_max_digits=8 | budget MARKET_DATA=1.20/7.00",
+        "2026-07-30 22:40:00,456 INFO    telemetry session=regular watch=45 tier2=6 tier3=3 "
+        "events=1 promotions=2 tape_gaps=0 api_errors=0 precision_rounded=5 precision_parsed=240 "
+        "precision_rounded_pct=2.1 precision_max_digits=4 | budget MARKET_DATA=1.50/7.00",
+    ]
+    _write_collector_log(tmp_path, lines)
+    entries = dn.parse_telemetry_lines(tmp_path)
+    summary = dn.summarize_telemetry(entries, dn.count_collector_starts(tmp_path))
+    assert summary.samples == 2
+    # 최고치(8)는 두 번째(마지막) 샘플의 4가 아니라 전체 중 최댓값이어야 한다.
+    assert summary.max_precision_digits == 8
+    assert summary.last_fields["watch"] == "45"
+    assert summary.collector_starts == 0
+
+
+def test_render_markdown_includes_telemetry_section(tmp_path):
+    db_path = _seed_db(tmp_path)
+    lines = [
+        "2026-07-30 22:35:00,123 INFO    telemetry session=regular watch=42 tier2=5 tier3=2 "
+        "events=0 promotions=1 tape_gaps=0 api_errors=0 precision_rounded=3 precision_parsed=120 "
+        "precision_rounded_pct=2.5 precision_max_digits=8 | budget MARKET_DATA=1.20/7.00",
+    ]
+    _write_collector_log(tmp_path, lines)
+    coverage = dn.build_coverage(db_path, 0, 90 * MIN_MS)
+    events = dn.find_event_candidates(db_path, 0, 90 * MIN_MS)
+    log_stats = dn.scan_logs(tmp_path, window_s=300)
+    entries = dn.parse_telemetry_lines(tmp_path)
+    telemetry = dn.summarize_telemetry(entries, dn.count_collector_starts(tmp_path))
+    report = dn.render_markdown(0, 90 * MIN_MS, coverage, events, log_stats, dn.now_ms(), telemetry)
+    assert "Collector 텔레메트리" in report
+    assert "MARKET_DATA: 1.20/7.00" in report
+    assert "재시작 없음" in report
+
+
 def test_main_writes_report_file(tmp_path, monkeypatch):
     db_path = _seed_db(tmp_path)
     ops_cfg = tmp_path / "ops_config.yaml"

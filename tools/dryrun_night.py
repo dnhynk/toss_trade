@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sqlite3
 import sys
 import time
@@ -192,8 +193,68 @@ def find_event_candidates(db_path: Path, start_ms: int, end_ms: int,
     return detect_events(df, params)
 
 
+_KV_RE = re.compile(r"(\w+)=(\S+)")
+
+
+def parse_telemetry_lines(log_dir: Path) -> list[dict]:
+    """collector.log 의 'telemetry ...' 라인을 전부 파싱한다.
+
+    형식(`tossmon/collector/loops.py:report_telemetry`): 로그 접두어(asctime+levelname) 뒤에
+    ``telemetry k=v k=v ... | budget GROUP=measured/target GROUP=measured/target``.
+    접두어 포맷에 의존하지 않도록 "telemetry " 와 " | budget " 마커로만 자른다.
+    """
+    log_path = log_dir / "collector.log"
+    if not log_path.exists():
+        return []
+    out: list[dict] = []
+    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        idx = line.find("telemetry ")
+        if idx == -1 or " | budget " not in line:
+            continue
+        rest = line[idx + len("telemetry "):]
+        kv_part, budget_part = rest.split(" | budget ", 1)
+        out.append({
+            "fields": dict(_KV_RE.findall(kv_part)),
+            "budget": dict(_KV_RE.findall(budget_part)),
+        })
+    return out
+
+
+def count_collector_starts(log_dir: Path) -> int:
+    """`tossmon/collector/__main__.py`의 시작 로그 라인 수 — 1개 초과면 세션 중 재시작이 있었다는 뜻."""
+    log_path = log_dir / "collector.log"
+    if not log_path.exists():
+        return 0
+    return log_path.read_text(encoding="utf-8", errors="replace").count("collector start base_url=")
+
+
+@dataclass
+class TelemetrySummary:
+    samples: int
+    last_fields: dict[str, str]
+    last_budget: dict[str, str]
+    max_precision_digits: int
+    collector_starts: int
+
+
+def summarize_telemetry(entries: list[dict], collector_starts: int) -> TelemetrySummary | None:
+    if not entries:
+        return None
+    max_digits = 0
+    for e in entries:
+        try:
+            max_digits = max(max_digits, int(e["fields"].get("precision_max_digits", 0)))
+        except ValueError:
+            continue
+    return TelemetrySummary(
+        samples=len(entries), last_fields=entries[-1]["fields"], last_budget=entries[-1]["budget"],
+        max_precision_digits=max_digits, collector_starts=collector_starts,
+    )
+
+
 def render_markdown(start_ms: int, end_ms: int, coverage: CoverageReport,
-                    events: pd.DataFrame, log_stats, generated_ms: int) -> str:
+                    events: pd.DataFrame, log_stats, generated_ms: int,
+                    telemetry: TelemetrySummary | None = None) -> str:
     lines = [
         "# 라이브 리허설 리포트",
         "",
@@ -265,6 +326,33 @@ def render_markdown(start_ms: int, end_ms: int, coverage: CoverageReport,
             "정밀도 재검증을 권장한다."
         )
 
+    lines += ["", "## 5. Collector 텔레메트리 (precision/budget/재시작)", ""]
+    if telemetry is None:
+        lines.append(
+            "- collector.log에 `telemetry` 라인이 없다 — 세션이 아직 실행되지 않았거나, "
+            "5분 주기가 아직 한 번도 안 돌았거나(세션 전환/종료 시 강제 출력도 되니 그마저도 "
+            "없다면 collector가 시작조차 못 했을 가능성)."
+        )
+    else:
+        f, b = telemetry.last_fields, telemetry.last_budget
+        lines.append(f"- 텔레메트리 샘플 수: {telemetry.samples}")
+        lines.append(f"- collector 시작 횟수(로그 기준): {telemetry.collector_starts}"
+                     + (" — ⚠️ 세션 중 재시작 발생" if telemetry.collector_starts > 1 else " (재시작 없음)"))
+        lines.append(f"- 마지막 세션/워치리스트: session={f.get('session')} watch={f.get('watch')} "
+                     f"tier2={f.get('tier2')} tier3={f.get('tier3')}")
+        lines.append(f"- 이벤트/승격/테이프갭/API에러(누적): events={f.get('events')} "
+                     f"promotions={f.get('promotions')} tape_gaps={f.get('tape_gaps')} "
+                     f"api_errors={f.get('api_errors')}")
+        lines.append(f"- 정밀도(A4): precision_rounded={f.get('precision_rounded')} "
+                     f"parsed={f.get('precision_parsed')} "
+                     f"rounded_pct={f.get('precision_rounded_pct')}% "
+                     f"max_digits(마지막)={f.get('precision_max_digits')} "
+                     f"max_digits(세션 전체 최고치)={telemetry.max_precision_digits}")
+        if b:
+            lines.append("- 그룹별 rate limit 사용률(마지막 샘플, measured/target req/s):")
+            for group, val in sorted(b.items()):
+                lines.append(f"  - {group}: {val}")
+
     return "\n".join(lines) + "\n"
 
 
@@ -297,8 +385,10 @@ def main(argv: list[str] | None = None) -> int:
     coverage = build_coverage(db_path, start_ms, end_ms)
     events = find_event_candidates(db_path, start_ms, end_ms)
     log_stats = scan_logs(cfg.log_dir, window_s=max(1.0, (end_ms - start_ms) / 1000.0))
+    telemetry_entries = parse_telemetry_lines(cfg.log_dir)
+    telemetry = summarize_telemetry(telemetry_entries, count_collector_starts(cfg.log_dir))
 
-    report = render_markdown(start_ms, end_ms, coverage, events, log_stats, now)
+    report = render_markdown(start_ms, end_ms, coverage, events, log_stats, now, telemetry)
 
     if args.out:
         out_path = Path(args.out)

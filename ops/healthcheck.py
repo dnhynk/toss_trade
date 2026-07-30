@@ -26,7 +26,8 @@ from urllib.parse import quote
 
 from .opsconfig import OpsConfig, load_ops_config
 
-# 계약 C-6 테이블 → 시간 컬럼. events/promotions 는 실시간 수집 진행 여부의 보조 지표.
+# 계약 C-6 테이블 → 시간 컬럼. events/promotions/candles_1d 는 실시간 수집 진행 여부의 보조
+# 지표일 뿐 — 아래 POLLING_TABLES 로 "상시 폴링돼야 하는" 테이블과 구분한다.
 TABLES_TS: dict[str, str] = {
     "candles_1m": "ts_ms",
     "candles_1d": "ts_ms",
@@ -36,6 +37,13 @@ TABLES_TS: dict[str, str] = {
     "events": "t0_ms",
     "promotions": "ts_ms",
 }
+
+# overall_status 를 좌우하는(=CRIT/WARN 게이트) 테이블. 세션이 열려 있으면 계속 갱신돼야 한다.
+# candles_1d 는 승격 직후 1회만 갱신되는 베이스라인이고(tossmon/collector/loops.py
+# `_refresh_baseline`), events/promotions 는 실제 이벤트/승격이 있을 때만 생기는 **사건 로그**다
+# — "한동안 새 이벤트가 없다"는 정상이지 장애가 아니다. 이 셋을 게이트에 넣으면 항상 오탐
+# CRIT 가 뜬다(라이브 리허설에서 실제로 발견 — docs/11 §5).
+POLLING_TABLES = {"candles_1m", "trades_snap", "rankings_snap", "orderbook_snap"}
 
 # collector 로그에서 429/요청 수를 세는 최선노력 패턴. W4 로그 포맷 확정 전까지의 잠정 규약.
 RE_429 = re.compile(r"\b429\b|RateLimited|rate.?limit.?exceeded", re.IGNORECASE)
@@ -244,14 +252,21 @@ def build_report(cfg: OpsConfig, now: int | None = None) -> Report:
             status, age_min = staleness_status(
                 stat.last_ts_ms, now, cfg.stale_minutes_warn, cfg.stale_minutes_critical
             )
-            overall = worse(overall, status)
+            is_gating = table in POLLING_TABLES
+            if is_gating:
+                overall = worse(overall, status)
             g = growth.get(table)
             tables[table] = {
                 "count": stat.count,
                 "last_ts_ms": stat.last_ts_ms,
                 "age_min": None if age_min is None else round(age_min, 1),
                 "rows_per_sec": None if g is None else round(g.rows_per_sec, 3),
+                # status 는 실제 나이 기준 판정 그대로 보여준다(정보 가치가 있다) — 다만
+                # gates_overall=False 인 테이블(candles_1d/events/promotions)은 이 값이
+                # CRIT/WARN 이어도 overall_status 를 끌어올리지 않는다("사건이 뜸하다"는
+                # 정상이지 장애가 아니다 — 라이브 리허설에서 실제로 오탐을 낸 뒤 수정, docs/11 §5).
                 "status": status,
+                "gates_overall": is_gating,
             }
 
     disks = check_disk(
@@ -284,7 +299,8 @@ def render_text(r: Report) -> str:
         for table, s in sorted(r.tables.items()):
             age = "n/a" if s["age_min"] is None else f"{s['age_min']:.1f}"
             rps = "n/a" if s["rows_per_sec"] is None else f"{s['rows_per_sec']:.2f}"
-            lines.append(f"{table:<16}{s['count']:>10}{age:>10}{rps:>10}{s['status']:>8}")
+            note = "" if s.get("gates_overall", True) else "  (정보용 — overall 미반영)"
+            lines.append(f"{table:<16}{s['count']:>10}{age:>10}{rps:>10}{s['status']:>8}{note}")
     lines.append("")
     c429 = "unavailable" if r.logs.count_429 is None else str(r.logs.count_429)
     creq = "unavailable" if r.logs.request_lines is None else str(r.logs.request_lines)
@@ -306,6 +322,11 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_ops_config(args.config)
     report = build_report(cfg)
+
+    try:  # Windows 콘솔 기본 cp949 대응 (tools/live_probe.py 와 동일 패턴)
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
 
     if args.json:
         payload = {

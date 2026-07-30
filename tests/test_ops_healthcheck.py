@@ -182,6 +182,53 @@ def test_build_report_flags_stale_table_that_has_data(tmp_path):
     assert report.tables["trades_snap"]["status"] == hc.STATUS_OK
 
 
+def test_build_report_stale_candles_1d_and_events_dont_gate_overall(tmp_path):
+    """candles_1d(승격 시 1회만 갱신)/events(사건 발생 시에만 생김)는 오래돼도 정상이다 —
+    라이브 리허설 중 실제로 이 둘이 오탐 CRIT를 낸 것을 발견하고 수정한 회귀 테스트다."""
+    db_path = tmp_path / "tossmon.db"
+    store = Store(db_path)
+    now = hc.now_ms()
+    try:
+        store.upsert_candles_1m([
+            Candle(symbol="AAPL", ts_ms=now - 60_000, open_u=1, high_u=1, low_u=1,
+                   close_u=1, vol_qu=1),
+        ])
+        store.upsert_candles_1d([
+            Candle(symbol="AAPL", ts_ms=now - 10 * 24 * 60 * 60_000, open_u=1, high_u=1,
+                   low_u=1, close_u=1, vol_qu=1),
+        ])
+        store.record_event({"symbol": "AAPL", "t0_ms": now - 8 * 60 * 60_000, "kind": "win"})
+    finally:
+        store.close()
+
+    cfg = OpsConfig(
+        db_path=db_path,
+        log_dir=tmp_path / "logs",
+        state_dir=tmp_path / "state",
+        archive_dir=tmp_path / "archive",
+        disk=DiskThresholds(warn_free_gb=0.0, critical_free_gb=0.0),
+        stale_minutes_warn=5,
+        stale_minutes_critical=15,
+        log_retention_days=14,
+        log_max_bytes=1000,
+        collector_cmd=["python", "-c", "pass"],
+        max_restarts_per_window=5,
+        restart_window_s=600,
+        restart_backoff_base_s=1.0,
+        restart_backoff_cap_s=10.0,
+    )
+    report = hc.build_report(cfg, now=now)
+    # candles_1d/events 는 실제로는 CRIT 나이지만(10일/8시간 전) overall 을 끌어올리지 않는다.
+    assert report.tables["candles_1d"]["status"] == hc.STATUS_CRIT
+    assert report.tables["candles_1d"]["gates_overall"] is False
+    assert report.tables["events"]["status"] == hc.STATUS_CRIT
+    assert report.tables["events"]["gates_overall"] is False
+    assert report.tables["candles_1m"]["gates_overall"] is True
+    assert report.overall_status == hc.STATUS_OK
+    text = hc.render_text(report)
+    assert "정보용" in text
+
+
 def test_build_report_with_fresh_data_is_ok(tmp_path):
     db_path = tmp_path / "tossmon.db"
     store = Store(db_path)

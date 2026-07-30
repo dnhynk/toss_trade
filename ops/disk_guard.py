@@ -22,6 +22,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
+    for stream in (sys.stdout, sys.stderr):  # Windows 콘솔 기본 cp949 대응 (em-dash 등)
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
+
     cfg = load_ops_config(args.config)
     disks = check_disk([cfg.db_path, cfg.log_dir, cfg.archive_dir],
                         cfg.disk.warn_free_gb, cfg.disk.critical_free_gb)
