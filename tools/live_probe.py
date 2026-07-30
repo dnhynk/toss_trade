@@ -3,11 +3,21 @@
 최소 호출 수로 docs/06_live_facts.md 의 미확인 항목을 실측한다 (목록: ORCHESTRATION_PROMPT §4-W1-4).
 각 항목은 "확인됨/미확인 + 근거 응답 스니펫(마스킹)" 으로 기록. 추측 금지.
 
-    python tools/live_probe.py --keys <api_keys 경로> --probe all
-    python tools/live_probe.py --keys <api_keys 경로> --probe candle_retention,orderbook
+    # mock 드라이런 (기본값 — 안전한 쪽)
+    TOSS_BASE_URL=http://127.0.0.1:8899 python tools/live_probe.py --probe all
+
+    # 라이브 실측 (리스 보유자만)
+    TOSS_LIVE=1 TOSS_BASE_URL=https://... python tools/live_probe.py --live --keys api_keys
     python tools/live_probe.py --list
 
-라이브 호출은 `--live` 플래그 + `TOSS_LIVE=1` 이 **둘 다** 있어야 나간다 (사고 방지 이중 게이트).
+**기본값은 안전한 쪽이다** (감사 B-5). 실토큰 발급은 `--live` 플래그 + `TOSS_LIVE=1` 이
+둘 다 있을 때만 일어나고, 그 둘 없이 실서버를 대상으로 하면 실행 자체를 거부한다.
+base URL 은 기본값이 없다 (계약 C-9) — `--base-url` 또는 `TOSS_BASE_URL` 필수.
+
+`force429` 는 **의도적으로 라이브 429 를 유발**하므로 `--probe all` 에 포함되지 않는다.
+`--probe force429` 로 명시해야만 실행된다. 같은 자격증명으로 컬렉터가 돌고 있으면
+서버 측 같은 버킷의 페널티를 공유하므로, 컬렉터 가동 중에는 실행하지 말 것.
+
 결과는 stdout(JSON) + `--out` 경로에 쓰고, 응답 스냅샷은 tests/fixtures/live/live_*.json 으로
 마스킹해 저장한다.
 
@@ -42,10 +52,17 @@ from tossmon.api.limiter import GroupRateLimiter             # noqa: E402
 from tossmon.api.models import iso_to_ms, ms_to_iso, ms_to_iso_et, ms_to_iso_kst  # noqa: E402
 from tossmon.api.tokens import TokenManager, lease_dir       # noqa: E402
 
-# 라이브 호스트는 상수로 두지 않는다 (감사 M-7). 계약 C-9 는 base URL 에 기본값이 없어야
-# 한다고 명시하고, C-11 §3 은 호스트 하드코딩을 금지한다. 스킴/호스트를 문자열로 쪼개는 것은
-# 규칙 준수가 아니라 grep 회피였다. `--base-url` 또는 `TOSS_BASE_URL` 로만 받는다.
 FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "live"
+
+# base URL 은 **기본값이 없다** (계약 C-9). `--base-url` 또는 `TOSS_BASE_URL` 로만 받는다.
+# 이전의 `LIVE_BASE_URL = "https://" + "openapi..."` 는 기본값이자 grep 회피였다 (감사 M-7).
+#
+# 아래 상수는 그것과 용도가 다르다 — **오직 판별용**이며 요청 URL 을 만드는 데 쓰지 않는다.
+# base_url 이 실서버를 가리키는지 검사해
+#   (a) 라이브 플래그 없이 실서버를 때리는 실행을 거부하고
+#   (b) 캡처 픽스처를 source="live" 로 표기할지 정한다.
+# 이 상수를 없애면 "실서버인지 모르는 채로 때리는" 상태가 되어 오히려 더 위험하다.
+LIVE_HOST_MARKER = "openapi.tossinvest.com"
 
 LIMITS = {"AUTH": 5, "STOCK": 5, "MARKET_DATA": 10, "MARKET_DATA_CHART": 5,
           "RANKING": 5, "MARKET_INFO": 3}
@@ -829,7 +846,7 @@ async def run(args) -> int:
     global FIXTURE_DIR
     if args.fixture_dir:
         FIXTURE_DIR = Path(args.fixture_dir)
-    _IS_LIVE_TARGET[0] = "openapi.tossinvest.com" in args.base_url
+    _IS_LIVE_TARGET[0] = LIVE_HOST_MARKER in args.base_url
 
     os.environ["TOSS_BASE_URL"] = args.base_url
     tokens = TokenManager(Path(args.keys), Path(args.state), live=args.live)
@@ -919,7 +936,7 @@ def main(argv: list[str] | None = None) -> int:
               "(계약 C-9: base URL 에 기본값 없음).", file=sys.stderr)
         return 3
 
-    targets_live_host = "openapi.tossinvest.com" in args.base_url
+    targets_live_host = LIVE_HOST_MARKER in args.base_url
     env_live = os.environ.get("TOSS_LIVE") == "1"
 
     # 라이브 발급은 --live 와 TOSS_LIVE=1 이 **둘 다** 있을 때만. 기본은 안전한 쪽이다.

@@ -486,11 +486,26 @@ def test_force429_is_not_in_the_default_probe_set():
         "force429 가 기본 실행에 포함된다 (감사 B-5 재발)"
 
 
-def test_live_probe_has_no_hardcoded_live_host():
-    """계약 C-11 §3 — 호스트 하드코딩 금지. 문자열 분할은 준수가 아니라 회피였다."""
+def test_live_probe_does_not_build_a_live_url_or_default_to_one():
+    """계약 C-11 §3 / C-9 — 라이브 URL 을 만들거나 기본값으로 두면 안 된다.
+
+    호스트 문자열 자체는 **판별 가드**(`LIVE_HOST_MARKER`)로 남아 있다 — base_url 이
+    실서버인지 알아야 라이브 플래그 없는 실행을 거부할 수 있기 때문이다. 그건 우회가 아니라
+    안전장치이므로 금지 대상이 아니다. 금지 대상은 (a) grep 회피용 문자열 분할,
+    (b) 실행 가능한 라이브 URL 리터럴, (c) 그것을 argparse 기본값으로 두는 것이다.
+    """
     src = (ROOT / "tools" / "live_probe.py").read_text(encoding="utf-8")
-    assert '"https://" + "openapi' not in src, "스킴/호스트 분할 회피가 남아 있다"
-    assert "LIVE_BASE_URL" not in src, "라이브 호스트 상수가 남아 있다"
+    # 금지 검사는 **주석을 뺀 코드**에만 적용한다 — 옛 결함을 설명하는 주석에 그 패턴이
+    # 등장하는 것은 문서화이지 회피가 아니다.
+    code = "\n".join(ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
+
+    assert '"https://" + "openapi' not in code, "스킴/호스트 분할 회피가 남아 있다"
+    assert "LIVE_BASE_URL" not in code, "라이브 base URL 상수가 코드로 남아 있다"
+    assert '"https://openapi.tossinvest.com' not in code, "실행 가능한 라이브 URL 리터럴"
+
+    # --base-url 기본값은 env 에서만 온다 (계약 C-9: 기본값 없음)
+    assert 'default=os.environ.get("TOSS_BASE_URL")' in src, \
+        "--base-url 기본값이 env 유래가 아니다"
 
 
 def test_live_probe_defaults_to_safe_mode():
