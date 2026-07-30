@@ -14,10 +14,22 @@ from tossmon.collector.budget import (GROUP_CHART, GROUP_MARKET_DATA, GROUP_RANK
 LIMITS = {"MARKET_DATA": 10, "MARKET_DATA_CHART": 5, "RANKING": 5, "MARKET_INFO": 3}
 
 
-def plan(tier3=20, tier2=300, tier1=1500, trades_s=4, book_s=16):
-    return TierPlan(tier1_symbols=tier1, tier2_symbols=tier2, tier3_symbols=tier3,
-                    tier1_sweep_s=45, tier2_candle_s=90, tier3_trades_s=trades_s,
-                    tier3_orderbook_s=book_s, ranking_snap_s=12)
+#: 출하 설정에서 직접 읽는다 (값을 복제하면 config 변경이 테스트에 안 보인다).
+SHIPPED = make_config()
+
+
+def plan(tier3=None, tier2=None, tier1=None, trades_s=None, book_s=None,
+         candle_s=None):
+    uni, poll = SHIPPED.universe, SHIPPED.polling
+    return TierPlan(
+        tier1_symbols=uni.tier1_max if tier1 is None else tier1,
+        tier2_symbols=uni.tier2_max if tier2 is None else tier2,
+        tier3_symbols=uni.tier3_max if tier3 is None else tier3,
+        tier1_sweep_s=poll.tier1_sweep_s,
+        tier2_candle_s=poll.tier2_candle_s if candle_s is None else candle_s,
+        tier3_trades_s=poll.tier3_trades_s if trades_s is None else trades_s,
+        tier3_orderbook_s=poll.tier3_orderbook_s if book_s is None else book_s,
+        ranking_snap_s=poll.ranking_snap_s)
 
 
 def guard(p=None, **kw):
@@ -31,15 +43,31 @@ def test_plan_rates_reproduce_the_config_arithmetic():
     rates = plan().rates()
     assert rates[GROUP_MARKET_DATA] == pytest.approx(8 / 45 + 20 / 4 + 20 / 16, rel=1e-9)
     assert rates[GROUP_MARKET_DATA] == pytest.approx(6.4278, abs=1e-3)
-    assert rates[GROUP_CHART] == pytest.approx(300 / 90, abs=1e-6)
+    assert rates[GROUP_CHART] == pytest.approx(300 / 110, abs=1e-6)
     assert rates[GROUP_RANKING] == pytest.approx(4 / 12, abs=1e-6)
     assert guard().validate_plan() == {}                     # 예산 안
 
 
+def test_chart_has_real_headroom_for_promotion_backfill():
+    """CHART 여유는 **승격 직후 백필**을 위한 것이다 (main 8056da9).
+
+    여유가 5% 수준이면 백필이 겹칠 때마다 가드가 tier2 를 줄여 커버리지가 조용히 무너진다.
+    승격 1건당 백필은 1분봉 3페이지 + 일봉 1 = 4콜이다.
+    """
+    g = guard()
+    target, planned = g.target(GROUP_CHART), g.planned_rate(GROUP_CHART)
+    headroom = (target - planned) / target
+    assert headroom >= 0.15, f"CHART 여유 {headroom:.1%} — 백필이 겹치면 tier2 가 줄어든다"
+    # 여유분으로 흡수할 수 있는 동시 승격 건수 (윈도우 60s 기준)
+    assert (target - planned) * g.window_s / 4 >= 10
+
+
 def test_from_config_matches_shipped_defaults():
-    cfg = make_config()
-    p = TierPlan.from_config(cfg, tier1_symbols=1500, tier2_symbols=300, tier3_symbols=20)
+    uni = SHIPPED.universe
+    p = TierPlan.from_config(SHIPPED, tier1_symbols=uni.tier1_max,
+                             tier2_symbols=uni.tier2_max, tier3_symbols=uni.tier3_max)
     assert p.rates()[GROUP_MARKET_DATA] == pytest.approx(6.4278, abs=1e-3)
+    assert p.rates() == plan().rates()
 
 
 def test_tier3_30_would_overrun_market_data():
@@ -102,7 +130,7 @@ def test_shipped_defaults_do_not_shrink_at_startup():
 
 
 def test_measured_chart_usage_still_triggers_shrink():
-    """CHART 여유가 4.8% 밖에 없으므로 백필이 조금만 겹쳐도 가드가 움직여야 한다."""
+    """여유를 다 먹을 만큼 실사용이 올라가면(4 req/s > 3.5) 그때는 가드가 움직여야 한다."""
     clock = FrozenClock(0)
     g = guard(clock=clock)
     for _ in range(240):

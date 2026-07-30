@@ -22,22 +22,20 @@ from tossmon.config import parse_config
 MIN_MS = 60_000
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-#: config.example.yaml 와 같은 키 구성 (실 파일을 읽지 않고 테스트에서 조립한다).
-BASE_CONFIG: dict = {
-    "api": {"base_url": "http://127.0.0.1:8899", "live": False, "keys_path": "api_keys",
-            "token_state_path": "data/token_state.json", "timeout_s": 10.0,
-            "usage_ratio": 0.7},
-    "limits": {"AUTH": 5, "STOCK": 5, "MARKET_DATA": 10, "MARKET_DATA_CHART": 5,
-               "RANKING": 5, "MARKET_INFO": 3},
-    "store": {"db_path": "data/tossmon.db", "archive_dir": "data/archive"},
-    "universe": {"price_min_usd": "0.10", "price_max_usd": "20.00",
-                 "mcap_min_usd": "10000000", "mcap_max_usd": "300000000",
-                 "tier1_max": 1500, "tier2_max": 300, "tier3_max": 20},
-    "detector": {"event_window_min": 30, "event_ret_min": 0.15, "event_day_ret_min": 0.30,
-                 "event_rvol_min": 3.0, "promote_hysteresis_s": 120},
-    "polling": {"tier1_sweep_s": 45, "tier2_candle_s": 90, "tier3_trades_s": 4,
-                "tier3_orderbook_s": 16, "ranking_snap_s": 12},
-}
+#: **출하되는 설정 그대로** 테스트한다 — 값을 여기 복제해 두면 config 가 바뀌어도
+#: 테스트는 옛 값으로 계속 초록을 내며 드리프트를 숨긴다 (tier2_candle_s 90→110 때 실제로
+#: 그럴 뻔했다). 예시 파일은 mock 기본값(live:false)이라 라이브가 켜질 일은 없다.
+def _load_example_config() -> dict:
+    import yaml
+
+    raw = yaml.safe_load((REPO_ROOT / "config" / "config.example.yaml")
+                         .read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise RuntimeError("config/config.example.yaml is not a mapping")
+    return raw
+
+
+BASE_CONFIG: dict = _load_example_config()
 
 
 def config_dict(**sections) -> dict:

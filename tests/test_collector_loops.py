@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from tests.test_collector_helpers import (MIN_MS, FrozenClock, ReplayClient,
                                           calendar_dict, make_config, simple_day)
 from tossmon.api.models import Candle, CandlePage, Price, RankingPage, RankingRow, Trade
@@ -233,9 +235,13 @@ class PagingClient:
         self.counters = {"http_429": 0, "requests": 0}
         self.last_headers: dict[str, str] = {}
         self.requests: list[int | None] = []
+        self.candle_calls: list[tuple[str, bool]] = []
 
     async def get_candles(self, symbol, interval, count=200, before_ms=None,
                           adjusted=True):
+        # 기본값을 일부러 True 로 둔다 — 호출부가 1m 에 adjusted 를 빠뜨리면 여기 True 가
+        # 기록되고 A5 회귀 테스트가 잡는다.
+        self.candle_calls.append((interval, adjusted))
         if interval == "1d":
             return CandlePage(candles=self.daily, next_before_ms=None)
         self.requests.append(before_ms)
@@ -306,6 +312,48 @@ def test_daily_baseline_excludes_the_progressing_today_bar(tmp_path):
     # 저장은 받은 그대로 (당일 봉도 DB 에는 들어간다 — 자르는 것은 베이스라인 계산뿐)
     assert ctx.store._conn.execute("SELECT COUNT(*) FROM candles_1d").fetchone()[0] == 6
     ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 계약 C-2 개정 A5 — 1분봉 원주가 / 일봉 수정주가
+# --------------------------------------------------------------------------- #
+def test_candle_adjusted_table_matches_contract_a5():
+    assert loops.CANDLE_ADJUSTED == {"1m": False, "1d": True}
+    assert loops.candle_adjusted("1m") is False       # 원주가 — 명목 가격대 보존
+    assert loops.candle_adjusted("1d") is True        # 수정주가 — 분할 가로지르는 연속성
+
+
+def test_unknown_interval_fails_loudly_instead_of_guessing():
+    """새 interval 을 조용히 한쪽으로 떨어뜨리면 규약이 소리 없이 깨진다."""
+    with pytest.raises(ValueError, match="A5"):
+        loops.candle_adjusted("5m")
+
+
+def test_every_candle_call_passes_the_contracted_adjustment(tmp_path):
+    """tier2 증분·백필·일봉 3개 경로 전부 검증.
+
+    수정주가는 그 시점의 명목 가격을 지운다 — CRKN 2025-03-05 은 실제로 $1.99 였는데
+    수정주가로는 $0.10 로 보인다(W5 라이브 실측). 동전주 가격대가 논지인 이상
+    1분봉을 수정주가로 받으면 과거 종목을 통째로 오분류한다.
+    """
+    day = simple_day("2026-07-30", DAY0)
+    et_midnight = day.regular.start_ms - int(9.5 * HOUR_MS)
+    daily = [bar(et_midnight - i * 24 * HOUR_MS, close_u=2_000_000 + i)
+             for i in range(5, 0, -1)]
+    client = PagingClient([bar(DAY0 + i * MIN_MS) for i in range(5)], daily=daily)
+    ctx, _ = build_ctx(tmp_path, client, now_ms=day.regular.start_ms + 30 * MIN_MS)
+    try:
+        asyncio.run(loops.tier2_symbol_once(ctx, "AAA"))   # 백필 + 일봉 + 증분 한 번에
+
+        intervals = [c[0] for c in client.candle_calls]
+        assert "1m" in intervals and "1d" in intervals     # 세 경로가 다 돌았다
+        assert len(client.candle_calls) >= 3
+        for interval, adjusted in client.candle_calls:
+            assert adjusted is loops.CANDLE_ADJUSTED[interval], (interval, adjusted)
+        assert {a for i, a in client.candle_calls if i == "1m"} == {False}
+        assert {a for i, a in client.candle_calls if i == "1d"} == {True}
+    finally:
+        ctx.store.close()
 
 
 # --------------------------------------------------------------------------- #

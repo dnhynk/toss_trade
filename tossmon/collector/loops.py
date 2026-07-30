@@ -18,6 +18,7 @@
 * 함정5 체결 없는 분은 봉 자체가 없다                  → 0거래량으로 채우는 것은 analysis 계층이 한다
                                                       (`_minute_volumes`). 저장은 받은 대로만 한다.
 * 함정6 `/trades` 에 symbol 필드 없음                 → client 가 주입 (W1 구현 완료)
+* 수정주가  1분봉=원주가 / 일봉=수정주가 (계약 A5)     → `candle_adjusted()` 단일 출처
 
 견고성
 -----
@@ -69,6 +70,36 @@ RANKING_ROWS_PER_SYMBOL = 720
 
 CANDLE_PAGE = 200
 TRADES_COUNT = 50
+
+#: 계약 C-2 개정 A5 — **interval 별 수정주가 규약. 캔들 호출은 반드시 이 표를 참조한다.**
+#:
+#: 1분봉은 **원주가**(adjusted=False): 수정주가는 과거 가격을 분할비로 나눠 그 시점의
+#: **명목 가격대를 지운다**. CRKN 2025-03-05 은 실제로 $1.99 에 거래됐는데 수정주가로는
+#: $0.10 로 보인다(W5 라이브 실측, 분할비 ≈19). 이 프로젝트의 논지가 "동전주 가격대에서
+#: 벌어지는 현상" 이므로 그 오분류는 치명적이고, sub-penny 호가·LULD 밴드($0.75/$3)
+#: 같은 미국 제도도 전부 명목 가격 기준이다. 분할은 장중에 일어나지 않으므로 일중 상대
+#: 계산(수익률·RVOL·VWAP 괴리)은 원주가로도 완전히 동일하다 — 잃는 것이 없다.
+#:
+#: 일봉은 **수정주가**(adjusted=True): 20일 베이스라인·ATR·former runner 탐지처럼
+#: **분할을 가로지르는 다일 계산**은 연속성이 필요하다.
+#:
+#: ⚠️ 두 계열을 **가격 수준으로 직접 비교하지 마라** (A5 금지 조항). 다일 가격 비교는
+#: 일봉으로만, 비율 비교는 각 계열 안에서만 한다.
+CANDLE_ADJUSTED: dict[str, bool] = {"1m": False, "1d": True}
+
+
+def candle_adjusted(interval: str) -> bool:
+    """`interval` 에 맞는 `adjusted` 값 (계약 A5).
+
+    호출부가 이 함수를 거치게 해서 "한쪽만 고치는" 실수를 구조적으로 막는다.
+    `TossClient.get_candles` 의 기본값은 바꾸지 않는다 — 명시가 계약이다(A5 적용 절).
+    """
+    try:
+        return CANDLE_ADJUSTED[interval]
+    except KeyError:
+        raise ValueError(
+            f"unknown candle interval {interval!r} — 계약 A5 는 '1m'(원주가)과 "
+            f"'1d'(수정주가)만 정의한다. 새 interval 은 계약 개정이 먼저다") from None
 #: 승격 직후 API 백필 상한 (페이지). 이력은 원칙적으로 DB(백필 결과)에서 읽는다.
 MAX_BACKFILL_PAGES = 3
 #: 곡선/이력에 쓸 날 수. 곡선 분모는 **당일 제외** (자기오염 방지).
@@ -753,7 +784,8 @@ async def run_tier2_candles(client: TossClient, store: Store, cfg: Config, *,
 
 async def tier2_symbol_once(ctx: CollectorContext, symbol: str) -> int:
     await _ensure_history(ctx, symbol)
-    page = await ctx.client.get_candles(symbol, "1m", count=CANDLE_PAGE)
+    page = await ctx.client.get_candles(symbol, "1m", count=CANDLE_PAGE,
+                                        adjusted=candle_adjusted("1m"))
     ctx.after_call(GROUP_CHART)
     if not page.candles:
         return 0
@@ -860,7 +892,8 @@ async def _backfill_1m(ctx: CollectorContext, symbol: str,
     buf = ctx.buffer(symbol)
     for _ in range(max(1, pages)):
         page = await ctx.client.get_candles(symbol, "1m", count=CANDLE_PAGE,
-                                            before_ms=before)
+                                            before_ms=before,
+                                            adjusted=candle_adjusted("1m"))
         ctx.after_call(GROUP_CHART)
         if not page.candles:
             break
@@ -878,7 +911,8 @@ async def _backfill_1m(ctx: CollectorContext, symbol: str,
 
 async def _refresh_baseline(ctx: CollectorContext, symbol: str, now_ms: int) -> None:
     """일봉 베이스라인. 함정4: **당일 봉은 진행형**이라 완성봉으로 쓰면 안 된다."""
-    page = await ctx.client.get_candles(symbol, "1d", count=60)
+    page = await ctx.client.get_candles(symbol, "1d", count=60,
+                                        adjusted=candle_adjusted("1d"))
     ctx.after_call(GROUP_CHART)
     if not page.candles:
         return
@@ -1051,8 +1085,9 @@ async def run_all(ctx: CollectorContext, *, cycles: int | None = None) -> None:
 
 
 __all__ = [
-    "CollectorContext", "RANKING_TYPES", "RankingBuffer", "SymbolBuffer",
-    "candles_frame", "rankings_once", "reconfigure_tiers", "run_all", "run_rankings",
+    "CANDLE_ADJUSTED", "CollectorContext", "RANKING_TYPES", "RankingBuffer", "SymbolBuffer",
+    "candle_adjusted", "candles_frame", "rankings_once", "reconfigure_tiers", "run_all",
+    "run_rankings",
     "run_session_watch", "run_tier1_price_sweep", "run_tier2_candles", "run_tier3_micro",
     "tape_stats", "tier1_sweep_once", "tier2_symbol_once",
 ]
