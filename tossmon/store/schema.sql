@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS candles_1m (
     vol_qu INTEGER NOT NULL,
     PRIMARY KEY (symbol, ts_ms)
 ) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS ix_candles_1m_ts ON candles_1m (ts_ms);
 
 CREATE TABLE IF NOT EXISTS candles_1d (
     symbol TEXT NOT NULL,
@@ -40,6 +41,7 @@ CREATE TABLE IF NOT EXISTS candles_1d (
     vol_qu INTEGER NOT NULL,
     PRIMARY KEY (symbol, ts_ms)
 ) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS ix_candles_1d_ts ON candles_1d (ts_ms);
 
 CREATE TABLE IF NOT EXISTS rankings_snap (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,6 +56,7 @@ CREATE TABLE IF NOT EXISTS rankings_snap (
     UNIQUE (snap_ms, ranking_type, duration, rank)
 );
 CREATE INDEX IF NOT EXISTS ix_rankings_symbol_ms ON rankings_snap (symbol, snap_ms);
+CREATE INDEX IF NOT EXISTS ix_rankings_type_ms ON rankings_snap (ranking_type, snap_ms);
 
 CREATE TABLE IF NOT EXISTS trades_snap (
     symbol TEXT NOT NULL,
@@ -62,6 +65,7 @@ CREATE TABLE IF NOT EXISTS trades_snap (
     qty_u INTEGER NOT NULL,
     PRIMARY KEY (symbol, ts_ms, price_u, qty_u)
 ) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS ix_trades_ts ON trades_snap (ts_ms);
 
 CREATE TABLE IF NOT EXISTS orderbook_snap (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,6 +93,7 @@ CREATE TABLE IF NOT EXISTS events (
     meta_json TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_events_symbol_t0 ON events (symbol, t0_ms);
+CREATE INDEX IF NOT EXISTS ix_events_t0 ON events (t0_ms);
 
 CREATE TABLE IF NOT EXISTS promotions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
