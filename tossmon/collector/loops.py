@@ -52,7 +52,8 @@ from .budget import GROUP_CHART, GROUP_MARKET_DATA, GROUP_RANKING, BudgetGuard, 
 from .detector import (EventDetector, PriceActivityTracker, TierChange, TierStateMachine,
                        activity_score, build_curve)
 from .notifier import Notifier
-from .scheduler import CLOSED, Clock, SessionScheduler, exclude_today_1d_cutoff
+from .scheduler import (CLOSED, Clock, SessionScheduler, exclude_today_1d_cutoff,
+                        session_window)
 
 MIN_MS = 60_000
 DAY_MS = 86_400_000
@@ -87,19 +88,6 @@ TRADES_COUNT = 50
 #: 일봉으로만, 비율 비교는 각 계열 안에서만 한다.
 CANDLE_ADJUSTED: dict[str, bool] = {"1m": False, "1d": True}
 
-
-def candle_adjusted(interval: str) -> bool:
-    """`interval` 에 맞는 `adjusted` 값 (계약 A5).
-
-    호출부가 이 함수를 거치게 해서 "한쪽만 고치는" 실수를 구조적으로 막는다.
-    `TossClient.get_candles` 의 기본값은 바꾸지 않는다 — 명시가 계약이다(A5 적용 절).
-    """
-    try:
-        return CANDLE_ADJUSTED[interval]
-    except KeyError:
-        raise ValueError(
-            f"unknown candle interval {interval!r} — 계약 A5 는 '1m'(원주가)과 "
-            f"'1d'(수정주가)만 정의한다. 새 interval 은 계약 개정이 먼저다") from None
 #: 승격 직후 API 백필 상한 (페이지). 이력은 원칙적으로 DB(백필 결과)에서 읽는다.
 MAX_BACKFILL_PAGES = 3
 #: 곡선/이력에 쓸 날 수. 곡선 분모는 **당일 제외** (자기오염 방지).
@@ -114,6 +102,9 @@ IDLE_SLEEP_S = 5.0
 STATE_SAVE_S = 60.0
 #: 주기 텔레메트리 출력 간격 (초). 무인 실행이라 로그가 유일한 관측 창이다.
 TELEMETRY_EVERY_S = 300.0
+#: 이벤트 alert 를 낼 최대 검출 지연(분). 이보다 오래된 이벤트는 지금 행동할 대상이 아니라
+#: 기록 대상이므로 info 로 내린다 — 재기동 직후 알림 폭주도 이 조건이 막는다.
+EVENT_ALERT_MAX_LAG_MIN = 15
 #: 마이크로 단위(1e-6)를 넘는 소수 자릿수 — 이보다 크면 반올림이 일어난다 (계약 A4).
 MICRO_DIGITS = 6
 #: 연속으로 이만큼 응답에서 빠지면 워치리스트에서 내린다 (함정1: 상장폐지·오타).
@@ -129,6 +120,21 @@ SESSION_TIER_SCALE: dict[str, float] = {
 CANDLE_COLS = ["symbol", "ts_ms", "open_u", "high_u", "low_u", "close_u", "vol_qu"]
 RANKING_COLS = ["snap_ms", "ranking_type", "duration", "rank", "symbol",
                 "last_u", "vol_qu", "amount_u"]
+
+
+
+def candle_adjusted(interval: str) -> bool:
+    """`interval` 에 맞는 `adjusted` 값 (계약 A5).
+
+    호출부가 이 함수를 거치게 해서 "한쪽만 고치는" 실수를 구조적으로 막는다.
+    `TossClient.get_candles` 의 기본값은 바꾸지 않는다 — 명시가 계약이다(A5 적용 절).
+    """
+    try:
+        return CANDLE_ADJUSTED[interval]
+    except KeyError:
+        raise ValueError(
+            f"unknown candle interval {interval!r} — 계약 A5 는 '1m'(원주가)과 "
+            f"'1d'(수정주가)만 정의한다. 새 interval 은 계약 개정이 먼저다") from None
 
 
 # --------------------------------------------------------------------------- #
@@ -434,6 +440,52 @@ class CollectorContext:
             self.refresh_plan()
         return orders
 
+    # ---- 이벤트 알림 등급 -------------------------------------------------
+
+    def current_session_start_ms(self) -> int | None:
+        """지금 속한 세션의 시작 시각. 세션 밖이거나 캘린더가 없으면 None."""
+        if not self.scheduler.calendar:
+            return None
+        win = session_window(self.scheduler.calendar, self.clock.now_ms())
+        return None if win is None else int(win.start_ms)
+
+    def announce_event(self, emission, result=None) -> str:
+        """이벤트 알림 등급 결정. 반환: 실제로 사용한 등급.
+
+        무인 야간 운영에서 `alert` 는 **사람이 반드시 봐야 하는 것**만 남아야 의미가 있다.
+        그래서 alert 는 아래를 전부 만족할 때만 낸다:
+
+          * **최초 검출** — 라벨 갱신(peak/ret 이 장중에 채워지는 것)은 정보일 뿐이다.
+          * **현재 세션 안** — 과거 세션 백필로 뒤늦게 잡힌 이벤트는 지금 행동할 대상이 아니다
+            (실측: 프리마켓 수집 중에 `session=day` 이벤트가 ERROR 로 올라왔다).
+          * **충분히 신선함** — 검출 지연이 `EVENT_ALERT_MAX_LAG_MIN` 이내.
+            재기동 직후 같은 세션의 오래된 이벤트가 한꺼번에 올라오는 것도 이 조건이 막는다.
+
+        나머지는 전부 `info` 다 — 기록은 남되 알림 채널을 오염시키지 않는다.
+        """
+        t0 = int(emission.t0_ms)
+        now = self.clock.now_ms()
+        lag_min = (now - t0) // MIN_MS
+        session_start = self.current_session_start_ms()
+        past_session = session_start is not None and t0 < session_start
+        fresh = lag_min <= EVENT_ALERT_MAX_LAG_MIN
+        extra = (f"path={result.path} score={result.score:.3f}" if result is not None
+                 else "")
+        kind = str(emission.record.get("kind"))
+
+        if emission.is_new and not past_session and fresh:
+            self.notifier.event(emission.symbol, t0, kind, extra)
+            self.bump("event_alerts")
+            return "alert"
+
+        why = ("label-update" if not emission.is_new
+               else "past-session" if past_session else f"stale({lag_min}m)")
+        self.notifier.info(
+            f"event[{why}] {emission.symbol} kind={kind} t0_ms={t0} "
+            f"session={emission.session} {extra}".rstrip())
+        self.bump("event_infos")
+        return "info"
+
     # ---- 텔레메트리 (무인 실행의 유일한 관측 창) --------------------------
 
     def telemetry(self) -> dict[str, object]:
@@ -515,10 +567,15 @@ class CollectorContext:
             self.drop_symbol_state(ch.symbol)
 
     def drop_symbol_state(self, symbol: str) -> None:
-        """강등된 심볼의 무거운 상태를 즉시 버린다 (장시간 실행 메모리 안정성)."""
+        """강등된 심볼의 **무거운** 상태만 버린다 (장시간 실행 메모리 안정성).
+
+        ⚠️ 검출 이력(`detector.forget`)은 여기서 지우지 않는다. 강등→재승격은 흔한 churn
+        인데(랭킹 진입 승격 → stale 강등 → 재진입) 이력을 지우면 재승격 직후 같은 이벤트를
+        전부 다시 기록한다 — 라이브에서 관측된 40% 중복의 원인이 정확히 이것이었다.
+        이력은 (symbol, t0_ms) 단위로 상한이 걸려 있어 그냥 둬도 메모리가 자라지 않는다.
+        """
         self.buffers.pop(symbol, None)
         self.curves.pop(symbol, None)
-        self.detector.forget(symbol)
 
     # ---- 워치리스트 ------------------------------------------------------
 
@@ -878,16 +935,15 @@ def _detect(ctx: CollectorContext, symbol: str) -> None:
         return
     ctx.tiers.on_new_data(symbol, result.score, result.ts_ms, reason=result.path)
     ctx.flush_changes()
-    for ev in result.events:
+    for emission in result.events:
         try:
-            ctx.store.record_event(ev)
+            ctx.store.record_event(emission.record)
         except Exception as exc:
             ctx.notifier.warn(f"record_event failed for {symbol}: "
                               f"{type(exc).__name__}: {exc}")
             continue
-        ctx.bump("events")
-        ctx.notifier.event(symbol, int(ev["t0_ms"]), str(ev["kind"]),
-                           f"path={result.path} score={result.score:.3f}")
+        ctx.bump("events" if emission.is_new else "event_updates")
+        ctx.announce_event(emission, result)
 
 
 def _curve_for(ctx: CollectorContext, symbol: str, df: pd.DataFrame, now_ms: int):

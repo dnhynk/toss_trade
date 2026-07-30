@@ -11,6 +11,7 @@ from tossmon.api import models
 from tossmon.api.models import (Candle, CandlePage, Price, RankingPage,
                                 RankingRow, Trade)
 from tossmon.collector import loops
+from tossmon.collector.detector import EventEmission
 from tossmon.collector.loops import (CollectorContext, RankingBuffer, SymbolBuffer,
                                      candles_frame, tape_stats)
 from tossmon.collector.notifier import Notifier
@@ -314,6 +315,128 @@ def test_daily_baseline_excludes_the_progressing_today_bar(tmp_path):
     # 저장은 받은 그대로 (당일 봉도 DB 에는 들어간다 — 자르는 것은 베이스라인 계산뿐)
     assert ctx.store._conn.execute("SELECT COUNT(*) FROM candles_1d").fetchone()[0] == 6
     ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 이벤트 알림 등급 — alert 는 "사람이 반드시 봐야 하는 것"만
+# --------------------------------------------------------------------------- #
+def _emission(t0_ms, *, is_new=True, session="regular", symbol="ABCD"):
+    record = {"symbol": symbol, "t0_ms": t0_ms, "kind": "win", "session": session,
+              "meta_json": "{}"}
+    return EventEmission(record=record, t0_ms=t0_ms, is_new=is_new, session=session)
+
+
+def test_fresh_first_detection_alerts(tmp_path):
+    ctx, day = build_ctx(tmp_path, StubClient({}),
+                         now_ms=day_regular_start() + 30 * MIN_MS)
+    try:
+        level = ctx.announce_event(_emission(ctx.clock.now_ms() - 2 * MIN_MS))
+        assert level == "alert"
+        assert ctx.notifier.counters["alert"] == 1
+        assert ctx.counters["event_alerts"] == 1
+    finally:
+        ctx.store.close()
+
+
+def test_label_update_is_info_not_alert(tmp_path):
+    """같은 이벤트의 반복 알림이 채널을 오염시키던 문제 — 갱신은 정보일 뿐이다."""
+    ctx, _ = build_ctx(tmp_path, StubClient({}),
+                       now_ms=day_regular_start() + 30 * MIN_MS)
+    try:
+        t0 = ctx.clock.now_ms() - MIN_MS
+        assert ctx.announce_event(_emission(t0)) == "alert"
+        assert ctx.announce_event(_emission(t0, is_new=False)) == "info"
+        assert ctx.announce_event(_emission(t0, is_new=False)) == "info"
+        assert ctx.notifier.counters["alert"] == 1          # 최초 1회뿐
+        assert ctx.counters["event_infos"] == 2
+    finally:
+        ctx.store.close()
+
+
+def test_past_session_event_is_info(tmp_path):
+    """실측: 프리마켓 수집 중에 session=day 인 과거 이벤트가 ERROR 로 올라왔다."""
+    ctx, day = build_ctx(tmp_path, StubClient({}),
+                         now_ms=day_regular_start() + 10 * MIN_MS)
+    try:
+        past_t0 = day.day.start_ms + 60 * MIN_MS          # 데이마켓 시각
+        assert past_t0 < ctx.current_session_start_ms()
+        assert ctx.announce_event(_emission(past_t0, session="day")) == "info"
+        assert ctx.notifier.counters["alert"] == 0
+    finally:
+        ctx.store.close()
+
+
+def test_stale_event_inside_the_session_is_info(tmp_path):
+    """같은 세션이라도 검출 지연이 크면 지금 행동할 대상이 아니다."""
+    ctx, _ = build_ctx(tmp_path, StubClient({}),
+                       now_ms=day_regular_start() + 200 * MIN_MS)
+    try:
+        stale = ctx.clock.now_ms() - (loops.EVENT_ALERT_MAX_LAG_MIN + 5) * MIN_MS
+        assert ctx.announce_event(_emission(stale)) == "info"
+        fresh = ctx.clock.now_ms() - (loops.EVENT_ALERT_MAX_LAG_MIN - 5) * MIN_MS
+        assert ctx.announce_event(_emission(fresh)) == "alert"
+    finally:
+        ctx.store.close()
+
+
+def test_restart_does_not_storm_alerts(tmp_path):
+    """재기동 시 억제 집합은 비지만(=전부 is_new) 과거 이벤트가 alert 로 쏟아지면 안 된다.
+
+    23:30~00:30 계획 정지·재기동에서 실제로 걸리는 시나리오다.
+    """
+    ctx, day = build_ctx(tmp_path, StubClient({}),
+                         now_ms=day_regular_start() + 240 * MIN_MS)
+    try:
+        # 오늘 있었던 이벤트 9건 — 과거 세션 3건 + 같은 세션의 오래된 것 6건
+        for i in range(3):
+            ctx.announce_event(_emission(day.day.start_ms + i * MIN_MS, session="day"))
+        for i in range(6):
+            ctx.announce_event(_emission(day.regular.start_ms + i * MIN_MS))
+        assert ctx.notifier.counters["alert"] == 0        # 폭주 없음
+        assert ctx.counters["event_infos"] == 9
+
+        # 지금 막 일어난 것만 알린다
+        ctx.announce_event(_emission(ctx.clock.now_ms() - MIN_MS))
+        assert ctx.notifier.counters["alert"] == 1
+    finally:
+        ctx.store.close()
+
+
+def test_alerts_survive_a_missing_calendar(tmp_path):
+    """캘린더가 없으면 세션 판정을 못 한다 — 신선도만으로 판단하고 죽지 않는다."""
+    ctx, _ = build_ctx(tmp_path, StubClient({}),
+                       now_ms=day_regular_start() + 30 * MIN_MS)
+    try:
+        ctx.scheduler.calendar = {}
+        assert ctx.current_session_start_ms() is None
+        assert ctx.announce_event(_emission(ctx.clock.now_ms() - MIN_MS)) == "alert"
+    finally:
+        ctx.store.close()
+
+
+def test_demotion_keeps_event_history_but_drops_heavy_state(tmp_path):
+    """라이브 40% 중복의 근본 원인 회귀.
+
+    승격 → stale 강등 → 재승격 churn 은 흔하다. 강등에서 검출 이력을 지우면 재승격 직후
+    같은 이벤트를 전부 다시 기록한다. 무거운 상태(버퍼·곡선)만 버려야 한다.
+    """
+    ctx, _ = build_ctx(tmp_path, StubClient({}))
+    try:
+        ctx.buffer("ABCD").upsert([bar(DAY0)])
+        ctx.curves["ABCD"] = (0, None)
+        ctx.detector._emitted[("ABCD", 111)] = "digest"
+
+        ctx.drop_symbol_state("ABCD")
+
+        assert "ABCD" not in ctx.buffers                  # 메모리는 회수하고
+        assert "ABCD" not in ctx.curves
+        assert ("ABCD", 111) in ctx.detector._emitted     # 이력은 남긴다
+    finally:
+        ctx.store.close()
+
+
+def day_regular_start() -> int:
+    return simple_day("2026-07-30", DAY0).regular.start_ms
 
 
 # --------------------------------------------------------------------------- #

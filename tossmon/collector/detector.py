@@ -25,6 +25,7 @@ W3 실측이 보여준 사실: `coil_pop` 은 T0 이전 누적 RVOL 이 16 을 �
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from dataclasses import dataclass, field
@@ -487,6 +488,23 @@ def _jsonable(value):
     return str(value)
 
 
+def _opt_str(value) -> str | None:
+    return None if value is None else str(value)
+
+
+def label_hash(row: dict) -> str:
+    """검출 라벨의 지문. **라벨이 실제로 바뀌었는지** 판정하는 유일한 기준이다.
+
+    `detect_events` 가 낸 행만 해싱한다 — 우리 쪽 기록용 메타(`detected_ms`,
+    `detect_lag_min`, `score_*`)는 사이클마다 값이 달라지므로 섞으면 해시가 매번 바뀌어
+    억제가 통째로 무력화된다.
+    """
+    payload = {k: _jsonable(v) for k, v in sorted(row.items())}
+    blob = json.dumps(payload, separators=(",", ":"), sort_keys=True, ensure_ascii=False,
+                      allow_nan=False)
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()
+
+
 def event_record(row: dict, symbol: str, *, extra_meta: dict | None = None) -> dict:
     """`detect_events` 한 행 → `Store.record_event` 입력.
 
@@ -504,6 +522,24 @@ def event_record(row: dict, symbol: str, *, extra_meta: dict | None = None) -> d
     return out
 
 
+@dataclass(frozen=True)
+class EventEmission:
+    """한 번의 `record_event` 대상. 최초 검출인지 **라벨 갱신**인지를 함께 들고 다닌다.
+
+    T0 시점에는 `peak_ms`·`peak_ret`·`ret_close` 가 미확정이고 장이 진행되며 채워진다.
+    그래서 같은 (symbol, t0_ms) 를 완전히 차단하면 라벨이 T0 시점 값에 얼어붙는다 —
+    **라벨이 실제로 바뀐 경우에만** 다시 보내고, 그 외에는 억제한다.
+    """
+    record: dict
+    t0_ms: int
+    is_new: bool
+    session: str | None = None
+
+    @property
+    def symbol(self) -> str:
+        return str(self.record.get("symbol", ""))
+
+
 @dataclass
 class DetectionResult:
     symbol: str
@@ -513,7 +549,7 @@ class DetectionResult:
     precursor: float
     confirm: float
     feats: dict[str, float] = field(default_factory=dict)
-    events: list[dict] = field(default_factory=list)
+    events: list[EventEmission] = field(default_factory=list)
 
 
 class EventDetector:
@@ -530,8 +566,12 @@ class EventDetector:
         self.notifier = notifier
         self.max_per_day = int(max_per_day)
         self.seen_limit = int(seen_limit)
-        self._seen: dict[str, set[int]] = {}
-        self.counters: dict[str, int] = {"scored": 0, "events": 0, "errors": 0}
+        #: (symbol, t0_ms) → 마지막으로 내보낸 **라벨 해시**. 검출기는 매 사이클 버퍼 전체를
+        #: 다시 스캔하므로 이게 없으면 같은 이벤트가 사이클마다 재기록된다(라이브 실측:
+        #: 7분에 15행 / 고유 9개 = 40% 중복). 해시가 바뀔 때만 다시 내보낸다.
+        self._emitted: dict[tuple[str, int], str] = {}
+        self.counters: dict[str, int] = {"scored": 0, "events": 0, "errors": 0,
+                                         "suppressed": 0, "updated": 0}
 
     def evaluate(self, symbol: str, df_1m: pd.DataFrame, *,
                  rankings: pd.DataFrame | None = None,
@@ -581,27 +621,50 @@ class EventDetector:
             return []
         if found is None or found.empty:
             return []
-        seen = self._seen.setdefault(symbol, set())
-        out: list[dict] = []
+        out: list[EventEmission] = []
         prec, conf, path = scores
         for row in found.to_dict("records"):
             t0 = int(row["t0_ms"])
-            if t0 in seen:
-                continue
-            seen.add(t0)
-            out.append(event_record(row, symbol, extra_meta={
+            key = (symbol, t0)
+            digest = label_hash(row)
+            previous = self._emitted.get(key)
+            if previous == digest:
+                self.counters["suppressed"] += 1
+                continue                       # 라벨이 그대로면 다시 쓸 이유가 없다
+            self._emitted[key] = digest
+            is_new = previous is None
+            self.counters["events" if is_new else "updated"] += 1
+            record = event_record(row, symbol, extra_meta={
                 "realtime": True, "detected_ms": int(now_ms), "include_t0": True,
                 "score_precursor": prec, "score_confirm": conf, "score_path": path,
                 "detect_lag_min": (int(now_ms) - t0) // MIN_MS,
-            }))
-        if len(seen) > self.seen_limit:                # 무인 실행 메모리 안정성
-            for old in sorted(seen)[:len(seen) - self.seen_limit]:
-                seen.discard(old)
-        self.counters["events"] += len(out)
+                "label_revision": 0 if is_new else 1,
+            })
+            out.append(EventEmission(record=record, t0_ms=t0, is_new=is_new,
+                                     session=_opt_str(row.get("session"))))
+        self._evict()
         return out
 
-    def forget(self, symbol: str) -> None:
-        self._seen.pop(symbol, None)
+    def _evict(self) -> None:
+        """무인 실행 메모리 안정성 — 오래된 (symbol, t0) 부터 버린다 (삽입 순서 = 시간 순)."""
+        excess = len(self._emitted) - self.seen_limit
+        for key in list(self._emitted)[:max(0, excess)]:
+            self._emitted.pop(key, None)
+
+    def emitted_count(self) -> int:
+        return len(self._emitted)
+
+    def forget(self, symbol: str) -> int:
+        """그 심볼의 **이벤트 기록 이력**을 버린다.
+
+        ⚠️ 티어 강등에서는 부르지 마라. 강등→재승격은 흔한 churn 인데 여기서 이력을 지우면
+        재승격 직후 같은 이벤트를 전부 다시 기록한다(이 버그가 실제로 라이브에서 났다).
+        유니버스에서 영구 제외할 때만 쓴다.
+        """
+        drop = [k for k in self._emitted if k[0] == symbol]
+        for key in drop:
+            self._emitted.pop(key, None)
+        return len(drop)
 
 
 def build_curve(df_hist_1m: pd.DataFrame, calendar: list[UsMarketDay],
@@ -632,7 +695,8 @@ def _empty_rankings() -> pd.DataFrame:
 
 
 __all__ = [
-    "DEFAULT_THRESHOLDS", "DetectionResult", "EventDetector", "EVENT_CORE_COLUMNS",
+    "DEFAULT_THRESHOLDS", "DetectionResult", "EventDetector", "EventEmission",
+    "EVENT_CORE_COLUMNS", "label_hash",
     "PriceActivityTracker", "PriceState", "TierChange", "TierStateMachine",
     "activity_score", "build_curve", "confirm_score", "event_record", "precursor_score",
     "score_paths",
