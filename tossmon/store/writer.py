@@ -260,6 +260,13 @@ class Store:
             )
 
     def record_event(self, ev: dict) -> int:
+        """이벤트 upsert. ``(symbol, t0_ms)`` 유니크(스키마 v2).
+
+        검출기는 매 사이클 버퍼를 재스캔하며 같은 이벤트를 재검출한다. T0 직후에는
+        ``peak_ms``/``peak_ret``/``ret_close`` 가 아직 미확정이므로, 나중 재검출이
+        더 완성된 라벨을 갖는다 — 그래서 IGNORE 가 아니라 전 라벨 컬럼을 최신값으로
+        덮어쓰는 UPDATE 다.
+        """
         self._require_writer()
         missing = {"symbol", "t0_ms", "kind"} - ev.keys()
         if missing:
@@ -268,12 +275,20 @@ class Store:
         if meta is not None and not isinstance(meta, str):
             meta = json.dumps(meta, separators=(",", ":"), sort_keys=True)
         with self._conn:
-            cursor = self._conn.execute(
+            self._conn.execute(
                 """
                 INSERT INTO events
                     (symbol, t0_ms, kind, peak_ms, peak_ret, ret_30m,
                      ret_close, session, meta_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(symbol, t0_ms) DO UPDATE SET
+                    kind=excluded.kind,
+                    peak_ms=excluded.peak_ms,
+                    peak_ret=excluded.peak_ret,
+                    ret_30m=excluded.ret_30m,
+                    ret_close=excluded.ret_close,
+                    session=excluded.session,
+                    meta_json=excluded.meta_json
                 """,
                 (
                     ev["symbol"],
@@ -287,7 +302,11 @@ class Store:
                     meta,
                 ),
             )
-        return int(cursor.lastrowid)
+            row = self._conn.execute(
+                "SELECT id FROM events WHERE symbol = ? AND t0_ms = ?",
+                (ev["symbol"], ev["t0_ms"]),
+            ).fetchone()
+        return int(row[0])
 
     def close(self) -> None:
         if not self._closed:

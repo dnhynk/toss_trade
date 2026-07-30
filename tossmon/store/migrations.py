@@ -8,9 +8,22 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
-MIGRATIONS: dict[int, str] = {}
+MIGRATIONS: dict[int, str] = {
+    2: """
+-- v2: events(symbol, t0_ms) 유니크화. 검출기가 매 사이클 버퍼를 재스캔하며
+-- 같은 이벤트를 재검출해 중복 행이 쌓였다 — 보존 마이그레이션: 그룹별
+-- id 최대(최신 검출, 가장 완성된 라벨) 행만 남기고 나머지를 제거한 뒤
+-- 재발 방지를 위해 유니크 인덱스를 건다.
+DELETE FROM events
+WHERE id NOT IN (
+    SELECT MAX(id) FROM events GROUP BY symbol, t0_ms
+);
+DROP INDEX IF EXISTS ix_events_symbol_t0;
+CREATE UNIQUE INDEX ix_events_symbol_t0 ON events (symbol, t0_ms);
+""",
+}
 
 
 def _current_version(conn: sqlite3.Connection) -> int:
