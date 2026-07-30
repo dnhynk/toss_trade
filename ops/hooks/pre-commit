@@ -1,0 +1,7 @@
+#!/bin/sh
+# git pre-commit 훅 진입점 — docs/09_secret_hygiene.md 참고.
+# 설치: `git config core.hooksPath ops/hooks` 또는 이 파일+옆의 .py를 .git/hooks/ 로 복사.
+set -e
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+PY="${PYTHON:-python}"
+exec "$PY" "$REPO_ROOT/ops/hooks/pre_commit_secret_scan.py"
