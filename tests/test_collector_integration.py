@@ -235,6 +235,44 @@ async def test_expired_token_is_retried_by_the_client_not_the_loop(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# 계약 C-2 개정 A5 — 전선(wire)에 실제로 나가는 adjusted 파라미터
+# --------------------------------------------------------------------------- #
+def record_queries(httpd) -> list[tuple[str, dict]]:
+    """mock 서버가 **실제로 받은** 쿼리를 기록한다 (tools/ 는 건드리지 않는다)."""
+    seen: list[tuple[str, dict]] = []
+    handler = httpd.RequestHandlerClass
+    original = handler._resolve
+
+    def spy(self, path, query):
+        seen.append((path, {k: v[0] for k, v in query.items()}))
+        return original(self, path, query)
+
+    handler._resolve = spy
+    return seen
+
+
+async def test_adjusted_parameter_on_the_wire_follows_a5(tmp_path):
+    """스텁이 아니라 HTTP 쿼리스트링으로 확인한다 — 직렬화 단계에서 뒤집히면 무의미하다."""
+    with mock_server() as (base_url, httpd):
+        seen = record_queries(httpd)
+        ctx = await make_ctx(base_url, tmp_path)
+        try:
+            await loops.tier2_symbol_once(ctx, "AAPL")     # 백필 + 일봉 + 증분
+            candles = [q for path, q in seen if path == "/api/v1/candles"]
+            assert candles, "캔들 요청이 한 건도 관측되지 않았다"
+
+            by_interval: dict[str, set[str]] = {}
+            for q in candles:
+                by_interval.setdefault(q["interval"], set()).add(q["adjusted"])
+            # 1분봉은 원주가 — 명목 가격대(동전주 여부)를 보존해야 한다
+            assert by_interval["1m"] == {"false"}
+            # 일봉은 수정주가 — 20일 베이스라인은 분할을 가로지른다
+            assert by_interval["1d"] == {"true"}
+        finally:
+            await close(ctx)
+
+
+# --------------------------------------------------------------------------- #
 # 세션 / 캘린더 / 재시작
 # --------------------------------------------------------------------------- #
 async def test_session_is_driven_by_the_calendar_endpoint(tmp_path):
