@@ -1,17 +1,639 @@
-"""검출기 — 계약 C-8. 소유: W4. 피처 계산은 tossmon.analysis 재사용 (중복 구현 금지)."""
+"""검출기 — 계약 C-8. 소유: W4. 피처 계산은 `tossmon.analysis` 재사용 (중복 구현 금지).
+
+두 개의 독립 경로
+----------------
+W3 실측이 보여준 사실: `coil_pop` 은 T0 이전 누적 RVOL 이 16 을 넘어 **전조로 잡히지만**,
+`instant` 는 T0 이전 RVOL 이 1.2(완전 정상)이고 T0 봉에서만 7.5 로 튄다. 즉 즉발형은
+원리상 전조 탐지가 불가능하다(La Morgia 문헌과 정합). 그래서 경로를 둘로 나눈다:
+
+* **전조 경로** `precursor_score` — T0 이전 축적(RVOL 궤적·토스 쏠림도·코일)을 본다.
+  리드타임이 있는 승격이지만 즉발형은 놓친다.
+* **확인 경로** `confirm_score` — T0 봉 자체의 폭발(봉 거래량 z, 5분 수익률, 코일 급반전)을 본다.
+  리드타임은 없지만 "시작 후 수 분 내 확인-진입" 이 가능한 신호다.
+
+둘 중 큰 쪽으로 티어를 올리되 승격 사유(`reason`)에 어느 경로였는지를 남긴다 —
+`promotions` 테이블이 나중에 두 경로의 리드타임을 따로 평가할 수 있어야 하기 때문이다.
+
+스코어 설계 규약
+--------------
+* 모든 피처는 **버킷/램프로 [0,1] 정규화**한 뒤 가중합한다. `rvol_curve_5` 처럼 분모가 작아
+  100배를 넘길 수 있는 값은 절대 스케일로 쓰지 않는다.
+* `coil_score` 는 부호가 반직관적이다: **양수 = 변동성 수축 진행**(전조),
+  **강한 음수 = 방금 폭발 시작**(확인). 두 경로가 이 부호를 반대로 쓴다.
+* 미가용(NaN) 피처는 **0점**이다. 가용한 것만으로 정규화하지 않는다 — 데이터가 없을수록
+  점수가 낮아야 승격이 보수적으로 일어난다.
+"""
 from __future__ import annotations
 
+import json
+import math
+from dataclasses import dataclass, field
+from typing import Iterable
 
+import pandas as pd
+
+from ..analysis.baselines import minute_of_session_volume_curve, rvol_series
+from ..analysis.features import extract_precursor_features
+from ..analysis.labeling import EventParams, detect_events
+from ..api.models import Price, UsMarketDay
+
+MIN_MS = 60_000
+_NAN = float("nan")
+
+#: 계약 C-6 `events` 의 고정 7컬럼. 나머지 라벨은 전부 meta_json 으로 간다.
+EVENT_CORE_COLUMNS = ("t0_ms", "kind", "peak_ms", "peak_ret", "ret_30m", "ret_close", "session")
+
+#: 티어별 (승격 임계, 강등 임계). 강등선이 낮아 그 사이가 히스테리시스 밴드다.
+DEFAULT_THRESHOLDS: dict[int, tuple[float, float]] = {2: (0.35, 0.22), 3: (0.60, 0.42)}
+
+#: 티어 정원이 찼을 때, 최약체를 밀어내려면 이만큼 더 높아야 한다 (자리 뺏기 플래핑 방지).
+EVICTION_MARGIN = 0.08
+
+#: `first_print`(체결 개시) 는 A2 §3 의 1순위 트리거라 스코어와 무관하게 이 티어로 올린다.
+FIRST_PRINT_TIER = 2
+#: staleness 가 이 비율 이하로 급감하면 "깨어남" 으로 본다.
+STALENESS_DROP_RATIO = 0.25
+#: staleness 급감을 활동 신호로 인정하는 최소 직전 정체 시간 (초).
+STALENESS_DORMANT_S = 900.0
+
+
+# --------------------------------------------------------------------------- #
+# 정규화 헬퍼
+# --------------------------------------------------------------------------- #
+def _ok(value: float | None) -> bool:
+    return value is not None and isinstance(value, (int, float)) and not math.isnan(float(value))
+
+
+def _ramp(value: float | None, lo: float, hi: float) -> float:
+    """[lo, hi] 를 [0,1] 로 선형 매핑 후 클리핑. NaN → 0."""
+    if not _ok(value) or hi <= lo:
+        return 0.0
+    return max(0.0, min(1.0, (float(value) - lo) / (hi - lo)))
+
+
+def _bucket(value: float | None, thresholds: tuple[float, float, float],
+            scores: tuple[float, float, float] = (0.35, 0.7, 1.0)) -> float:
+    """임계 3단 버킷. 절대 스케일이 신뢰할 수 없는 피처는 전부 이걸로 쓴다."""
+    if not _ok(value):
+        return 0.0
+    v = float(value)
+    if v >= thresholds[2]:
+        return scores[2]
+    if v >= thresholds[1]:
+        return scores[1]
+    if v >= thresholds[0]:
+        return scores[0]
+    return 0.0
+
+
+def _binary(value: float | None) -> float:
+    return 1.0 if _ok(value) and float(value) > 0 else 0.0
+
+
+def _weighted(parts: Iterable[tuple[float, float]]) -> float:
+    """(weight, component) → 가중합. 가중치 합이 1 이므로 결과는 [0,1]."""
+    return max(0.0, min(1.0, sum(w * c for w, c in parts)))
+
+
+# --------------------------------------------------------------------------- #
+# 계약 C-8: precursor_score  (전조 경로)
+# --------------------------------------------------------------------------- #
 def precursor_score(feats: dict[str, float]) -> float:
-    raise NotImplementedError
+    """T0 이전 축적 신호 → [0,1]. 키는 `analysis.features.feature_names()` 를 가정한다."""
+    f = feats.get
+    vol_z = max(_bucket(f("vol_z_5"), (1.0, 2.0, 3.0)),
+                _bucket(f("vol_z_15"), (1.0, 2.0, 3.0)))
+    awakening = _ramp(f("dormant_ratio_prior_day"), 0.3, 0.9) * (
+        1.0 - _ramp(f("no_print_ratio_5"), 0.0, 1.0))
+    return _weighted((
+        # 거래량 축적 — 전조의 본체 (docs/03 §3 검증질문 1)
+        (0.20, _bucket(f("rvol_at_cutoff"), (1.5, 3.0, 5.0))),
+        (0.12, vol_z),
+        (0.10, _bucket(f("vol_bar_z_max_60"), (2.0, 3.0, 4.0))),
+        (0.06, _ramp(f("vol_slope_30"), 0.0, 0.05)),
+        # 토스 쏠림도 (docs/01 §3.2)
+        (0.10, _bucket(f("toss_share"), (0.10, 0.25, 0.45))),
+        (0.04, _ramp(f("toss_share_slope_30"), 0.0, 0.01)),
+        (0.04, _binary(f("toss_in_ranking"))),
+        # 가격 궤적 — 양수 coil = 수축 진행 (폭발 전 압축)
+        (0.06, _ramp(f("coil_score"), 0.0, 1.5)),
+        (0.05, _ramp(f("dist_from_vwap"), 0.0, 0.03)),
+        (0.05, _bucket(f("new_high_count_30"), (1.0, 3.0, 6.0))),
+        (0.04, _ramp(f("up_bar_ratio_30"), 0.5, 0.8)),
+        (0.06, _ramp(f("ret_15"), 0.0, 0.08)),
+        # 휴면 → 활동 개시 (A2 §3 의 봉 기반 프록시)
+        (0.04, awakening),
+        # 이력
+        (0.02, _binary(f("former_runner"))),
+        (0.02, _bucket(f("float_rotation_pre"), (0.05, 0.20, 0.50))),
+    ))
+
+
+# --------------------------------------------------------------------------- #
+# 확인 경로 (즉발형 대응)
+# --------------------------------------------------------------------------- #
+def confirm_score(feats: dict[str, float]) -> float:
+    """T0 봉 자체의 폭발 강도 → [0,1]. `include_t0=True` 로 뽑은 피처에만 의미가 있다.
+
+    전조가 없는 즉발형(`instant`)을 잡는 유일한 경로다. 리드타임을 주지 않는 대신
+    "시작 후 수 분 내 확인" 을 가능하게 한다.
+    """
+    f = feats.get
+    coil_flip = _ramp(-float(f("coil_score")) if _ok(f("coil_score")) else _NAN, 0.5, 2.5)
+    near_hod = _ramp(f("dist_from_hod"), -0.05, 0.0)
+    return _weighted((
+        (0.28, _bucket(f("rvol_at_cutoff"), (2.0, 4.0, 7.0))),
+        (0.22, _bucket(f("vol_bar_z_max_60"), (2.5, 4.0, 6.0))),
+        (0.20, _ramp(f("ret_5"), 0.03, 0.15)),
+        (0.12, coil_flip),
+        (0.08, near_hod),
+        (0.10, _bucket(f("vol_z_5"), (1.5, 3.0, 4.5))),
+    ))
+
+
+def score_paths(feats: dict[str, float]) -> tuple[float, str, float, float]:
+    """(채택 스코어, 경로명, 전조 스코어, 확인 스코어)."""
+    p, c = precursor_score(feats), confirm_score(feats)
+    return (p, "precursor", p, c) if p >= c else (c, "confirm", p, c)
+
+
+# --------------------------------------------------------------------------- #
+# A2 §3: /prices 파생 상태 (실시간 경로는 봉 프록시보다 이쪽이 정확하다)
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class PriceState:
+    """`/prices` 한 건에서 파생되는 활동 상태.
+
+    ⚠️ `last_u` 는 **현재가가 아니다**. 체결이 없어도 값이 오므로(직전 종가/체결가)
+    수익률 계산에 쓰면 안 된다 (docs/06 §1-1). 여기서는 "변했는가" 만 본다.
+    """
+    symbol: str
+    ts_ms: int | None
+    last_u: int
+    no_print: bool
+    staleness_s: float
+    first_print: bool
+    price_changed: bool
+    ts_advanced: bool
+    prev_staleness_s: float
+    awakened: bool
+
+    def as_meta(self) -> dict[str, float | bool | None]:
+        return {"ts_ms": self.ts_ms, "no_print": self.no_print,
+                "staleness_s": None if math.isnan(self.staleness_s) else self.staleness_s,
+                "first_print": self.first_print, "price_changed": self.price_changed,
+                "ts_advanced": self.ts_advanced, "awakened": self.awakened}
+
+
+class PriceActivityTracker:
+    """폴링 간 `/prices` 상태 전이를 들고 있다가 A2 §3 파생값을 만든다."""
+
+    def __init__(self) -> None:
+        self._last_ts: dict[str, int | None] = {}
+        self._last_u: dict[str, int] = {}
+        self._last_staleness: dict[str, float] = {}
+        self._seen: set[str] = set()
+
+    def update(self, price: Price, now_ms: int) -> PriceState:
+        sym = price.symbol
+        seen = sym in self._seen
+        prev_ts = self._last_ts.get(sym)
+        prev_u = self._last_u.get(sym)
+        prev_stale = self._last_staleness.get(sym, _NAN)
+
+        no_print = price.ts_ms is None
+        staleness = _NAN if no_print else max(0.0, (now_ms - int(price.ts_ms)) / 1000.0)
+        # first_print: null → 값 전이. 첫 관측(비교 대상 없음)은 전이로 치지 않는다.
+        first_print = seen and prev_ts is None and price.ts_ms is not None
+        ts_advanced = (price.ts_ms is not None and prev_ts is not None
+                       and int(price.ts_ms) > int(prev_ts))
+        price_changed = prev_u is not None and int(price.last_u) != int(prev_u)
+        awakened = first_print or (
+            _ok(prev_stale) and _ok(staleness)
+            and prev_stale >= STALENESS_DORMANT_S
+            and staleness <= prev_stale * STALENESS_DROP_RATIO)
+
+        self._seen.add(sym)
+        self._last_ts[sym] = price.ts_ms
+        self._last_u[sym] = int(price.last_u)
+        self._last_staleness[sym] = staleness
+        return PriceState(symbol=sym, ts_ms=price.ts_ms, last_u=int(price.last_u),
+                          no_print=no_print, staleness_s=staleness, first_print=first_print,
+                          price_changed=price_changed, ts_advanced=ts_advanced,
+                          prev_staleness_s=prev_stale, awakened=bool(awakened))
+
+    def prune(self, keep: set[str]) -> int:
+        """감시 대상에서 빠진 심볼의 상태를 버린다 (장시간 실행 메모리 안정성)."""
+        drop = self._seen - keep
+        for sym in drop:
+            self._last_ts.pop(sym, None)
+            self._last_u.pop(sym, None)
+            self._last_staleness.pop(sym, None)
+            self._seen.discard(sym)
+        return len(drop)
+
+    def __len__(self) -> int:
+        return len(self._seen)
+
+
+def activity_score(state: PriceState) -> float:
+    """Tier 1 스윕의 활동 점수 → [0,1].
+
+    A2 §3 대로 **`first_print` 와 `staleness_s` 급감이 1순위**다. 조용하던 동전주가
+    깨어나는 순간이 이 전략의 핵심이고, `lastPrice` 변화만 보면 그 순간을 놓친다.
+    """
+    if state.first_print:
+        return 1.0
+    if state.awakened:
+        return 0.85
+    score = 0.0
+    if state.ts_advanced:
+        score += 0.45
+    if state.price_changed:
+        score += 0.25
+    if _ok(state.staleness_s):
+        # 최근 체결일수록 활동적 — 60초 이내면 만점, 30분이면 0.
+        score += 0.30 * (1.0 - _ramp(state.staleness_s, 60.0, 1800.0))
+    return max(0.0, min(1.0, score))
+
+
+# --------------------------------------------------------------------------- #
+# 티어 상태머신
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class TierChange:
+    symbol: str
+    from_tier: int
+    to_tier: int
+    reason: str
+    score: float
+    ts_ms: int
+
+
+@dataclass
+class _SymbolState:
+    tier: int = 1
+    score: float = 0.0
+    #: None = 아직 관측/변경된 적 없음. 0 은 유효한 시각이므로 sentinel 로 쓰지 않는다.
+    last_ts_ms: int | None = None
+    changed_ms: int | None = None
+    below_since_ms: int | None = None
+    reason: str = "seed"
 
 
 class TierStateMachine:
-    """티어 승격/강등 + 히스테리시스 (플래핑 방지). promotions 기록은 호출측(Store)."""
+    """티어 승격/강등 + 히스테리시스 (플래핑 방지). promotions 기록은 호출측(Store).
 
-    def __init__(self, hysteresis_s: int):
-        self.hysteresis_s = hysteresis_s
+    플래핑 방지는 세 겹이다:
+      1. 승격선 > 강등선 (밴드)
+      2. 강등은 `hysteresis_s` 동안 **연속으로** 강등선 아래일 때만
+      3. 티어 변경 후 `hysteresis_s` 동안은 그 심볼을 다시 움직이지 않는다 (dwell)
+    정원이 찬 티어에 들어가려면 최약체보다 `EVICTION_MARGIN` 이상 높아야 한다 —
+    비슷한 점수끼리 자리를 주고받는 것도 플래핑이다.
+    """
 
-    def on_new_data(self, symbol: str, score: float, ts_ms: int) -> int | None:
+    def __init__(self, hysteresis_s: int, *,
+                 thresholds: dict[int, tuple[float, float]] | None = None,
+                 tier2_max: int | None = None, tier3_max: int | None = None,
+                 stale_demote_s: float | None = None):
+        self.hysteresis_s = int(hysteresis_s)
+        self.thresholds = dict(thresholds or DEFAULT_THRESHOLDS)
+        self.capacity: dict[int, int | None] = {2: tier2_max, 3: tier3_max}
+        self.stale_demote_s = stale_demote_s
+        self.states: dict[str, _SymbolState] = {}
+        self.pending: list[TierChange] = []       # 정원 밀림 등 부수적 변경
+
+    # ---- 조회 ----------------------------------------------------------
+
+    def tier_of(self, symbol: str) -> int:
+        st = self.states.get(symbol)
+        return st.tier if st is not None else 1
+
+    def members(self, tier: int) -> list[str]:
+        return [s for s, st in self.states.items() if st.tier == tier]
+
+    def at_least(self, tier: int) -> list[str]:
+        return [s for s, st in self.states.items() if st.tier >= tier]
+
+    def score_of(self, symbol: str) -> float:
+        st = self.states.get(symbol)
+        return st.score if st is not None else 0.0
+
+    def reason_of(self, symbol: str) -> str:
+        st = self.states.get(symbol)
+        return st.reason if st is not None else "seed"
+
+    def drain_changes(self) -> list[TierChange]:
+        out, self.pending = self.pending, []
+        return out
+
+    def seed(self, symbol: str, tier: int, ts_ms: int = 0) -> None:
+        """재시작 이어받기 — 이력 없이 티어만 복원한다 (승격 기록을 남기지 않는다)."""
+        st = self.states.setdefault(symbol, _SymbolState())
+        st.tier = int(tier)
+        st.changed_ms = int(ts_ms)
+        st.last_ts_ms = int(ts_ms)
+        st.reason = "resume"
+
+    # ---- 계약 표면 ------------------------------------------------------
+
+    def on_new_data(self, symbol: str, score: float, ts_ms: int,
+                    reason: str = "score") -> int | None:
         """새 tier 를 반환하거나, 변경 없으면 None."""
-        raise NotImplementedError
+        st = self.states.setdefault(symbol, _SymbolState())
+        st.score = float(score)
+        st.last_ts_ms = int(ts_ms)
+
+        target = self._target_tier(st.score)
+        if target > st.tier:
+            st.below_since_ms = None
+            return self._change(symbol, st, min(target, st.tier + 1), reason, ts_ms)
+        if target < st.tier:
+            return self._maybe_demote(symbol, st, target, ts_ms)
+        st.below_since_ms = None
+        return None
+
+    def force(self, symbol: str, tier: int, reason: str, score: float,
+              ts_ms: int) -> int | None:
+        """스코어와 무관한 승격 (A2 §3 `first_print`). 강등에는 쓰지 않는다."""
+        st = self.states.setdefault(symbol, _SymbolState())
+        st.score = max(st.score, float(score))
+        st.last_ts_ms = int(ts_ms)
+        if tier <= st.tier:
+            return None
+        st.below_since_ms = None
+        return self._change(symbol, st, int(tier), reason, ts_ms, ignore_dwell=True)
+
+    # ---- 유지보수 -------------------------------------------------------
+
+    def sweep(self, now_ms: int) -> list[TierChange]:
+        """데이터가 끊긴 상위 티어 심볼을 내린다 (상장폐지·심볼 오타·수집 실패)."""
+        if not self.stale_demote_s:
+            return []
+        cutoff = now_ms - int(self.stale_demote_s * 1000)
+        start = len(self.pending)
+        for symbol, st in list(self.states.items()):
+            if st.tier <= 1 or st.last_ts_ms is None or st.last_ts_ms > cutoff:
+                continue
+            if st.changed_ms is not None and now_ms - st.changed_ms < self.hysteresis_s * 1000:
+                continue
+            self._change(symbol, st, st.tier - 1, "stale", now_ms, ignore_dwell=True)
+        # 변경은 pending 에 남긴다 — 기록은 호출측이 drain_changes() 로 한 번에 한다.
+        return list(self.pending[start:])
+
+    def set_capacity(self, *, tier2_max: int | None = None,
+                     tier3_max: int | None = None, ts_ms: int = 0,
+                     reason: str = "budget_shrink") -> list[TierChange]:
+        """정원 축소 (BudgetGuard 지시). 넘치는 만큼 최약체부터 내린다."""
+        if tier2_max is not None:
+            self.capacity[2] = max(1, int(tier2_max))
+        if tier3_max is not None:
+            self.capacity[3] = max(1, int(tier3_max))
+        start = len(self.pending)
+        for tier in (3, 2):
+            cap = self.capacity.get(tier)
+            if cap is None:
+                continue
+            members = sorted(self.members(tier), key=lambda s: self.states[s].score)
+            for symbol in members[:max(0, len(members) - cap)]:
+                self._change(symbol, self.states[symbol], tier - 1, reason, ts_ms,
+                             ignore_dwell=True)
+        return list(self.pending[start:])
+
+    def prune(self, keep: set[str]) -> int:
+        drop = [s for s in self.states if s not in keep and self.states[s].tier <= 1]
+        for symbol in drop:
+            self.states.pop(symbol, None)
+        return len(drop)
+
+    # ---- 내부 ----------------------------------------------------------
+
+    def _target_tier(self, score: float) -> int:
+        target = 1
+        for tier in sorted(self.thresholds):
+            if score >= self.thresholds[tier][0]:
+                target = tier
+        return target
+
+    def _maybe_demote(self, symbol: str, st: _SymbolState, target: int,
+                      ts_ms: int) -> int | None:
+        down = self.thresholds.get(st.tier, (0.0, 0.0))[1]
+        if st.score >= down:
+            st.below_since_ms = None
+            return None
+        if st.below_since_ms is None:
+            st.below_since_ms = ts_ms
+            return None
+        if ts_ms - st.below_since_ms < self.hysteresis_s * 1000:
+            return None
+        st.below_since_ms = None
+        return self._change(symbol, st, max(target, st.tier - 1), "score_decay", ts_ms)
+
+    def _change(self, symbol: str, st: _SymbolState, new_tier: int, reason: str,
+                ts_ms: int, *, ignore_dwell: bool = False) -> int | None:
+        if new_tier == st.tier:
+            return None
+        if not ignore_dwell and st.changed_ms is not None and \
+                ts_ms - st.changed_ms < self.hysteresis_s * 1000:
+            return None                                   # dwell — 아직 못 움직인다
+        if new_tier > st.tier and not self._make_room(symbol, new_tier, st.score, ts_ms):
+            return None
+        change = TierChange(symbol=symbol, from_tier=st.tier, to_tier=new_tier,
+                            reason=reason, score=st.score, ts_ms=int(ts_ms))
+        st.tier = new_tier
+        st.changed_ms = int(ts_ms)
+        st.reason = reason
+        self.pending.append(change)
+        return new_tier
+
+    def _make_room(self, symbol: str, tier: int, score: float, ts_ms: int) -> bool:
+        cap = self.capacity.get(tier)
+        if cap is None:
+            return True
+        members = [s for s in self.members(tier) if s != symbol]
+        if len(members) < cap:
+            return True
+        weakest = min(members, key=lambda s: self.states[s].score)
+        if self.states[weakest].score + EVICTION_MARGIN >= score:
+            return False                                  # 밀어낼 만큼 강하지 않다
+        st = self.states[weakest]
+        self.pending.append(TierChange(symbol=weakest, from_tier=st.tier,
+                                       to_tier=st.tier - 1, reason="evicted",
+                                       score=st.score, ts_ms=int(ts_ms)))
+        st.tier -= 1
+        st.changed_ms = int(ts_ms)
+        st.reason = "evicted"
+        return True
+
+
+# --------------------------------------------------------------------------- #
+# 실시간 이벤트 검출
+# --------------------------------------------------------------------------- #
+def _jsonable(value):
+    """numpy/NaN → JSON 안전값. NaN 은 None 으로 (json.dumps 의 NaN 토큰은 비표준)."""
+    if value is None:
+        return None
+    if isinstance(value, (bool, str)):
+        return value
+    if hasattr(value, "item"):
+        try:
+            value = value.item()
+        except (AttributeError, ValueError):
+            return str(value)
+    if isinstance(value, float):
+        return None if math.isnan(value) or math.isinf(value) else value
+    if isinstance(value, (int, str, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def event_record(row: dict, symbol: str, *, extra_meta: dict | None = None) -> dict:
+    """`detect_events` 한 행 → `Store.record_event` 입력.
+
+    계약 C-6 `events` 는 7컬럼 + meta_json 뿐이라, A1 §4 의 추가 라벨 18종은 전부
+    `meta_json` 으로 넣는다. `analysis.report.expand_meta_json()` 이 되펼친다 —
+    안 넣으면 리포트의 q6·기저율 대조가 통째로 빈다.
+    """
+    core = {k: _jsonable(row.get(k)) for k in EVENT_CORE_COLUMNS}
+    meta = {k: _jsonable(v) for k, v in row.items()
+            if k not in EVENT_CORE_COLUMNS and k != "symbol"}
+    meta.update({k: _jsonable(v) for k, v in (extra_meta or {}).items()})
+    out = {"symbol": symbol, **core}
+    out["meta_json"] = json.dumps(meta, separators=(",", ":"), sort_keys=True,
+                                  ensure_ascii=False, allow_nan=False)
+    return out
+
+
+@dataclass
+class DetectionResult:
+    symbol: str
+    ts_ms: int
+    score: float
+    path: str
+    precursor: float
+    confirm: float
+    feats: dict[str, float] = field(default_factory=dict)
+    events: list[dict] = field(default_factory=list)
+
+
+class EventDetector:
+    """새 1분봉이 들어올 때마다 스코어와 이벤트를 갱신한다.
+
+    피처·이벤트 계산은 전부 `tossmon.analysis` 재사용이다 (중복 구현 금지).
+    실시간 판정이므로 `include_t0=True` — T0 봉 종료 시점에 보는 것은 룩어헤드가 아니다
+    (계약 A1 §1).
+    """
+
+    def __init__(self, params: EventParams, *, notifier=None, max_per_day: int = 1,
+                 seen_limit: int = 4096):
+        self.params = params
+        self.notifier = notifier
+        self.max_per_day = int(max_per_day)
+        self.seen_limit = int(seen_limit)
+        self._seen: dict[str, set[int]] = {}
+        self.counters: dict[str, int] = {"scored": 0, "events": 0, "errors": 0}
+
+    def evaluate(self, symbol: str, df_1m: pd.DataFrame, *,
+                 rankings: pd.DataFrame | None = None,
+                 calendar: list[UsMarketDay] | None = None,
+                 curve: pd.Series | None = None,
+                 baseline: dict | None = None,
+                 shares_outstanding_qu: int | None = None,
+                 prev_close_u: int | None = None,
+                 now_ms: int | None = None) -> DetectionResult | None:
+        """마지막 완성봉 기준으로 스코어 + 신규 이벤트를 낸다."""
+        if df_1m is None or df_1m.empty:
+            return None
+        t0_ms = int(df_1m["ts_ms"].to_numpy()[-1])
+        rk = rankings if rankings is not None else _empty_rankings()
+        feats = extract_precursor_features(
+            df_1m, rk, t0_ms, include_t0=True, symbol=symbol, curve=curve,
+            calendar=calendar, baseline=baseline,
+            shares_outstanding_qu=shares_outstanding_qu)
+        self.counters["scored"] += 1
+        score, path, prec, conf = score_paths(feats)
+
+        rv = None
+        if curve is not None and not curve.empty:
+            rv = rvol_series(df_1m, curve, calendar=calendar)
+        rk_events = rankings if (rankings is not None and not rankings.empty) else None
+        events = self._new_events(symbol, df_1m, rankings=rk_events, calendar=calendar,
+                                  rvol=rv, prev_close_u=prev_close_u,
+                                  shares_outstanding_qu=shares_outstanding_qu,
+                                  scores=(prec, conf, path),
+                                  now_ms=now_ms if now_ms is not None else t0_ms)
+        return DetectionResult(symbol=symbol, ts_ms=t0_ms, score=score, path=path,
+                               precursor=prec, confirm=conf, feats=feats, events=events)
+
+    def _new_events(self, symbol: str, df_1m: pd.DataFrame, *, rankings, calendar,
+                    rvol, prev_close_u, shares_outstanding_qu,
+                    scores: tuple[float, float, str], now_ms: int) -> list[dict]:
+        try:
+            found = detect_events(
+                df_1m, self.params, calendar=calendar, rvol_series=rvol,
+                prev_close_u=prev_close_u, shares_outstanding_qu=shares_outstanding_qu,
+                rankings=rankings, max_per_day=self.max_per_day)
+        except Exception as exc:                       # 검출 실패가 수집을 죽이면 안 된다
+            self.counters["errors"] += 1
+            if self.notifier is not None:
+                self.notifier.warn(f"detect_events({symbol}) failed: "
+                                   f"{type(exc).__name__}: {exc}")
+            return []
+        if found is None or found.empty:
+            return []
+        seen = self._seen.setdefault(symbol, set())
+        out: list[dict] = []
+        prec, conf, path = scores
+        for row in found.to_dict("records"):
+            t0 = int(row["t0_ms"])
+            if t0 in seen:
+                continue
+            seen.add(t0)
+            out.append(event_record(row, symbol, extra_meta={
+                "realtime": True, "detected_ms": int(now_ms), "include_t0": True,
+                "score_precursor": prec, "score_confirm": conf, "score_path": path,
+                "detect_lag_min": (int(now_ms) - t0) // MIN_MS,
+            }))
+        if len(seen) > self.seen_limit:                # 무인 실행 메모리 안정성
+            for old in sorted(seen)[:len(seen) - self.seen_limit]:
+                seen.discard(old)
+        self.counters["events"] += len(out)
+        return out
+
+    def forget(self, symbol: str) -> None:
+        self._seen.pop(symbol, None)
+
+
+def build_curve(df_hist_1m: pd.DataFrame, calendar: list[UsMarketDay],
+                exclude_dates: Iterable[str] = ()) -> pd.Series | None:
+    """시간대 보정 RVOL 의 분모 곡선.
+
+    **이벤트 당일을 반드시 제외한다** — 당일을 분모에 넣으면 RVOL 이 1 쪽으로 축소되는
+    자기오염이 생긴다 (W3 인수인계 §4).
+    """
+    if df_hist_1m is None or df_hist_1m.empty or not calendar:
+        return None
+    try:
+        curve = minute_of_session_volume_curve(
+            df_hist_1m, calendar, exclude_dates=tuple(exclude_dates))
+    except Exception:
+        return None
+    return None if curve is None or curve.empty else curve
+
+
+def _empty_rankings() -> pd.DataFrame:
+    return pd.DataFrame({"snap_ms": pd.Series(dtype="int64"),
+                         "ranking_type": pd.Series(dtype="object"),
+                         "rank": pd.Series(dtype="int64"),
+                         "symbol": pd.Series(dtype="object"),
+                         "amount_u": pd.Series(dtype="int64"),
+                         "vol_qu": pd.Series(dtype="int64"),
+                         "last_u": pd.Series(dtype="int64")})
+
+
+__all__ = [
+    "DEFAULT_THRESHOLDS", "DetectionResult", "EventDetector", "EVENT_CORE_COLUMNS",
+    "PriceActivityTracker", "PriceState", "TierChange", "TierStateMachine",
+    "activity_score", "build_curve", "confirm_score", "event_record", "precursor_score",
+    "score_paths",
+]
