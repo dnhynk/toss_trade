@@ -45,7 +45,7 @@ from ..analysis.baselines import compute_daily_baseline
 from ..analysis.labeling import EventParams
 from ..api.client import BATCH_MAX, TossClient
 from ..api.errors import Forbidden, SchemaMismatch, TossApiError
-from ..api.models import Candle, Price, RankingPage
+from ..api.models import Candle, Price, RankingPage, precision_stats
 from ..config import Config
 from ..store.writer import Store
 from .budget import GROUP_CHART, GROUP_MARKET_DATA, GROUP_RANKING, BudgetGuard, TierPlan
@@ -112,6 +112,10 @@ CURVE_TTL_MS = 3600_000
 IDLE_SLEEP_S = 5.0
 #: 상태파일 저장 간격 (초).
 STATE_SAVE_S = 60.0
+#: 주기 텔레메트리 출력 간격 (초). 무인 실행이라 로그가 유일한 관측 창이다.
+TELEMETRY_EVERY_S = 300.0
+#: 마이크로 단위(1e-6)를 넘는 소수 자릿수 — 이보다 크면 반올림이 일어난다 (계약 A4).
+MICRO_DIGITS = 6
 #: 연속으로 이만큼 응답에서 빠지면 워치리스트에서 내린다 (함정1: 상장폐지·오타).
 MISSING_STREAK_DROP = 5
 #: tier1 활동 스코어가 이 이상이면 tier2 로 올린다.
@@ -295,6 +299,8 @@ class CollectorContext:
     state_path: Path | None = None
     stop: asyncio.Event = field(default_factory=asyncio.Event)
     _last_saved_ms: int = 0
+    _last_telemetry_ms: int = 0
+    _max_digits_seen: int = 0
     _http429: int = 0
     #: 재시작 시 복원한 심볼별 마지막 봉 시각 (백필 시작점 힌트).
     _resume_candle_ms: dict[str, int] = field(default_factory=dict)
@@ -427,6 +433,66 @@ class CollectorContext:
         if not force:
             self.refresh_plan()
         return orders
+
+    # ---- 텔레메트리 (무인 실행의 유일한 관측 창) --------------------------
+
+    def telemetry(self) -> dict[str, object]:
+        """주기 리포트 한 줄에 들어갈 관측치.
+
+        정밀도 지표(계약 A4)를 포함한다: `precision_rounded` 는 마이크로달러보다 미세한
+        값을 만나 반올림한 건수이고, `max_digits` 는 관측된 최대 소수 자릿수다.
+        **`max_digits` 가 갑자기 커지면 API 응답 형식이 바뀐 신호**라 조기 경보로 쓴다
+        (W1 인수인계). A5 로 1분봉을 원주가로 받게 되면서 분할 보정이 만들던 긴 소수가
+        사라지므로 평시 값은 오히려 낮아져야 한다 — 그래서 상승이 더 잘 보인다.
+        """
+        stats = precision_stats()
+        parsed = int(stats.get("parsed", 0) or 0)
+        rounded = int(stats.get("rounded", 0) or 0)
+        return {
+            "session": self.current_session(),
+            "watch": len(self.watchlist),
+            "tier2": len(self.tiers.at_least(2)),
+            "tier3": len(self.tiers.members(3)),
+            "events": int(self.counters.get("events", 0)),
+            "promotions": int(self.counters.get("promotions", 0)),
+            "tape_gaps": int(self.counters.get("tape_gaps", 0)),
+            "api_errors": int(self.counters.get("api_errors", 0)),
+            "precision_rounded": int(getattr(self.client, "counters", {})
+                                     .get("precision_rounded", 0)),
+            "precision_parsed": parsed,
+            "precision_rounded_pct": round(100.0 * rounded / parsed, 3) if parsed else 0.0,
+            "precision_max_digits": int(stats.get("max_digits", 0) or 0),
+        }
+
+    def report_telemetry(self, *, force: bool = False) -> dict[str, object] | None:
+        """주기 텔레메트리 출력 + 정밀도 드리프트 조기 경보."""
+        now = self.clock.now_ms()
+        if not force and now - self._last_telemetry_ms < TELEMETRY_EVERY_S * 1000:
+            return None
+        self._last_telemetry_ms = now
+        data = self.telemetry()
+        self.notifier.info("telemetry " + " ".join(f"{k}={v}" for k, v in data.items())
+                           + " | " + self.budget.describe())
+        self._check_precision_drift()
+        return data
+
+    def _check_precision_drift(self) -> None:
+        """소수 자릿수 신고점 = 응답 형식 변화 의심 신호 (W1 인수인계)."""
+        stats = precision_stats()
+        digits = int(stats.get("max_digits", 0) or 0)
+        if digits <= self._max_digits_seen:
+            return
+        previous, self._max_digits_seen = self._max_digits_seen, digits
+        sample = stats.get("last_raw")
+        detail = (f"max decimal digits {previous} → {digits} "
+                  f"(micro 단위는 {MICRO_DIGITS}자리, 초과분은 반올림됨; 표본 {sample!r})")
+        if previous:
+            # 이미 기준선이 있는데 더 커졌다 — 응답 형식이 바뀐 쪽을 먼저 의심한다.
+            self.notifier.alert(f"precision drift: {detail} — API 응답 형식 변화 의심. "
+                                "저장값이 조용히 반올림되고 있으니 확인하라")
+        else:
+            self.notifier.warn(f"precision baseline: {detail}")
+        self.bump("precision_drift")
 
     # ---- 티어 변경 기록 --------------------------------------------------
 
@@ -1024,12 +1090,14 @@ async def _session_tick(ctx: CollectorContext) -> None:
     changed = ctx.scheduler.poll(ctx.clock.now_ms())
     if changed is None:
         ctx.session = ctx.scheduler.session
+        ctx.report_telemetry()                       # 주기 출력 (내부에서 간격 제한)
         return
     prev, new = changed
     ctx.session = new
     ctx.notifier.info(f"session {prev} → {new}")
     ctx.bump("session_changes")
     reconfigure_tiers(ctx, new)
+    ctx.report_telemetry(force=True)                 # 세션 경계는 자연스러운 요약 지점
 
 
 def reconfigure_tiers(ctx: CollectorContext, session: str) -> dict[str, int]:
@@ -1082,6 +1150,7 @@ async def run_all(ctx: CollectorContext, *, cycles: int | None = None) -> None:
             task.cancel()
         await asyncio.gather(*tasks, stopper, return_exceptions=True)
         ctx.save_state(force=True)
+        ctx.report_telemetry(force=True)             # 종료 요약 (무인 실행의 마지막 기록)
 
 
 __all__ = [

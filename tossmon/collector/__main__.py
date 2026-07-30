@@ -54,7 +54,9 @@ async def main_async(args: argparse.Namespace) -> int:
         ctx.shutdown("keyboard interrupt")
     finally:
         ctx.save_state(force=True)
-        notifier.info(f"collector stopped: {ctx.counters}")
+        # 정밀도 지표(A4)를 포함한 종료 요약 — max_digits 상승은 응답 형식 변화 신호다.
+        notifier.info(f"collector stopped: telemetry={ctx.telemetry()} "
+                      f"counters={ctx.counters}")
         await client.aclose()
         store.close()
         tokens.release()
