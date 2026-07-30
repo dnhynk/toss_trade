@@ -33,8 +33,8 @@
 - [ ] `config/config.yaml` 존재(`config/config.example.yaml` 복사) — 소유 W4, W5는 건드리지 않는다
 - [ ] `ops/ops_config.yaml` 존재(`ops/ops_config.example.yaml` 복사), `db_path`/`log_dir` 등 실제 경로로 조정
 - [ ] `api_keys` 가 리포 루트에 존재하고 `.gitignore` 로 제외됨을 `git status` 로 확인 (내용 확인 금지 — 존재 여부만)
-- [ ] `ops/ops_config.yaml` 의 `collector_cmd` 가 W4의 실제 엔트리포인트를 가리키는지 확인
-      (Wave 2 시점엔 자리표시자 `python -m tossmon.collector.main` 일 수 있음 — W4 머지 후 갱신)
+- [ ] `ops/ops_config.yaml` 의 `collector_cmd` 확인 — 확정된 엔트리포인트는
+      `python -m tossmon.collector --config config/config.yaml` (`tossmon/collector/__main__.py`)
 - [ ] `python -m ops.healthcheck` 를 mock 상태에서 한 번 실행해 오류 없이 뜨는지 확인 (DB 없어도 정상)
 
 ## 3. TokenManager `state_path` 단일화 — 운영 규율 (필독)

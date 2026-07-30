@@ -7,10 +7,10 @@ log_dir: "data/logs"
 state_dir: "data/ops_state"
 archive_dir: "data/archive"
 
-# collector 실행 커맨드. W4의 실제 엔트리포인트가 확정되면 이 값을 갱신한다
-# (현재는 자리표시자 — tossmon/collector/main.py 가 아직 없다면 supervisor 는
-# 즉시 실패하고 재시작을 반복하니, 실제 엔트리포인트 확정 후 여기를 고쳐라).
-collector_cmd: ["python", "-m", "tossmon.collector.main"]
+# collector 실행 커맨드. W4 머지(main 1f8d1ab) 로 실제 엔트리포인트가 확정됐다:
+# tossmon/collector/__main__.py → `python -m tossmon.collector`.
+# --symbols 를 주지 않으면 워치리스트는 랭킹 출현 종목으로 스스로 채워진다.
+collector_cmd: ["python", "-m", "tossmon.collector", "--config", "config/config.yaml"]
 
 disk:
   warn_free_gb: 5.0
