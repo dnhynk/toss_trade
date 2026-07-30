@@ -7,7 +7,9 @@ import pytest
 
 from tests.test_collector_helpers import (MIN_MS, FrozenClock, ReplayClient,
                                           calendar_dict, make_config, simple_day)
-from tossmon.api.models import Candle, CandlePage, Price, RankingPage, RankingRow, Trade
+from tossmon.api import models
+from tossmon.api.models import (Candle, CandlePage, Price, RankingPage,
+                                RankingRow, Trade)
 from tossmon.collector import loops
 from tossmon.collector.loops import (CollectorContext, RankingBuffer, SymbolBuffer,
                                      candles_frame, tape_stats)
@@ -312,6 +314,79 @@ def test_daily_baseline_excludes_the_progressing_today_bar(tmp_path):
     # 저장은 받은 그대로 (당일 봉도 DB 에는 들어간다 — 자르는 것은 베이스라인 계산뿐)
     assert ctx.store._conn.execute("SELECT COUNT(*) FROM candles_1d").fetchone()[0] == 6
     ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 텔레메트리 — 정밀도 반올림 지표 (계약 A4, W1 인수인계)
+# --------------------------------------------------------------------------- #
+def test_telemetry_carries_precision_metrics(tmp_path):
+    """무인 실행에서 로그가 유일한 관측 창이다 — 반올림 지표가 거기 실려야 한다."""
+    models.reset_precision_stats()
+    client = StubClient({})
+    client.counters["precision_rounded"] = 3
+    ctx, _ = build_ctx(tmp_path, client, symbols=("AAA",))
+    try:
+        models.dec_to_u("0.123456789")               # 9자리 → 반올림 발생
+        data = ctx.report_telemetry(force=True)
+        assert data["precision_rounded"] == 3        # client 카운터
+        assert data["precision_parsed"] >= 1         # models 전역 통계
+        assert data["precision_max_digits"] == 9
+        assert data["precision_rounded_pct"] > 0
+        assert data["session"] == "regular"
+    finally:
+        models.reset_precision_stats()
+        ctx.store.close()
+
+
+def test_telemetry_is_rate_limited(tmp_path):
+    ctx, _ = build_ctx(tmp_path, StubClient({}))
+    try:
+        assert ctx.report_telemetry(force=True) is not None
+        assert ctx.report_telemetry() is None                    # 간격 미달
+        ctx.clock.advance(loops.TELEMETRY_EVERY_S + 1)
+        assert ctx.report_telemetry() is not None
+    finally:
+        ctx.store.close()
+
+
+def test_growing_max_digits_raises_an_early_warning(tmp_path):
+    """max_digits 신고점 = API 응답 형식 변화 의심 신호 (W1 인수인계).
+
+    첫 관측은 기준선(warn), 그 뒤의 상승은 경보(alert) 다 — '갑자기 커지는 것' 이 신호다.
+    """
+    models.reset_precision_stats()
+    ctx, _ = build_ctx(tmp_path, StubClient({}))
+    try:
+        models.dec_to_u("0.1234567")                             # 7자리 → 기준선
+        ctx.report_telemetry(force=True)
+        assert ctx.notifier.counters["warn"] >= 1
+        alerts_before = ctx.notifier.counters["alert"]
+
+        ctx.clock.advance(loops.TELEMETRY_EVERY_S + 1)
+        ctx.report_telemetry(force=True)                          # 변화 없음 → 조용
+        assert ctx.notifier.counters["alert"] == alerts_before
+
+        models.dec_to_u("0.12345678901")                          # 11자리 → 신고점
+        ctx.clock.advance(loops.TELEMETRY_EVERY_S + 1)
+        ctx.report_telemetry(force=True)
+        assert ctx.notifier.counters["alert"] == alerts_before + 1
+        assert ctx.counters["precision_drift"] == 2
+    finally:
+        models.reset_precision_stats()
+        ctx.store.close()
+
+
+def test_session_change_forces_a_telemetry_line(tmp_path):
+    ctx, day = build_ctx(tmp_path, StubClient({}))
+    try:
+        ctx.session = "closed"
+        ctx.scheduler.session = "closed"
+        before = ctx.notifier.counters["info"]
+        asyncio.run(loops.run_session_watch(ctx, cycles=1))
+        assert ctx.session == "regular"
+        assert ctx.notifier.counters["info"] > before + 1          # 세션 로그 + 텔레메트리
+    finally:
+        ctx.store.close()
 
 
 # --------------------------------------------------------------------------- #
