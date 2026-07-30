@@ -161,12 +161,16 @@ session_vwap_u(df_1m: pd.DataFrame, session: SessionWindow) -> pd.Series
 # labeling.py
 @dataclass EventParams(window_min: int = 30, ret_min: float = 0.15, day_ret_min: float = 0.30,
                        rvol_min: float = 3.0)
-detect_events(df_1m: pd.DataFrame, params: EventParams) -> pd.DataFrame
+detect_events(df_1m: pd.DataFrame, params: EventParams, *,
+              calendar=None, rvol_series=None, prev_close_u=None,
+              shares_outstanding_qu=None, rankings=None) -> pd.DataFrame
   # 반환 컬럼: t0_ms, kind, peak_ms, peak_ret, ret_30m, ret_close, session — docs/03 §3 라벨 전부
 
 # features.py — 룩어헤드 금지: t0_ms 이전 데이터만 입력으로 받는다(강제: 함수가 잘라서 검증)
 extract_precursor_features(df_1m: pd.DataFrame, rankings: pd.DataFrame,
-                           t0_ms: int, windows_min: tuple[int, ...] = (5, 15, 30, 60)) -> dict[str, float]
+                           t0_ms: int, windows_min: tuple[int, ...] = (5, 15, 30, 60), *,
+                           curve=None, baseline=None, shares_outstanding_qu=None,
+                           prior_events=None, include_t0: bool = False) -> dict[str, float]
 
 # evaluate.py — docs/03 §3 검증 질문 6개와 1:1 대응하는 함수 6개 + 종합
 q1_volume_leadtime(events, feats) -> pd.DataFrame
@@ -176,6 +180,32 @@ q4_dump_speed(events, df_1m) -> pd.DataFrame
 q5_expectancy(events, feats, cost_roundtrip: float = 0.01) -> pd.DataFrame
 q6_time_of_day(events) -> pd.DataFrame
 ```
+
+### C-7 개정 A1 (2026-07-30, W3 요청 → 코디네이터 승인)
+
+1. **룩어헤드 컷오프**: `extract_precursor_features`는 **엄격히 `ts_ms < t0_ms`** (T0 봉 자체 제외).
+   랭킹도 `snap_ms < t0_ms`. 함수 내부에서 강제하고, 미래 데이터를 넣어도 결과가 동일함을 증명하는
+   테스트를 둔다.
+   단 `include_t0: bool = False` 키워드를 제공한다 — **W4 실시간 검출기는 T0 봉 종료 시점에
+   판정하므로 T0 봉을 정당하게 볼 수 있다.** 연구(전조 리드타임 측정)는 기본값 False,
+   실시간 검출기는 True를 쓴다. W4가 자체 구현하지 말고 이 플래그를 쓴다.
+2. **선택 인자 확장**: 위치인자 시그니처는 불변, `*` 뒤 기본값 None 키워드 전용 인자만 추가 —
+   계약 변경이 아닌 확장으로 인정한다 (호출 호환성 100% 유지가 조건).
+3. **`events.kind`** = 트리거 종류 `'win' | 'day' | 'both'`. 형태 분류는 `shape`,
+   결과 분류는 `outcome`(hold/fade/dump) 별도 컬럼.
+4. **추가 라벨 컬럼 허용**: C-7 명시 7컬럼 유지 + `hod_ms/hod_ret, retrace_30m/retrace_close,
+   duration_min, time_to_peak_min, vwap_close_rel/closed_below_vwap, float_rotation,
+   ranking_first_entry_ms/ranking_lead_lag_min, next_day_gap, t0_min_from_open, rvol_at_t0,
+   halt_gap_count, shape, outcome`.
+   의미 고정: **`ret_30m` = T0+30분 수익률(진입 기준)**, 피크 후 되돌림은 `retrace_*`로 분리.
+5. **RVOL 정의**: 이벤트 게이트의 RVOL은 **세션 누적** 기준
+   (세션시작~t 누적거래량 / 같은 (세션, 분위치)의 평균 누적거래량). docs/02 §4.1 스캐너
+   임계값(3~5x)이 누적 기준 지표이기 때문. 단일 분봉 기준은 `rvol_bar`로 별도 제공.
+6. **RVOL 게이트 미가용 시**: 예외를 던지지 않고 가격 조건만으로 검출하되
+   `rvol_at_t0=NaN, rvol_gated=False`로 명시한다.
+   **추가 의무**: `evaluate.py`의 q1~q6는 `rvol_gated=False` 이벤트를 기본 집계에서 제외하거나
+   최소한 별도 열로 분리 보고해야 한다 — 게이트 미적용 이벤트가 정밀도/재현율 통계를
+   조용히 오염시키는 것을 막기 위함.
 
 ## C-8. 컬렉터 계약 (`tossmon/collector/`)
 
