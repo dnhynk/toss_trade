@@ -14,6 +14,7 @@ from tossmon.api.models import (
     StockMeta,
     Trade,
 )
+import tossmon.store.migrations as migrations
 from tossmon.store.migrations import SCHEMA_VERSION, apply_migrations
 from tossmon.store.reader import Reader
 from tossmon.store.writer import Store
@@ -150,6 +151,93 @@ def test_imbalance_signed_sign_convention(tmp_path):
     assert imbalance_for(1_000_000, 1_000_000) == pytest.approx(0.0)
     assert imbalance_for(1_000_000, 3_000_000) == pytest.approx(-0.5)
     assert imbalance_for(0, 0) is None
+
+
+def test_events_upsert_updates_existing_row_with_latest_label(tmp_path):
+    """검출기가 같은 (symbol, t0_ms) 를 재검출해도 행은 하나이고 라벨은 최신값이다."""
+    db_path = tmp_path / "monitor.db"
+    with Store(db_path) as store:
+        first_id = store.record_event({"symbol": "ABCD", "t0_ms": 1000, "kind": "runner"})
+        second_id = store.record_event(
+            {
+                "symbol": "ABCD",
+                "t0_ms": 1000,
+                "kind": "runner",
+                "peak_ms": 1500,
+                "peak_ret": 0.42,
+                "ret_30m": 0.2,
+                "ret_close": 0.3,
+                "session": "regular",
+                "meta_json": {"x": 2},
+            }
+        )
+        assert second_id == first_id
+        assert store._conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+        row = store._conn.execute(
+            "SELECT peak_ms, peak_ret, ret_30m, ret_close, session, meta_json"
+            " FROM events WHERE id=?",
+            (first_id,),
+        ).fetchone()
+        assert row[0] == 1500
+        assert row[1] == pytest.approx(0.42)
+        assert row[2] == pytest.approx(0.2)
+        assert row[3] == pytest.approx(0.3)
+        assert row[4] == "regular"
+        assert row[5] == '{"x":2}'
+
+
+def test_events_different_t0_ms_are_separate_rows(tmp_path):
+    db_path = tmp_path / "monitor.db"
+    with Store(db_path) as store:
+        store.record_event({"symbol": "ABCD", "t0_ms": 1000, "kind": "runner"})
+        store.record_event({"symbol": "ABCD", "t0_ms": 2000, "kind": "runner"})
+        assert store._conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 2
+
+
+def test_events_migration_dedupes_preserving_latest_label(tmp_path, monkeypatch):
+    """라이브에서 관측된 버그의 회귀 테스트: 구버전(v1) DB에 이미 쌓인 중복
+    events 행을 마이그레이션이 보존적으로 정리하는지 검증한다 — 그룹당 id가
+    가장 큰(가장 나중에 검출되어 라벨이 가장 완성된) 행만 남아야 한다."""
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    monkeypatch.setattr(migrations, "SCHEMA_VERSION", 1)
+    assert migrations.apply_migrations(conn) == 1
+
+    conn.execute(
+        "INSERT INTO events (symbol, t0_ms, kind) VALUES ('DFNS', 1785378480000, 'runner')"
+    )
+    conn.execute(
+        "INSERT INTO events (symbol, t0_ms, kind) VALUES ('DFNS', 1785378480000, 'runner')"
+    )
+    conn.execute(
+        """
+        INSERT INTO events (symbol, t0_ms, kind, peak_ms, peak_ret, ret_close)
+        VALUES ('DFNS', 1785378480000, 'runner', 1785378600000, 0.55, 0.4)
+        """
+    )
+    conn.execute(
+        "INSERT INTO events (symbol, t0_ms, kind) VALUES ('GCTK', 1785378840000, 'runner')"
+    )
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 4
+
+    monkeypatch.undo()
+    assert migrations.apply_migrations(conn) == migrations.SCHEMA_VERSION
+
+    rows = conn.execute(
+        "SELECT symbol, peak_ms, peak_ret, ret_close FROM events ORDER BY symbol"
+    ).fetchall()
+    assert len(rows) == 2
+    dfns = next(r for r in rows if r[0] == "DFNS")
+    assert dfns[1] == 1785378600000
+    assert dfns[2] == pytest.approx(0.55)
+    assert dfns[3] == pytest.approx(0.4)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO events (symbol, t0_ms, kind) VALUES ('GCTK', 1785378840000, 'runner')"
+        )
+    conn.close()
 
 
 def test_bulk_candle_write_performance_smoke(tmp_path):
