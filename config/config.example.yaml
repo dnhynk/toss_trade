@@ -28,7 +28,8 @@ universe:
   mcap_max_usd: "300000000"
   tier1_max: 1500
   tier2_max: 300
-  tier3_max: 30
+  # tier3_max 는 임의 숫자가 아니라 MARKET_DATA 예산에서 역산된 값이다 (아래 polling 주석 참조).
+  tier3_max: 20
 
 detector:
   event_window_min: 30
@@ -40,5 +41,17 @@ detector:
 polling:
   tier1_sweep_s: 45
   tier2_candle_s: 90
-  tier3_micro_s: 8
+  # A2 §1: 호가는 1레벨뿐이라 정보량이 적고, 테이프(/trades)가 최상위 피처다.
+  # 두 주기를 분리해 테이프를 조밀하게, 호가를 성기게 본다. (구 tier3_micro_s 를 대체)
+  tier3_trades_s: 4        # A2 권장 3~5s
+  tier3_orderbook_s: 16    # A2 권장 15~20s
   ranking_snap_s: 12
+#
+# MARKET_DATA 예산 검증 (한도 10 req/s × usage_ratio 0.7 = 7.0 req/s):
+#   tier1 스윕   1500종목 / 배치200 / 45s            = 0.17 req/s
+#   tier3 trades tier3_max / tier3_trades_s          = 20/4  = 5.00
+#   tier3 호가   tier3_max / tier3_orderbook_s       = 20/16 = 1.25
+#   합계 6.42 req/s ≤ 7.0  ✅
+# tier3_max=30 이면 9.54 req/s 로 예산을 초과한다. tier3 를 넓히려면 주기를 늦추거나
+# usage_ratio 를 재검토해야 한다 (25종목 + 5s/20s = 6.42 도 가능한 조합).
+# BudgetGuard 는 이 산식을 런타임에 재검증하고 초과 예측 시 tier3 를 자동 축소해야 한다.

@@ -216,7 +216,12 @@ q6_time_of_day(events) -> pd.DataFrame
    - `imbalance` 정의 확정: `bid1_qu / (bid1_qu + ask1_qu)`. 0.5 초과면 매수 우위.
    - `spread_u` = `ask1_u - bid1_u`. 상대 스프레드는 분석 레이어에서 `spread_u / mid`로 계산.
    - **Tier 3 감시 비중 재배분**: 호가 폴링 주기를 늘리고(예: 15~20s) 그만큼 `/trades` 폴링을
-     조밀하게(예: 3~5s) 한다. 근거는 문헌 정합적이다 — La Morgia et al.의 최상위 피처는
+     조밀하게(예: 3~5s) 한다. config 키는 `polling.tier3_trades_s` / `polling.tier3_orderbook_s`
+     로 분리한다 (구 `tier3_micro_s` 폐기 — 두 주기는 목적·제약이 달라 하나로 묶으면 튜닝이 엉킨다).
+     **예산 제약**: MARKET_DATA 7.0 req/s(70%) 안에서 `tier3_max/trades_s + tier3_max/orderbook_s
+     + tier1스윕 ≤ 7.0` 이어야 한다. 기본값 20종목 + 4s/16s = 6.42 req/s.
+     `tier3_max=30`은 9.54 req/s로 **예산 초과**이므로 기본값을 20으로 낮췄다.
+     BudgetGuard는 이 산식을 런타임에 재검증하고 초과 예측 시 tier3를 자동 축소해야 한다. 근거는 문헌 정합적이다 — La Morgia et al.의 최상위 피처는
      호가가 아니라 **테이프의 시장가 매수 버스트(rush orders)** 이고, 미국 소형주 L2는
      시장분절로 신뢰도가 낮다(docs/02 §4.2). 호가 1레벨은 스프레드/잔량비 용도로만 유지.
 2. **`/trades`는 최대 50건 → 테이프는 표본이다.**
