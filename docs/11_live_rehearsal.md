@@ -8,7 +8,7 @@
 
 | 항목 | 값 |
 |---|---|
-| 브랜치 | `w5-ops`, main 기준(rebase) 8056da9 |
+| 브랜치 | `w5-ops`, 작업 B(야간 수집) 시작 시점 main 기준(rebase) `6b6fb4a` (A4+A5+정밀도 텔레메트리 전부 반영, pytest 614 passed) |
 | 라이브 리스 부여 | 코디네이터, W1 반납 완료 확인 후 |
 | Base URL | `https://openapi.tossinvest.com` |
 | 도구 | 세션 무관 항목(A-2/A-3)은 임시 스크립트(scratchpad, 커밋 안 함 — `tossmon.api.*` frozen 레이어만 재사용, `tools/live_probe.py` 미수정), 세션 의존 항목(A-1)은 `tools/live_probe.py` 그대로 사용 |
