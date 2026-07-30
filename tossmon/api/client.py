@@ -1,7 +1,7 @@
 """TossClient — GET-only 하드 차단, 배치 청킹, 재시도, 모델 정규화 (계약 C-4·C-5).
 
 모든 요청은 단일 _request() 관문을 지나며 endpoints.ALLOWLIST 를 검사한다.
-관문을 우회한 요청도 전송 레벨(_GuardedTransport)에서 한 번 더 차단된다 — 이중 차단.
+관문을 우회한 요청도 전송 레벨(GuardedTransport)에서 한 번 더 차단된다 — 이중 차단.
 
 정규화 규약 (계약이 명시하지 않아 W1 이 확정, docs/06_live_facts.md §정규화 참조):
 - 캔들: API 는 최신→과거 순으로 주지만 `CandlePage.candles` 는 **과거→최신(ts_ms 오름차순)** 으로 뒤집는다.
@@ -64,7 +64,7 @@ _SESSIONS = (("day", "dayMarket"), ("pre", "preMarket"),
              ("regular", "regularMarket"), ("after", "afterMarket"))
 
 
-class _GuardedTransport(httpx.AsyncHTTPTransport):
+class GuardedTransport(httpx.AsyncHTTPTransport):
     """전송 레벨 2차 차단. _request 관문을 우회한 요청은 여기서 ForbiddenEndpoint."""
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
@@ -79,10 +79,17 @@ class TossClient:
         self.tokens = tokens
         self.limiter = limiter
         self.timeout_s = timeout_s
+        # AUTH 그룹 rate limit 을 토큰 발급 경로에도 적용한다 (감사 A-4).
+        # TokenManager 시그니처를 바꾸지 않고도 기존 호출자가 자동으로 이득을 보도록 주입한다.
+        if getattr(tokens, "limiter", None) is None:
+            try:
+                tokens.limiter = limiter
+            except AttributeError:
+                pass
         self._http = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=timeout_s,
-            transport=_GuardedTransport(),
+            transport=GuardedTransport(),
         )
         # 관측용 카운터 (BudgetGuard·리포트에서 읽는다).
         # precision_rounded: 계약 A4 의 초과 정밀도 반올림 건수 (조용한 반올림 방지).
@@ -106,15 +113,18 @@ class TossClient:
 
         while True:
             await self.limiter.acquire(group)
+            used: list[str] = []
             try:
-                return await self._send(method, path, group, **kwargs)
+                return await self._send(method, path, group, used, **kwargs)
             except AuthExpired:
                 if auth_retried >= 1:
                     raise
                 auth_retried += 1
                 self.counters["auth_refresh"] += 1
                 self.counters["retries"] += 1
-                await self.tokens.invalidate()
+                # 우리가 **실제로 쓴** 토큰만 무효화한다 (감사 A-2). 그 사이 다른 루프가
+                # 새 토큰을 발급했다면 그것은 유효하므로 건드리면 안 된다.
+                await self.tokens.invalidate(used[0] if used else None)
             except RateLimited as exc:
                 self.counters["http_429"] += 1
                 self.limiter.on_429(group, exc.retry_after_s)
@@ -132,8 +142,11 @@ class TossClient:
                 self.counters["retries"] += 1
                 await asyncio.sleep(delay + random.uniform(0.0, delay / 2))
 
-    async def _send(self, method: str, path: str, group: str, **kwargs) -> dict:
+    async def _send(self, method: str, path: str, group: str,
+                    used: list[str] | None = None, **kwargs) -> dict:
         token = await self.tokens.get()
+        if used is not None:
+            used.append(token)      # CAS 무효화용 — 이 요청이 실제로 쓴 토큰 (감사 A-2)
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
         headers.update(kwargs.pop("headers", None) or {})
         self.counters["requests"] += 1

@@ -42,5 +42,17 @@ class Forbidden(TossApiError):
         self.reason = reason
 
 
-class ForbiddenEndpoint(TossApiError):
-    """allowlist 위반. 코드 버그 — 절대 잡지 말 것."""
+class ForbiddenEndpoint(Exception):
+    """allowlist 위반. 코드 버그 — 절대 잡지 말 것.
+
+    ⚠️ **의도적으로 `TossApiError` 를 상속하지 않는다** (감사 H-5).
+
+    계약 C-5 표는 이 예외를 "처리 주체: 없음 / 코드 버그. 잡지 말 것" 으로 규정한다.
+    그런데 `TossApiError` 를 상속하면 컬렉터의 `except (TossApiError, OSError)` 광역 핸들러에
+    걸려 **주문 계열 엔드포인트에 도달했다는 사실이 warn 로그 한 줄로 끝나고 수집이 계속된다.**
+    Phase 2 에 주문 코드가 들어오면 이것이 마지막 방어선이므로, "잡지 말 것" 이라는 규약을
+    주석이 아니라 **타입 체계가 강제**하게 한다 — 상위 `except TossApiError` 는 이 예외를
+    잡지 못하고 그대로 위로 터진다.
+
+    이 예외를 넓은 `except Exception` 으로 삼키는 코드를 새로 만들지 말 것.
+    """

@@ -72,13 +72,36 @@ _TEMPLATED: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
 )
 
 
+# dot segment 는 정규화하지 않고 거부한다 (감사 M-11).
+# 정규화는 우회 표면을 넓힌다: `[^/]+` 템플릿이 `..` 을 `{symbol}` 로 받아들여
+# `/api/v1/stocks/../warnings` 가 1층 관문을 통과했다. 2층(전송 레벨)은 httpx 가 정규화한
+# 뒤의 경로를 보므로 막아주지만, 두 층이 서로 다른 문자열을 검사하는 상태 자체가 결함이다.
+# 구분자는 `/` 뿐 아니라 **인코딩된 슬래시**(%2f)도 포함해야 한다 —
+# `/api/v1/stocks/..%2f../warnings` 처럼 섞어 쓰면 `/` 만 보는 정규식은 놓친다.
+_SEP = r"(?:/|%2f)"
+_DOT_SEGMENT = re.compile(rf"(?:^|{_SEP})(?:\.|%2e){{1,2}}(?:{_SEP}|$)", re.IGNORECASE)
+# 심볼은 스펙상 `[A-Za-z0-9.-]` 뿐이라 경로에 인코딩된 슬래시가 나올 이유가 없다.
+_ENCODED_SLASH = re.compile(r"%2f", re.IGNORECASE)
+
+
+def _is_suspicious(path: str) -> bool:
+    return bool(_DOT_SEGMENT.search(path) or _ENCODED_SLASH.search(path))
+
+
 def canonical_path(path: str) -> str:
-    """실제 경로 → allowlist 상의 템플릿 경로. 매칭 실패 시 입력을 그대로 반환."""
+    """실제 경로 → allowlist 상의 템플릿 경로. 매칭 실패 시 입력을 그대로 반환.
+
+    `.`/`..` 세그먼트(퍼센트 인코딩 포함)가 있으면 정규화하지 않고 그대로 돌려보내
+    allowlist 대조에서 반드시 실패하게 한다 — 1층과 2층이 같은 판단을 하도록.
+    """
     p = path.split("?", 1)[0]
     if not p.startswith("/"):
         p = "/" + p
     if len(p) > 1:
         p = p.rstrip("/")
+    if _is_suspicious(p):
+        # 템플릿 매칭을 시도하지 않는다. 호출자는 ForbiddenEndpoint 를 받는다.
+        return p
     for tmpl, rx in _TEMPLATED:
         if rx.match(p):
             return tmpl
