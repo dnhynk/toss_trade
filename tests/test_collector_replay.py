@@ -137,20 +137,33 @@ async def test_regular_session_replay_detects_the_runner_and_ignores_the_quiet_o
         assert meta["detect_lag_min"] >= 0
 
         # --- 같은 이벤트를 매 사이클 다시 쓰지 않는가 (라이브 40% 중복 회귀) ---
-        # 검출기는 매 사이클 버퍼 전체를 다시 스캔한다. 억제가 없으면 events 행이
-        # 고유 (symbol, t0_ms) 보다 훨씬 많아진다.
+        # 중복 방지는 **두 층**이다:
+        #   1) 검출기 해시 억제(W4) — 라벨이 그대로면 record_event 를 아예 부르지 않는다
+        #   2) DB UNIQUE(symbol,t0_ms) + UPSERT(W2) — 라벨이 바뀌어 다시 부르면 같은 행을
+        #      덮어쓴다. 갱신은 **행을 늘리지 않는다.**
+        # 장중에는 peak_ms/ret_close 가 새 봉마다 바뀌므로 재검출이 정당한 갱신이고,
+        # 그 갱신이 행 수에 새는지를 보는 것이 이 블록의 요지다.
         rows = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         uniq = conn.execute(
             "SELECT COUNT(*) FROM (SELECT DISTINCT symbol, t0_ms FROM events)"
         ).fetchone()[0]
-        # 장중에는 peak_ms/ret_close 가 새 봉마다 바뀌므로 재검출이 **정당한 갱신**이다.
-        # 따라서 불변식은 "억제가 몇 번 걸렸나" 가 아니라 **모든 행이 설명되는가** 다:
-        # 행 = 최초 검출 + 라벨이 실제로 바뀐 갱신. 순수 중복이 있으면 이 등식이 깨진다.
         new_rows = ctx.counters.get("events", 0)
         updates = ctx.counters.get("event_updates", 0)
-        assert rows == new_rows + updates
-        assert new_rows == uniq                           # 고유 이벤트당 최초 검출 1회
+
+        assert rows == uniq                               # 키당 정확히 한 행
+        assert rows == new_rows                           # 행은 최초 검출로만 생긴다
         assert ctx.detector.counters["events"] == uniq
+        # 갱신이 실제로 일어났는데도 행이 늘지 않았다는 것이 UPSERT 가 작동한 증거다.
+        # (갱신이 0 이면 이 테스트는 아무것도 증명하지 못하므로 함께 단언한다.)
+        assert updates > 0, "라벨 갱신이 한 번도 없었다면 UPSERT 경로가 검증되지 않는다"
+        assert rows < new_rows + updates                  # 갱신은 행을 늘리지 않았다
+
+        # ⚠️ 주의: UPSERT 가 순수 중복까지 흡수하므로 **행 수로는 검출기 억제 회귀를 잡을 수
+        # 없다.** 억제가 통째로 깨져도 여기 등식은 그대로 성립한다(행만 덮어쓸 뿐).
+        # 억제 자체의 회귀는 단위 테스트가 지킨다 — 지우지 말 것:
+        #   test_collector_detector.py::test_identical_relabel_is_suppressed
+        #   test_collector_detector.py::test_changed_labels_are_re_emitted_as_updates
+        #   test_collector_loops.py::test_demotion_keeps_event_history_but_drops_heavy_state
 
         # --- alert 는 사람이 봐야 하는 것만인가 -------------------------------
         # 갱신은 절대 alert 가 아니다 — alert 는 최초 검출 중 신선한 것뿐이다.
