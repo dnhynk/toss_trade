@@ -1,0 +1,42 @@
+{
+  "endpoint": "GET /api/v1/candles",
+  "case": "subpenny_adjusted",
+  "status": 200,
+  "source": "live-derived",
+  "captured_at_ms": 1785402855314,
+  "note": "계약 C-2 개정 A4 회귀 방지. 라이브 관측(W5 리허설): CRKN 2025-03-05T08:00 KST 1분봉이 adjusted=true 에서 openPrice='0.10461614'(8자리), adjusted=false 에서 '1.9889'(4자리). 비율 약 19.01 = 리버스 스플릿 보정. 수정주가의 분할 보정 곱셈이 임의 정밀도를 만든다. dec_to_u 가 이를 거부하면(A4 이전 동작) 표적 종목군이 조용히 스킵되므로 반드시 반올림되어 통과해야 한다. adjusted=true 경로. 이것이 A4 를 촉발한 실제 응답 형태다.",
+  "body": {
+    "result": {
+      "candles": [
+        {
+          "timestamp": "2025-03-05T08:00:00+09:00",
+          "openPrice": "0.10461614",
+          "highPrice": "0.10725412",
+          "lowPrice": "0.10199999",
+          "closePrice": "0.10461615",
+          "volume": "1234",
+          "currency": "USD"
+        },
+        {
+          "timestamp": "2025-03-05T07:59:00+09:00",
+          "openPrice": "0.1046161",
+          "highPrice": "0.1055",
+          "lowPrice": "0.1041",
+          "closePrice": "0.10461614",
+          "volume": "98765",
+          "currency": "USD"
+        },
+        {
+          "timestamp": "2025-03-05T07:58:00+09:00",
+          "openPrice": "0.104616142857",
+          "highPrice": "0.104616142857",
+          "lowPrice": "0.104616142857",
+          "closePrice": "0.104616142857",
+          "volume": "1",
+          "currency": "USD"
+        }
+      ],
+      "nextBefore": "2025-03-05T07:58:00+09:00"
+    }
+  }
+}
