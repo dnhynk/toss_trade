@@ -152,6 +152,12 @@ async def test_regular_session_replay_detects_the_runner_and_ignores_the_quiet_o
 
         assert rows == uniq                               # 키당 정확히 한 행
         assert rows == new_rows                           # 행은 최초 검출로만 생긴다
+        # 감사 I-1 불변식: (symbol, 매매일)당 이벤트 행 수 ≤ max_per_day(=1).
+        # t0 가 이동하면 (symbol, t0_ms) 유니크로는 절대 잡히지 않는 중복이 이걸로 잡힌다.
+        per_day = conn.execute(
+            "SELECT symbol, t0_ms / 86400000, COUNT(*) FROM events GROUP BY 1, 2"
+        ).fetchall()
+        assert all(n <= 1 for _s, _d, n in per_day), per_day
         assert ctx.detector.counters["events"] == uniq
         # 갱신이 실제로 일어났는데도 행이 늘지 않았다는 것이 UPSERT 가 작동한 증거다.
         # (갱신이 0 이면 이 테스트는 아무것도 증명하지 못하므로 함께 단언한다.)
@@ -227,5 +233,21 @@ async def test_replay_state_survives_a_mid_session_restart(tmp_path):
             "SELECT COUNT(*) FROM candles_1m").fetchone()[0]
         assert bars_after > bars_before                  # 이어서 더 쌓였다
         assert ctx2.counters.get("loop_errors", 0) == 0
+
+        # 감사 H-9: "카운트가 늘었다" 는 구멍을 볼 수 없다 — 봉이 **빠짐없이** 이어졌는지를
+        # 합성 정답(그 분에 봉이 존재해야 하는가)과 대조한다. 이 단언이 있었으면
+        # 실측 40분/100분 구멍이 테스트에서 잡혔을 것이다.
+        db_ts = {int(r[0]) for r in ctx2.store._conn.execute(
+            "SELECT ts_ms FROM candles_1m WHERE symbol = ?", (RUNNER,)).fetchall()}
+        lo, hi = min(db_ts), max(db_ts)
+        expected = {int(t) for t in df_run["ts_ms"].tolist() if lo <= int(t) <= hi}
+        missing = sorted(expected - db_ts)
+        assert missing == [], f"candles_1m 에 {len(missing)}분 구멍: {missing[:5]}..."
+
+        # 감사 I-1 불변식은 재시작을 가로질러도 성립해야 한다 (억제 상태는 DB 에서 복원).
+        per_day = ctx2.store._conn.execute(
+            "SELECT symbol, t0_ms / 86400000, COUNT(*) FROM events GROUP BY 1, 2"
+        ).fetchall()
+        assert all(n <= 1 for _s, _d, n in per_day), per_day
     finally:
         ctx2.store.close()

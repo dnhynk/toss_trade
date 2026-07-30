@@ -345,10 +345,83 @@ def test_changed_labels_are_re_emitted_as_updates():
 def test_emission_memory_is_bounded():
     det = EventDetector(EventParams(), seen_limit=10)
     stub = _StubEvents(det, [])
-    for i in range(25):
-        stub.rows = [_row(t0=i)]
+    for i in range(25):                                  # 25개 매매일에 하루 1건씩
+        stub.rows = [_row(t0=i * detector_module.DAY_MS)]
         stub.emit()
-    assert det.emitted_count() == 10                     # 오래된 것부터 버린다
+    assert det.emitted_count() == 10                     # 오래된 매매일부터 버린다
+
+
+# --------------------------------------------------------------------------- #
+# 감사 ⑨/I-1 — t0 이동이 중복 방어 2층을 동시에 뚫던 경로
+# --------------------------------------------------------------------------- #
+def test_t0_shift_within_a_day_does_not_create_a_second_event():
+    """RVOL 게이트가 꺼졌다 켜지면 t0 가 다른 봉으로 이동한다 (감사 I-1).
+
+    억제 키가 (symbol, t0_ms) 였을 때는 DB UNIQUE 와 같은 키라 둘 다 뚫려
+    같은 급등이 두 행이 됐다. 매매일 키 + max_per_day 상한이면 새 행이 안 생긴다.
+    """
+    det = _detector()
+    t0_a = 100 * MIN_MS
+    stub = _StubEvents(det, [_row(t0=t0_a, rvol_gated=False)])
+    first = stub.emit()
+    assert len(first) == 1 and first[0].is_new is True
+
+    # 1시간 뒤 곡선이 생겨 게이트가 켜졌고, 봉 A 는 RVOL 미달 → t0 가 봉 B 로 이동
+    stub.rows = [_row(t0=t0_a + 2 * MIN_MS, rvol_gated=True, rvol_at_t0=5.0)]
+    assert stub.emit() == []                             # 두 번째 행을 만들지 않는다
+    assert det.counters["t0_shift_suppressed"] == 1
+    assert det.counters["events"] == 1
+
+    # 다음 매매일의 이벤트는 새 이벤트다 — 상한은 매매일 단위다
+    stub.rows = [_row(t0=t0_a + detector_module.DAY_MS)]
+    assert len(stub.emit()) == 1
+
+
+def test_seeded_suppression_survives_a_restart():
+    """DB 에 이미 있는 이벤트는 재기동 후 재검출돼도 '신규' 가 아니다 (감사 F-3).
+
+    억제 집합은 상태파일에 저장되지 않는다 — events 테이블에서 되살리지 않으면
+    재기동 직후 버퍼의 모든 이벤트가 신규로 알림·기록된다.
+    """
+    det = _detector()
+    det.seed_suppression("ABCD", 111)
+    stub = _StubEvents(det, [_row(t0=111)])
+    out = stub.emit()
+    assert len(out) == 1
+    assert out[0].is_new is False                        # 갱신이지 신규가 아니다
+    assert det.counters["events"] == 0 and det.counters["updated"] == 1
+
+    # t0 가 이동한 재검출도 매매일 상한에 걸린다
+    stub.rows = [_row(t0=111 + 3 * MIN_MS)]
+    assert stub.emit() == []
+    assert det.counters["t0_shift_suppressed"] == 1
+
+
+def test_force_respects_dwell_after_a_recent_demotion():
+    """감사 H-7/J-1: 랭킹 스냅샷(12초)이 강등 1ms 뒤 재승격시키는 플래핑 회귀.
+
+    `force()` 가 dwell 을 우회하면 "랭킹은 올려라, 스코어는 내려라" 가 영구 왕복한다.
+    """
+    sm = machine(stale_demote_s=1)
+    sm.on_new_data("AAA", 0.9, 0)                        # → tier2
+    demoted = sm.sweep(HYST_MS + 200_000)                # 데이터 끊김 → tier1
+    assert [c.to_tier for c in demoted] == [1]
+    t_after = HYST_MS + 200_001
+    assert sm.force("AAA", 2, "ranking_entry", 0.0, t_after) is None   # dwell 중
+    assert sm.tier_of("AAA") == 1
+
+    t_late = HYST_MS + 200_000 + HYST_MS + 1             # dwell 경과
+    assert sm.force("AAA", 2, "ranking_entry", 0.0, t_late) == 2
+
+
+def test_force_with_zero_score_cannot_evict_real_members():
+    """감사 H-7: 랭킹 점수는 스코어 채널이 아니다 — 정원이 찼으면 진입하지 못한다."""
+    sm = machine(tier2_max=1)
+    sm.on_new_data("REAL", 0.40, 0)                      # 실제 스코어로 tier2 점유
+    assert sm.tier_of("REAL") == 2
+    assert sm.force("RANKED", 2, "ranking_entry", 0.0, 1000) is None
+    assert sm.tier_of("RANKED") == 1                     # 축출 없음
+    assert sm.score_of("RANKED") == 0.0                  # 스코어 채널 오염 없음
 
 
 def test_forget_is_explicit_and_not_used_for_demotion():

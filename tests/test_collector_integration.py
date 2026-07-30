@@ -68,16 +68,29 @@ async def test_rankings_snapshot_all_four_types_over_http(tmp_path):
 
 
 async def test_ranking_top_entry_promotes_and_accumulates_watchlist(tmp_path):
-    """랭킹 출현 종목은 워치리스트에 누적되고, 토스 랭킹 상위는 승격 트리거다."""
+    """토스 랭킹 상위는 승격 트리거다 — 단, **tier0 유니버스 통과분만** (감사 F-2).
+
+    mock 랭킹 픽스처의 상위권은 실서버처럼 메가캡이 대부분이다. 게이트가 없던 시절에는
+    이들이 전부 워치리스트·tier2 로 들어갔다 — 지금은 `/stocks` 메타로 가격·시총을
+    판정해 통과분만 남는지를 HTTP 전 구간으로 확인한다.
+    """
     with mock_server() as (base_url, _httpd):
         ctx = await make_ctx(base_url, tmp_path, symbols=())
         try:
             await loops.rankings_once(ctx)
-            assert ctx.watchlist                               # 스스로 채워졌다
+            assert ctx.watchlist                               # 통과분으로 스스로 채워졌다
+            # 워치리스트는 전원 tier0 통과분이다
+            assert all(ctx.universe_status.get(s) is True for s in ctx.watchlist)
+            # 메가캡(가격 $20 초과)은 랭킹 상위라도 거부된다 — 픽스처의 실측 대형주들
+            for mega in ("MSFT", "QQQ", "META", "NVDA", "SOXL"):
+                assert mega not in ctx.watchlist, mega
+            assert ctx.counters["universe_rejected"] > 0
+            assert ctx.telemetry()["watch_outside_universe"] == 0
             promoted = ctx.store._conn.execute(
                 "SELECT symbol FROM promotions WHERE reason='ranking_entry'").fetchall()
-            assert promoted
+            assert promoted                                    # 통과분 승격은 여전히 동작한다
             assert all(ctx.tiers.tier_of(sym) >= 2 for (sym,) in promoted)
+            assert all(ctx.universe_status.get(sym) is True for (sym,) in promoted)
         finally:
             await close(ctx)
 
