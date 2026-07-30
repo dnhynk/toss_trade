@@ -1,0 +1,25 @@
+{
+  "endpoint": "GET /api/v1/accounts",
+  "case": "default",
+  "status": 200,
+  "source": "live",
+  "captured_at_ms": 1785403042685,
+  "note": "accountNo/accountSeq 마스킹됨 | accountNo/accountSeq 마스킹 (타입 보존)",
+  "headers": {
+    "content-type": "application/json;charset=UTF-8",
+    "x-request-id": "***MASKED***",
+    "x-ratelimit-limit": "1",
+    "x-ratelimit-remaining": "0",
+    "x-ratelimit-reset": "1",
+    "date": "Thu, 30 Jul 2026 09:17:22 GMT"
+  },
+  "body": {
+    "result": [
+      {
+        "accountNo": "***MASKED***",
+        "accountSeq": 0,
+        "accountType": "BROKERAGE"
+      }
+    ]
+  }
+}

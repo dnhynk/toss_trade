@@ -1,0 +1,84 @@
+{
+  "endpoint": "GET /api/v1/stocks",
+  "case": "default",
+  "status": 200,
+  "source": "live",
+  "captured_at_ms": 1785403042345,
+  "note": "라이브 캡처 (isinCode 마스킹)",
+  "headers": {
+    "content-type": "application/json;charset=UTF-8",
+    "x-request-id": "***MASKED***",
+    "x-ratelimit-limit": "5",
+    "x-ratelimit-remaining": "4",
+    "x-ratelimit-reset": "1",
+    "date": "Thu, 30 Jul 2026 09:17:21 GMT"
+  },
+  "body": {
+    "result": [
+      {
+        "symbol": "AAPL",
+        "name": "애플",
+        "englishName": "Apple",
+        "isinCode": "***MASKED***",
+        "market": "NASDAQ",
+        "securityType": "STOCK",
+        "isCommonShare": true,
+        "status": "ACTIVE",
+        "currency": "USD",
+        "listDate": "1980-12-12",
+        "delistDate": null,
+        "sharesOutstanding": "14687356000",
+        "leverageFactor": null,
+        "koreanMarketDetail": null
+      },
+      {
+        "symbol": "BTAI",
+        "name": "바이오엑셀 테라퓨틱스",
+        "englishName": "BIOXCEL THERAPEUTICS INC",
+        "isinCode": "***MASKED***",
+        "market": "NASDAQ",
+        "securityType": "STOCK",
+        "isCommonShare": true,
+        "status": "ACTIVE",
+        "currency": "USD",
+        "listDate": "2018-03-07",
+        "delistDate": null,
+        "sharesOutstanding": "30877605",
+        "leverageFactor": null,
+        "koreanMarketDetail": null
+      },
+      {
+        "symbol": "SNTI",
+        "name": "센티 바이오사이언시스",
+        "englishName": "SENTI BIOSCIENCES HOLDINGS INC",
+        "isinCode": "***MASKED***",
+        "market": "NASDAQ",
+        "securityType": "STOCK",
+        "isCommonShare": true,
+        "status": "ACTIVE",
+        "currency": "USD",
+        "listDate": "2022-06-09",
+        "delistDate": null,
+        "sharesOutstanding": "31144754",
+        "leverageFactor": null,
+        "koreanMarketDetail": null
+      },
+      {
+        "symbol": "CRKN",
+        "name": "크라운 일렉트로키네틱스",
+        "englishName": "CROWN ELECTROKINETICS CORP",
+        "isinCode": "***MASKED***",
+        "market": "US_ETC",
+        "securityType": "STOCK",
+        "isCommonShare": true,
+        "status": "ACTIVE",
+        "currency": "USD",
+        "listDate": "2025-03-05",
+        "delistDate": null,
+        "sharesOutstanding": "1737941",
+        "leverageFactor": null,
+        "koreanMarketDetail": null
+      }
+    ]
+  }
+}

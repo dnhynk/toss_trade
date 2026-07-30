@@ -1,0 +1,32 @@
+{
+  "endpoint": "GET /api/v1/commissions",
+  "case": "default",
+  "status": 200,
+  "source": "live",
+  "captured_at_ms": 1785403042785,
+  "note": "라이브 캡처",
+  "headers": {
+    "content-type": "application/json;charset=UTF-8",
+    "x-request-id": "***MASKED***",
+    "x-ratelimit-limit": "6",
+    "x-ratelimit-remaining": "5",
+    "x-ratelimit-reset": "1",
+    "date": "Thu, 30 Jul 2026 09:17:22 GMT"
+  },
+  "body": {
+    "result": [
+      {
+        "marketCountry": "KR",
+        "commissionRate": "0.00015",
+        "startDate": "2021-01-01",
+        "endDate": "9999-12-31"
+      },
+      {
+        "marketCountry": "US",
+        "commissionRate": "0.1",
+        "startDate": null,
+        "endDate": "2026-07-31"
+      }
+    ]
+  }
+}

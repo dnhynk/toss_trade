@@ -161,6 +161,9 @@ class FixtureStore:
             score = len(match) * 10
             if fx.get("case") == "default":
                 score += 5
+            # 라이브 캡처본이 스펙 기반 합성본을 항상 이긴다 (파일명 정렬에 의존하지 않도록).
+            if fx.get("source") == "live":
+                score += 2
             if int(fx.get("status", 200)) == 200:
                 score += 1
             if score > best_score:

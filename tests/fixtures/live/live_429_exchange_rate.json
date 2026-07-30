@@ -1,0 +1,24 @@
+{
+  "endpoint": "GET /api/v1/exchange-rate",
+  "case": "rate_limited",
+  "status": 429,
+  "source": "live",
+  "captured_at_ms": 1785403043782,
+  "note": "MARKET_INFO 그룹 4번째 연속 호출에서 429 재현",
+  "headers": {
+    "content-type": "application/json",
+    "x-request-id": "***MASKED***",
+    "x-ratelimit-limit": "3",
+    "x-ratelimit-remaining": "0",
+    "x-ratelimit-reset": "1",
+    "retry-after": "1",
+    "date": "Thu, 30 Jul 2026 09:17:23 GMT"
+  },
+  "body": {
+    "error": {
+      "requestId": "***MASKED***",
+      "code": "rate-limit-exceeded",
+      "message": "요청 한도를 초과했습니다. 잠시 후 다시 시도해 주세요."
+    }
+  }
+}

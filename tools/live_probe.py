@@ -70,10 +70,22 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _masked_value(v):
+    """타입 보존 마스킹 — 스키마가 깨지면 픽스처로 못 쓴다."""
+    if isinstance(v, bool):
+        return False
+    if isinstance(v, int):
+        return 0
+    if isinstance(v, float):
+        return 0.0
+    return "***MASKED***"
+
+
 def mask(obj):
-    """응답에서 계좌/토큰/추적 식별자를 마스킹."""
+    """응답에서 계좌/토큰/추적 식별자를 마스킹 (타입은 유지)."""
     if isinstance(obj, dict):
-        return {k: ("***MASKED***" if k in MASK_FIELDS else mask(v)) for k, v in obj.items()}
+        return {k: (_masked_value(v) if k in MASK_FIELDS else mask(v))
+                for k, v in obj.items()}
     if isinstance(obj, list):
         return [mask(x) for x in obj]
     return obj
@@ -676,8 +688,87 @@ async def probe_empty_symbol(c: TossClient) -> dict:
     return out
 
 
+async def probe_candle_deep(c: TossClient) -> dict:
+    """1m 보관 상한 심층 확인 + 아주 오래된 구간이 진짜 '1분봉'인지 검증."""
+    newest, _ = await _candles_at(c, LIQUID, "1m", None, count=1)
+    if not newest:
+        return {"verdict": "미확인", "note": "최신 1m 봉 없음"}
+    anchor = iso_to_ms(newest[0]["timestamp"])
+
+    hits, misses = {}, []
+    for days in (512, 1024, 2048, 4096):
+        got, _ = await _candles_at(c, LIQUID, "1m", anchor - days * DAY_MS, count=1)
+        if got:
+            hits[days] = got[0]["timestamp"]
+        else:
+            misses.append(days)
+            break
+
+    deepest = max(hits) if hits else None
+    spacing = None
+    sample = []
+    if deepest is not None:
+        bars, _ = await _candles_at(c, LIQUID, "1m", anchor - deepest * DAY_MS, count=5)
+        ts = sorted(iso_to_ms(b["timestamp"]) for b in bars)
+        sample = [b["timestamp"] for b in bars]
+        if len(ts) > 1:
+            gaps = [(ts[i + 1] - ts[i]) // 1000 for i in range(len(ts) - 1)]
+            spacing = {"gaps_s": gaps, "is_1m_grid": all(g % 60 == 0 for g in gaps),
+                       "all_exactly_60s": all(g == 60 for g in gaps)}
+
+    # 소형주도 같은 기간만큼 1m 봉이 남아 있는지 (유니버스 전체 백필 가능성)
+    small_hits = {}
+    for days in (30, 180, 365):
+        got, _ = await _candles_at(c, SMALL[0], "1m", anchor - days * DAY_MS, count=1)
+        if got:
+            small_hits[days] = got[0]["timestamp"]
+
+    return {
+        "verdict": "확인됨" if hits else "미확인",
+        "anchor_kst": ms_to_iso_kst(anchor),
+        "deep_days_hit": sorted(hits), "deep_days_miss": sorted(misses),
+        "deepest_bar_ts": hits.get(deepest) if deepest else None,
+        "deepest_bar_age_days": deepest,
+        "spacing_at_deepest": spacing,
+        "sample_at_deepest": sample,
+        f"smallcap_{SMALL[0]}_1m_hits_days": sorted(small_hits),
+        "smallcap_samples": small_hits,
+        "note": (f"{LIQUID} 1m 봉이 {deepest}일 전까지 존재" if deepest else "심층 조회 실패"),
+    }
+
+
+async def probe_orderbook_depth(c: TossClient) -> dict:
+    """호가 레벨 수가 '항상 1' 인지 유동성 최상위 종목들로 재확인 (설계 전제 검증)."""
+    liquid = ["QQQ", "SOXL", "MSFT", "TSLA", "NVDA"]
+    per = {}
+    for sym in liquid:
+        try:
+            body = await c._request("GET", "/api/v1/orderbook", params={"symbol": sym})
+        except TossApiError as exc:
+            per[sym] = {"error": f"{type(exc).__name__}: {exc}"}
+            continue
+        r = body.get("result") or {}
+        per[sym] = {"bid_levels": len(r.get("bids") or []),
+                    "ask_levels": len(r.get("asks") or []),
+                    "timestamp": r.get("timestamp"),
+                    "raw": snippet(r, 300)}
+    levels = [v["bid_levels"] for v in per.values() if isinstance(v.get("bid_levels"), int)]
+    maxlv = max(levels) if levels else 0
+    return {
+        "verdict": "확인됨" if levels else "미확인",
+        "max_levels_observed": maxlv,
+        "distinct_level_counts": sorted(set(levels)),
+        "note": ("미국 호가는 최우선 1레벨만 제공됨 — 호가창 깊이 기반 지표 불가"
+                 if maxlv <= 1 else f"최대 {maxlv} 레벨 관측"),
+        "session": "probe 실행 시점 세션은 calendar 프로브 결과 참조",
+        "per_symbol": per,
+    }
+
+
 PROBES = {
     "calendar": probe_calendar,
+    "candle_deep": probe_candle_deep,
+    "orderbook_depth": probe_orderbook_depth,
     "quote_realtime": probe_quote_realtime,
     "candle_retention": probe_candle_retention,
     "candle_1d": probe_candle_1d,
@@ -768,6 +859,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--state", default="data/token_state.json", help="토큰 상태파일")
     ap.add_argument("--base-url", default=LIVE_BASE_URL)
     ap.add_argument("--out", default=None, help="결과 JSON 저장 경로")
+    ap.add_argument("--fixture-dir", default=None,
+                    help="픽스처 저장 경로 (기본 tests/fixtures/live). 드라이런은 임시 경로를 쓸 것")
     ap.add_argument("--timeout-s", type=float, default=15.0)
     ap.add_argument("--usage-ratio", type=float, default=0.7)
     ap.add_argument("--live", action="store_true",

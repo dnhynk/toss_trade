@@ -1,0 +1,19 @@
+{
+  "endpoint": "GET /api/v1/prices",
+  "case": "unknown_symbol",
+  "status": 200,
+  "source": "live",
+  "captured_at_ms": 1785403042984,
+  "note": "미존재 심볼 요청 결과",
+  "headers": {
+    "content-type": "application/json;charset=UTF-8",
+    "x-request-id": "***MASKED***",
+    "x-ratelimit-limit": "10",
+    "x-ratelimit-remaining": "7",
+    "x-ratelimit-reset": "1",
+    "date": "Thu, 30 Jul 2026 09:17:22 GMT"
+  },
+  "body": {
+    "result": []
+  }
+}

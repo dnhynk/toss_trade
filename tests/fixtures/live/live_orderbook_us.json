@@ -1,0 +1,34 @@
+{
+  "endpoint": "GET /api/v1/orderbook",
+  "case": "default",
+  "status": 200,
+  "source": "live",
+  "captured_at_ms": 1785402920121,
+  "note": "AAPL 라이브 캡처",
+  "headers": {
+    "content-type": "application/json;charset=UTF-8",
+    "x-request-id": "***MASKED***",
+    "x-ratelimit-limit": "10",
+    "x-ratelimit-remaining": "9",
+    "x-ratelimit-reset": "1",
+    "date": "Thu, 30 Jul 2026 09:15:19 GMT"
+  },
+  "body": {
+    "result": {
+      "timestamp": "2026-07-30T18:14:35.000+09:00",
+      "currency": "USD",
+      "asks": [
+        {
+          "price": "338.88",
+          "volume": "66"
+        }
+      ],
+      "bids": [
+        {
+          "price": "338.6",
+          "volume": "6"
+        }
+      ]
+    }
+  }
+}

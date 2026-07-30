@@ -3,13 +3,13 @@
   "case": "default",
   "status": 200,
   "source": "synthetic",
-  "note": "accountNo 마스킹됨 (계약 C-11 §5)",
+  "note": "accountNo 마스킹됨 (계약 C-11 §5) | accountNo/accountSeq 마스킹 (타입 보존)",
   "captured_at_ms": 1785398400000,
   "body": {
     "result": [
       {
         "accountNo": "***MASKED***",
-        "accountSeq": 1,
+        "accountSeq": 0,
         "accountType": "BROKERAGE"
       }
     ]
