@@ -1,0 +1,44 @@
+# tossmon 설정 예시 — 실제 사용 시 config/config.yaml 로 복사 (config.yaml은 gitignore)
+# 모든 키는 tossmon/config.py 의 Config dataclass 와 1:1. 임의 키 추가 금지 (ask 필요).
+
+api:
+  base_url: "http://127.0.0.1:8899"   # mock. 라이브 리스 보유 시에만 https://openapi.tossinvest.com
+  live: false                          # true = TokenManager 실발급 허용 (라이브 리스 보유 워커만)
+  keys_path: "api_keys"                # client_id/secret 파일 (커밋 금지)
+  token_state_path: "data/token_state.json"
+  timeout_s: 10.0
+  usage_ratio: 0.7                     # rate limit 공시 한도 대비 사용 상한
+
+limits:                                # req/s (docs/01 §2)
+  AUTH: 5
+  STOCK: 5
+  MARKET_DATA: 10
+  MARKET_DATA_CHART: 5
+  RANKING: 5
+  MARKET_INFO: 3
+
+store:
+  db_path: "data/tossmon.db"
+  archive_dir: "data/archive"
+
+universe:
+  price_min_usd: "0.10"
+  price_max_usd: "20.00"
+  mcap_min_usd: "10000000"
+  mcap_max_usd: "300000000"
+  tier1_max: 1500
+  tier2_max: 300
+  tier3_max: 30
+
+detector:
+  event_window_min: 30
+  event_ret_min: 0.15
+  event_day_ret_min: 0.30
+  event_rvol_min: 3.0
+  promote_hysteresis_s: 120
+
+polling:
+  tier1_sweep_s: 45
+  tier2_candle_s: 90
+  tier3_micro_s: 8
+  ranking_snap_s: 12

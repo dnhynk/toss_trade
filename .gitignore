@@ -1,0 +1,23 @@
+# Secrets — never commit
+api_keys
+*.key
+.env
+.env.*
+config/config.yaml
+data/token_state.json
+
+# Data collected by the monitoring pipeline
+data/
+*.db
+*.sqlite*
+*.parquet
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Logs
+logs/
+*.log
