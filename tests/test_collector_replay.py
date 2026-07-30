@@ -141,6 +141,15 @@ async def test_regular_session_replay_detects_the_runner_and_ignores_the_quiet_o
         assert ctx.counters.get("schema_mismatch", 0) == 0
         assert ctx.counters["ranking_snaps"] > 0
         assert ctx.counters.get("history_from_db", 0) >= 1   # API 백필 대신 DB 사용
+
+        # --- 예산 가드가 커버리지를 조용히 갉아먹지 않았는가 (main 8056da9) ---
+        # CHART 여유 22% 라면 승격 직후 백필이 겹쳐도 tier2 정원이 유지돼야 한다.
+        assert ctx.counters.get("budget_shrinks", 0) == 0
+        assert ctx.tiers.capacity[2] == ctx.cfg.universe.tier2_max
+        assert ctx.tiers.capacity[3] == ctx.cfg.universe.tier3_max
+        assert ctx.budget.rate_limited == {}
+        assert ctx.budget.measured_rate("MARKET_DATA_CHART") <= \
+            ctx.budget.target("MARKET_DATA_CHART")
     finally:
         ctx.store.close()
 
