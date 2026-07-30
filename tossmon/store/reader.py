@@ -75,6 +75,28 @@ class Reader:
         )
 
     def symbols(self, tier: int | None = None) -> pd.DataFrame:
+        """symbols 테이블 조회 — 컬렉터 워치리스트 시드 계약 (docs/10_audit.md F-2).
+
+        필터링은 쓰기 시점에 끝나 있다: 이 테이블에 있는 행은 이미
+        `universe.build_universe` 에서 `filters.passes_tier0` 를 통과한 것들뿐이다
+        (보통주, status=ACTIVE, ETF/ETN 제외, 가격·시총 범위 내) — 읽는 쪽이
+        status/security_type 을 다시 검사할 필요는 없다.
+
+        `tier` 는 `build_universe` 가 매기는 두 값 중 하나다:
+          - 0: Tier 0 전체 유니버스 (필터 통과 전원, 수천 종목)
+          - 1: Tier 1 광역 워치 — former runner 우선 + 시총 오름차순으로 골라
+               `tier1_max` 개로 자른 부분집합 (docs/03 §1).
+               **컬렉터가 워치리스트 시드로 읽어야 하는 값은 이것이다.**
+        tier 2/3 는 `build_universe` 가 쓰지 않는다 — 수집 도중 컬렉터의 승격
+        로직(promotions)이 매기는 값이라, 여기서 tier=2/3 로 조회하면 항상 빈
+        프레임이 돌아온다.
+
+        신선도: `updated_ms` 는 마지막 upsert 시각이다. `build_universe` 는 일 1회
+        실행을 전제하므로, 시드를 읽는 쪽에서 `MAX(updated_ms)` 가 예상 주기보다
+        훨씬 오래됐다면(예: 24~48h 초과) 유니버스 빌드가 멈췄다는 신호로 보고
+        경고해야 한다 — 이 메서드는 신선도를 강제하지 않으므로 그 판단은 호출측
+        (컬렉터, W4) 책임이다.
+        """
         if tier is None:
             return self._read(
                 "SELECT * FROM symbols ORDER BY symbol", (), ("updated_ms",)
