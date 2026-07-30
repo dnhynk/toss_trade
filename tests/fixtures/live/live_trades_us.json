@@ -1,0 +1,320 @@
+{
+  "endpoint": "GET /api/v1/trades",
+  "case": "default",
+  "status": 200,
+  "source": "live",
+  "captured_at_ms": 1785402920400,
+  "note": "AAPL 라이브 캡처",
+  "headers": {
+    "content-type": "application/json;charset=UTF-8",
+    "x-request-id": "***MASKED***",
+    "x-ratelimit-limit": "10",
+    "x-ratelimit-remaining": "6",
+    "x-ratelimit-reset": "1",
+    "date": "Thu, 30 Jul 2026 09:15:20 GMT"
+  },
+  "body": {
+    "result": [
+      {
+        "price": "338.76",
+        "volume": "4",
+        "timestamp": "2026-07-30T18:15:04.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.5388",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:14:51.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.83",
+        "volume": "41",
+        "timestamp": "2026-07-30T18:14:41.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.75",
+        "volume": "6",
+        "timestamp": "2026-07-30T18:14:21.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.74",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:14:20.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.7",
+        "volume": "3",
+        "timestamp": "2026-07-30T18:14:17.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.72",
+        "volume": "5",
+        "timestamp": "2026-07-30T18:14:10.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.7",
+        "volume": "50",
+        "timestamp": "2026-07-30T18:14:10.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.67",
+        "volume": "6",
+        "timestamp": "2026-07-30T18:14:08.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.67",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:13:50.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.67",
+        "volume": "4",
+        "timestamp": "2026-07-30T18:13:44.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.67",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:13:40.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.5257",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:13:20.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.68",
+        "volume": "10",
+        "timestamp": "2026-07-30T18:13:10.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.68",
+        "volume": "5",
+        "timestamp": "2026-07-30T18:13:00.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.71",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:12:52.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.74",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:12:39.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.68",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:12:01.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.68",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:11:50.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.66",
+        "volume": "3",
+        "timestamp": "2026-07-30T18:11:46.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.69",
+        "volume": "2",
+        "timestamp": "2026-07-30T18:11:39.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.6881",
+        "volume": "9",
+        "timestamp": "2026-07-30T18:11:32.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.6881",
+        "volume": "9",
+        "timestamp": "2026-07-30T18:11:23.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.6881",
+        "volume": "13",
+        "timestamp": "2026-07-30T18:11:21.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.73",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:11:00.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.69",
+        "volume": "5",
+        "timestamp": "2026-07-30T18:10:52.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.68",
+        "volume": "5",
+        "timestamp": "2026-07-30T18:10:44.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.68",
+        "volume": "5",
+        "timestamp": "2026-07-30T18:10:39.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.69",
+        "volume": "5",
+        "timestamp": "2026-07-30T18:10:34.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.69",
+        "volume": "51",
+        "timestamp": "2026-07-30T18:10:09.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.69",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:10:01.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.69",
+        "volume": "5",
+        "timestamp": "2026-07-30T18:09:42.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.68",
+        "volume": "5",
+        "timestamp": "2026-07-30T18:09:14.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.64",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:09:11.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.532",
+        "volume": "15",
+        "timestamp": "2026-07-30T18:09:07.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.64",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:08:51.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.53",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:08:38.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.74",
+        "volume": "35",
+        "timestamp": "2026-07-30T18:08:25.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.72",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:08:22.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.64",
+        "volume": "3",
+        "timestamp": "2026-07-30T18:08:22.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.7497",
+        "volume": "20",
+        "timestamp": "2026-07-30T18:07:28.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.72",
+        "volume": "20",
+        "timestamp": "2026-07-30T18:07:28.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.63",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:07:17.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.63",
+        "volume": "2",
+        "timestamp": "2026-07-30T18:06:43.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.63",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:06:38.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.64",
+        "volume": "1",
+        "timestamp": "2026-07-30T18:05:56.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.64",
+        "volume": "10",
+        "timestamp": "2026-07-30T18:05:42.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.66",
+        "volume": "5",
+        "timestamp": "2026-07-30T18:05:34.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.57",
+        "volume": "13",
+        "timestamp": "2026-07-30T18:05:29.000+09:00",
+        "currency": "USD"
+      },
+      {
+        "price": "338.532",
+        "volume": "2",
+        "timestamp": "2026-07-30T18:05:09.000+09:00",
+        "currency": "USD"
+      }
+    ]
+  }
+}

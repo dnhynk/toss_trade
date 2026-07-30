@@ -1,0 +1,30 @@
+{
+  "endpoint": "GET /api/v1/rankings",
+  "case": "gainers_realtime_400",
+  "status": 400,
+  "source": "synthetic",
+  "note": "docs/01 §3.2 의 핵심 제약 — 실시간 급등 랭킹은 직접 계산해야 한다",
+  "captured_at_ms": 1785398400000,
+  "match": {
+    "type": "TOP_GAINERS",
+    "duration": "realtime"
+  },
+  "body": {
+    "error": {
+      "requestId": "01HXYZABCDEFG123456789",
+      "code": "unsupported-ranking-duration",
+      "message": "지원하지 않는 랭킹 기간입니다.",
+      "data": {
+        "field": "duration",
+        "allowedValues": [
+          "1d",
+          "1w",
+          "1mo",
+          "3mo",
+          "6mo",
+          "1y"
+        ]
+      }
+    }
+  }
+}

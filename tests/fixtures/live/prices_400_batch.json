@@ -1,0 +1,22 @@
+{
+  "endpoint": "GET /api/v1/prices",
+  "case": "batch_too_large",
+  "status": 400,
+  "source": "synthetic",
+  "note": "spec-derived (openapi.json v1.2.5 examples); replaced by live capture where available",
+  "captured_at_ms": 1785398400000,
+  "body": {
+    "error": {
+      "requestId": "01HXYZABCDEFG123456789",
+      "code": "invalid-request",
+      "message": "요청이 올바르지 않습니다.",
+      "data": {
+        "field": "symbols",
+        "constraint": {
+          "min": 1,
+          "max": 200
+        }
+      }
+    }
+  }
+}

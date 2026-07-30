@@ -1,0 +1,27 @@
+{
+  "endpoint": "GET /api/v1/rankings",
+  "case": "top_losers_realtime_400",
+  "status": 400,
+  "source": "live",
+  "captured_at_ms": 1785402920816,
+  "note": "realtime 미지원 확인",
+  "match": {
+    "type": "TOP_LOSERS",
+    "duration": "realtime"
+  },
+  "headers": {
+    "content-type": "application/json;charset=UTF-8",
+    "x-request-id": "***MASKED***",
+    "x-ratelimit-limit": "5",
+    "x-ratelimit-remaining": "3",
+    "x-ratelimit-reset": "1",
+    "date": "Thu, 30 Jul 2026 09:15:20 GMT"
+  },
+  "body": {
+    "error": {
+      "requestId": "***MASKED***",
+      "code": "unsupported-ranking-duration",
+      "message": "http-400 code=unsupported-ranking-duration message=지원하지 않는 랭킹 기간입니다."
+    }
+  }
+}

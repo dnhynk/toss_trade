@@ -1,0 +1,1218 @@
+{
+  "endpoint": "GET /api/v1/rankings",
+  "case": "toss_amount",
+  "status": 200,
+  "source": "synthetic",
+  "note": "spec-derived (openapi.json v1.2.5 examples); replaced by live capture where available",
+  "captured_at_ms": 1785398400000,
+  "match": {
+    "type": "TOSS_SECURITIES_TRADING_AMOUNT"
+  },
+  "body": {
+    "result": {
+      "rankedAt": "2026-07-30T00:05:00+09:00",
+      "rankings": [
+        {
+          "rank": 1,
+          "symbol": "AAPL",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "22.3",
+            "basePrice": "21.0179",
+            "changeRate": "0.0610"
+          },
+          "tradingVolume": "10002296",
+          "tradingAmount": "223051200.80"
+        },
+        {
+          "rank": 2,
+          "symbol": "NVDA",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "24.39",
+            "basePrice": "19.1595",
+            "changeRate": "0.2730"
+          },
+          "tradingVolume": "9972737",
+          "tradingAmount": "243235055.43"
+        },
+        {
+          "rank": 3,
+          "symbol": "SNTI",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "46.08",
+            "basePrice": "37.4939",
+            "changeRate": "0.2290"
+          },
+          "tradingVolume": "9905995",
+          "tradingAmount": "456468249.60"
+        },
+        {
+          "rank": 4,
+          "symbol": "BTAI",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "36.56",
+            "basePrice": "36.0197",
+            "changeRate": "0.0150"
+          },
+          "tradingVolume": "9807038",
+          "tradingAmount": "358545309.28"
+        },
+        {
+          "rank": 5,
+          "symbol": "VTVT",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "34.75",
+            "basePrice": "32.9696",
+            "changeRate": "0.0540"
+          },
+          "tradingVolume": "9725818",
+          "tradingAmount": "337972175.50"
+        },
+        {
+          "rank": 6,
+          "symbol": "CRKN",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "43.22",
+            "basePrice": "38.0793",
+            "changeRate": "0.1350"
+          },
+          "tradingVolume": "9656476",
+          "tradingAmount": "417352892.72"
+        },
+        {
+          "rank": 7,
+          "symbol": "MULN",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "47.52",
+            "basePrice": "47.8550",
+            "changeRate": "-0.0070"
+          },
+          "tradingVolume": "9584164",
+          "tradingAmount": "455439473.28"
+        },
+        {
+          "rank": 8,
+          "symbol": "AEMD",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "11.85",
+            "basePrice": "11.5836",
+            "changeRate": "0.0230"
+          },
+          "tradingVolume": "9547254",
+          "tradingAmount": "113134959.90"
+        },
+        {
+          "rank": 9,
+          "symbol": "HTOO",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "29.56",
+            "basePrice": "26.0670",
+            "changeRate": "0.1340"
+          },
+          "tradingVolume": "9457480",
+          "tradingAmount": "279563108.80"
+        },
+        {
+          "rank": 10,
+          "symbol": "NUKK",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "3.37",
+            "basePrice": "3.0889",
+            "changeRate": "0.0910"
+          },
+          "tradingVolume": "9396110",
+          "tradingAmount": "31664890.70"
+        },
+        {
+          "rank": 11,
+          "symbol": "SGLY",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "11.3",
+            "basePrice": "9.2320",
+            "changeRate": "0.2240"
+          },
+          "tradingVolume": "9294524",
+          "tradingAmount": "105028121.20"
+        },
+        {
+          "rank": 12,
+          "symbol": "TOPS",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "25.57",
+            "basePrice": "25.3419",
+            "changeRate": "0.0090"
+          },
+          "tradingVolume": "9228096",
+          "tradingAmount": "235962414.72"
+        },
+        {
+          "rank": 13,
+          "symbol": "MK012",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "31.71",
+            "basePrice": "34.5802",
+            "changeRate": "-0.0830"
+          },
+          "tradingVolume": "9181301",
+          "tradingAmount": "291139054.71"
+        },
+        {
+          "rank": 14,
+          "symbol": "MK013",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "40.53",
+            "basePrice": "36.5464",
+            "changeRate": "0.1090"
+          },
+          "tradingVolume": "9086877",
+          "tradingAmount": "368291124.81"
+        },
+        {
+          "rank": 15,
+          "symbol": "MK014",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "28.16",
+            "basePrice": "30.3122",
+            "changeRate": "-0.0710"
+          },
+          "tradingVolume": "9010155",
+          "tradingAmount": "253725964.80"
+        },
+        {
+          "rank": 16,
+          "symbol": "MK015",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.7",
+            "basePrice": "0.5809",
+            "changeRate": "0.2050"
+          },
+          "tradingVolume": "8940448",
+          "tradingAmount": "6258313.60"
+        },
+        {
+          "rank": 17,
+          "symbol": "MK016",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "29.12",
+            "basePrice": "25.5215",
+            "changeRate": "0.1410"
+          },
+          "tradingVolume": "8869341",
+          "tradingAmount": "258275209.92"
+        },
+        {
+          "rank": 18,
+          "symbol": "MK017",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "4.02",
+            "basePrice": "3.3005",
+            "changeRate": "0.2180"
+          },
+          "tradingVolume": "8803359",
+          "tradingAmount": "35389503.18"
+        },
+        {
+          "rank": 19,
+          "symbol": "MK018",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "21.23",
+            "basePrice": "16.6379",
+            "changeRate": "0.2760"
+          },
+          "tradingVolume": "8753332",
+          "tradingAmount": "185833238.36"
+        },
+        {
+          "rank": 20,
+          "symbol": "MK019",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "10.67",
+            "basePrice": "9.4258",
+            "changeRate": "0.1320"
+          },
+          "tradingVolume": "8677018",
+          "tradingAmount": "92583782.06"
+        },
+        {
+          "rank": 21,
+          "symbol": "MK020",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "18",
+            "basePrice": "16.1146",
+            "changeRate": "0.1170"
+          },
+          "tradingVolume": "8599117",
+          "tradingAmount": "154784106.00"
+        },
+        {
+          "rank": 22,
+          "symbol": "MK021",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "29.59",
+            "basePrice": "29.4428",
+            "changeRate": "0.0050"
+          },
+          "tradingVolume": "8540671",
+          "tradingAmount": "252718454.89"
+        },
+        {
+          "rank": 23,
+          "symbol": "MK022",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "4.36",
+            "basePrice": "4.0748",
+            "changeRate": "0.0700"
+          },
+          "tradingVolume": "8479235",
+          "tradingAmount": "36969464.60"
+        },
+        {
+          "rank": 24,
+          "symbol": "MK023",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "41.59",
+            "basePrice": "38.0165",
+            "changeRate": "0.0940"
+          },
+          "tradingVolume": "8385516",
+          "tradingAmount": "348753610.44"
+        },
+        {
+          "rank": 25,
+          "symbol": "MK024",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "10.63",
+            "basePrice": "8.8510",
+            "changeRate": "0.2010"
+          },
+          "tradingVolume": "8314540",
+          "tradingAmount": "88383560.20"
+        },
+        {
+          "rank": 26,
+          "symbol": "MK025",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "43.96",
+            "basePrice": "38.3261",
+            "changeRate": "0.1470"
+          },
+          "tradingVolume": "8265904",
+          "tradingAmount": "363369139.84"
+        },
+        {
+          "rank": 27,
+          "symbol": "MK026",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "43.83",
+            "basePrice": "37.6870",
+            "changeRate": "0.1630"
+          },
+          "tradingVolume": "8168700",
+          "tradingAmount": "358034121.00"
+        },
+        {
+          "rank": 28,
+          "symbol": "MK027",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "27.52",
+            "basePrice": "28.7565",
+            "changeRate": "-0.0430"
+          },
+          "tradingVolume": "8121137",
+          "tradingAmount": "223493690.24"
+        },
+        {
+          "rank": 29,
+          "symbol": "MK028",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "45",
+            "basePrice": "47.3186",
+            "changeRate": "-0.0490"
+          },
+          "tradingVolume": "8056167",
+          "tradingAmount": "362527515.00"
+        },
+        {
+          "rank": 30,
+          "symbol": "MK029",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "42.57",
+            "basePrice": "45.7742",
+            "changeRate": "-0.0700"
+          },
+          "tradingVolume": "7948951",
+          "tradingAmount": "338386844.07"
+        },
+        {
+          "rank": 31,
+          "symbol": "MK030",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "3.35",
+            "basePrice": "3.1723",
+            "changeRate": "0.0560"
+          },
+          "tradingVolume": "7871716",
+          "tradingAmount": "26370248.60"
+        },
+        {
+          "rank": 32,
+          "symbol": "MK031",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "43.95",
+            "basePrice": "40.4696",
+            "changeRate": "0.0860"
+          },
+          "tradingVolume": "7823082",
+          "tradingAmount": "343824453.90"
+        },
+        {
+          "rank": 33,
+          "symbol": "MK032",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "26.85",
+            "basePrice": "22.0988",
+            "changeRate": "0.2150"
+          },
+          "tradingVolume": "7745333",
+          "tradingAmount": "207962191.05"
+        },
+        {
+          "rank": 34,
+          "symbol": "MK033",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "14.11",
+            "basePrice": "12.7577",
+            "changeRate": "0.1060"
+          },
+          "tradingVolume": "7706096",
+          "tradingAmount": "108733014.56"
+        },
+        {
+          "rank": 35,
+          "symbol": "MK034",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "34.86",
+            "basePrice": "30.8223",
+            "changeRate": "0.1310"
+          },
+          "tradingVolume": "7609986",
+          "tradingAmount": "265284111.96"
+        },
+        {
+          "rank": 36,
+          "symbol": "MK035",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "5.97",
+            "basePrice": "5.4720",
+            "changeRate": "0.0910"
+          },
+          "tradingVolume": "7558800",
+          "tradingAmount": "45126036.00"
+        },
+        {
+          "rank": 37,
+          "symbol": "MK036",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "15.55",
+            "basePrice": "14.5463",
+            "changeRate": "0.0690"
+          },
+          "tradingVolume": "7459146",
+          "tradingAmount": "115989720.30"
+        },
+        {
+          "rank": 38,
+          "symbol": "MK037",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "8.2",
+            "basePrice": "8.1430",
+            "changeRate": "0.0070"
+          },
+          "tradingVolume": "7388344",
+          "tradingAmount": "60584420.80"
+        },
+        {
+          "rank": 39,
+          "symbol": "MK038",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "24.26",
+            "basePrice": "25.2708",
+            "changeRate": "-0.0400"
+          },
+          "tradingVolume": "7340585",
+          "tradingAmount": "178082592.10"
+        },
+        {
+          "rank": 40,
+          "symbol": "MK039",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "34.97",
+            "basePrice": "34.4872",
+            "changeRate": "0.0140"
+          },
+          "tradingVolume": "7278221",
+          "tradingAmount": "254519388.37"
+        },
+        {
+          "rank": 41,
+          "symbol": "MK040",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "12.48",
+            "basePrice": "11.8182",
+            "changeRate": "0.0560"
+          },
+          "tradingVolume": "7177192",
+          "tradingAmount": "89571356.16"
+        },
+        {
+          "rank": 42,
+          "symbol": "MK041",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "36.5",
+            "basePrice": "28.8766",
+            "changeRate": "0.2640"
+          },
+          "tradingVolume": "7093260",
+          "tradingAmount": "258903990.00"
+        },
+        {
+          "rank": 43,
+          "symbol": "MK042",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "33.93",
+            "basePrice": "31.7399",
+            "changeRate": "0.0690"
+          },
+          "tradingVolume": "7023989",
+          "tradingAmount": "238323946.77"
+        },
+        {
+          "rank": 44,
+          "symbol": "MK043",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "49.36",
+            "basePrice": "47.5988",
+            "changeRate": "0.0370"
+          },
+          "tradingVolume": "6952196",
+          "tradingAmount": "343160394.56"
+        },
+        {
+          "rank": 45,
+          "symbol": "MK044",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "19.1",
+            "basePrice": "18.1905",
+            "changeRate": "0.0500"
+          },
+          "tradingVolume": "6921581",
+          "tradingAmount": "132202197.10"
+        },
+        {
+          "rank": 46,
+          "symbol": "MK045",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "46.48",
+            "basePrice": "36.6562",
+            "changeRate": "0.2680"
+          },
+          "tradingVolume": "6827093",
+          "tradingAmount": "317323282.64"
+        },
+        {
+          "rank": 47,
+          "symbol": "MK046",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "31.48",
+            "basePrice": "30.5039",
+            "changeRate": "0.0320"
+          },
+          "tradingVolume": "6743143",
+          "tradingAmount": "212274141.64"
+        },
+        {
+          "rank": 48,
+          "symbol": "MK047",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "41.17",
+            "basePrice": "32.2396",
+            "changeRate": "0.2770"
+          },
+          "tradingVolume": "6702704",
+          "tradingAmount": "275950323.68"
+        },
+        {
+          "rank": 49,
+          "symbol": "MK048",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "26.63",
+            "basePrice": "24.5438",
+            "changeRate": "0.0850"
+          },
+          "tradingVolume": "6631065",
+          "tradingAmount": "176585260.95"
+        },
+        {
+          "rank": 50,
+          "symbol": "MK049",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "19.9",
+            "basePrice": "21.2380",
+            "changeRate": "-0.0630"
+          },
+          "tradingVolume": "6523549",
+          "tradingAmount": "129818625.10"
+        },
+        {
+          "rank": 51,
+          "symbol": "MK050",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "13.9",
+            "basePrice": "10.9795",
+            "changeRate": "0.2660"
+          },
+          "tradingVolume": "6456961",
+          "tradingAmount": "89751757.90"
+        },
+        {
+          "rank": 52,
+          "symbol": "MK051",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "49.62",
+            "basePrice": "38.7959",
+            "changeRate": "0.2790"
+          },
+          "tradingVolume": "6414768",
+          "tradingAmount": "318300788.16"
+        },
+        {
+          "rank": 53,
+          "symbol": "MK052",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "21.5",
+            "basePrice": "22.8967",
+            "changeRate": "-0.0610"
+          },
+          "tradingVolume": "6340147",
+          "tradingAmount": "136313160.50"
+        },
+        {
+          "rank": 54,
+          "symbol": "MK053",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "45.49",
+            "basePrice": "45.1738",
+            "changeRate": "0.0070"
+          },
+          "tradingVolume": "6277565",
+          "tradingAmount": "285566431.85"
+        },
+        {
+          "rank": 55,
+          "symbol": "MK054",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "6.49",
+            "basePrice": "5.4676",
+            "changeRate": "0.1870"
+          },
+          "tradingVolume": "6213989",
+          "tradingAmount": "40328788.61"
+        },
+        {
+          "rank": 56,
+          "symbol": "MK055",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "48.24",
+            "basePrice": "47.0175",
+            "changeRate": "0.0260"
+          },
+          "tradingVolume": "6110412",
+          "tradingAmount": "294766274.88"
+        },
+        {
+          "rank": 57,
+          "symbol": "MK056",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "21.65",
+            "basePrice": "17.7459",
+            "changeRate": "0.2200"
+          },
+          "tradingVolume": "6033824",
+          "tradingAmount": "130632289.60"
+        },
+        {
+          "rank": 58,
+          "symbol": "MK057",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1.31",
+            "basePrice": "1.3327",
+            "changeRate": "-0.0170"
+          },
+          "tradingVolume": "5960316",
+          "tradingAmount": "7808013.96"
+        },
+        {
+          "rank": 59,
+          "symbol": "MK058",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "3.13",
+            "basePrice": "2.9143",
+            "changeRate": "0.0740"
+          },
+          "tradingVolume": "5919245",
+          "tradingAmount": "18527236.85"
+        },
+        {
+          "rank": 60,
+          "symbol": "MK059",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "37.7",
+            "basePrice": "33.8117",
+            "changeRate": "0.1150"
+          },
+          "tradingVolume": "5846342",
+          "tradingAmount": "220407093.40"
+        },
+        {
+          "rank": 61,
+          "symbol": "MK060",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "48.11",
+            "basePrice": "46.5280",
+            "changeRate": "0.0340"
+          },
+          "tradingVolume": "5750372",
+          "tradingAmount": "276650396.92"
+        },
+        {
+          "rank": 62,
+          "symbol": "MK061",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "11.3",
+            "basePrice": "11.6495",
+            "changeRate": "-0.0300"
+          },
+          "tradingVolume": "5695707",
+          "tradingAmount": "64361489.10"
+        },
+        {
+          "rank": 63,
+          "symbol": "MK062",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "20.91",
+            "basePrice": "20.4599",
+            "changeRate": "0.0220"
+          },
+          "tradingVolume": "5622208",
+          "tradingAmount": "117560369.28"
+        },
+        {
+          "rank": 64,
+          "symbol": "MK063",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "22.92",
+            "basePrice": "23.7267",
+            "changeRate": "-0.0340"
+          },
+          "tradingVolume": "5548917",
+          "tradingAmount": "127181177.64"
+        },
+        {
+          "rank": 65,
+          "symbol": "MK064",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "25.28",
+            "basePrice": "23.9848",
+            "changeRate": "0.0540"
+          },
+          "tradingVolume": "5476557",
+          "tradingAmount": "138447360.96"
+        },
+        {
+          "rank": 66,
+          "symbol": "MK065",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "48.65",
+            "basePrice": "41.7597",
+            "changeRate": "0.1650"
+          },
+          "tradingVolume": "5385327",
+          "tradingAmount": "261996158.55"
+        },
+        {
+          "rank": 67,
+          "symbol": "MK066",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "31.63",
+            "basePrice": "34.8348",
+            "changeRate": "-0.0920"
+          },
+          "tradingVolume": "5317541",
+          "tradingAmount": "168193821.83"
+        },
+        {
+          "rank": 68,
+          "symbol": "MK067",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "35.98",
+            "basePrice": "31.0708",
+            "changeRate": "0.1580"
+          },
+          "tradingVolume": "5287933",
+          "tradingAmount": "190259829.34"
+        },
+        {
+          "rank": 69,
+          "symbol": "MK068",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "47.38",
+            "basePrice": "48.5451",
+            "changeRate": "-0.0240"
+          },
+          "tradingVolume": "5174030",
+          "tradingAmount": "245145541.40"
+        },
+        {
+          "rank": 70,
+          "symbol": "MK069",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "5.46",
+            "basePrice": "5.6173",
+            "changeRate": "-0.0280"
+          },
+          "tradingVolume": "5121816",
+          "tradingAmount": "27965115.36"
+        },
+        {
+          "rank": 71,
+          "symbol": "MK070",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "8.72",
+            "basePrice": "8.3605",
+            "changeRate": "0.0430"
+          },
+          "tradingVolume": "5060221",
+          "tradingAmount": "44125127.12"
+        },
+        {
+          "rank": 72,
+          "symbol": "MK071",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "38.29",
+            "basePrice": "33.9150",
+            "changeRate": "0.1290"
+          },
+          "tradingVolume": "4974061",
+          "tradingAmount": "190456795.69"
+        },
+        {
+          "rank": 73,
+          "symbol": "MK072",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "35.09",
+            "basePrice": "31.4991",
+            "changeRate": "0.1140"
+          },
+          "tradingVolume": "4891706",
+          "tradingAmount": "171649963.54"
+        },
+        {
+          "rank": 74,
+          "symbol": "MK073",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "36.05",
+            "basePrice": "36.1585",
+            "changeRate": "-0.0030"
+          },
+          "tradingVolume": "4826748",
+          "tradingAmount": "174004265.40"
+        },
+        {
+          "rank": 75,
+          "symbol": "MK074",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "19.13",
+            "basePrice": "21.1381",
+            "changeRate": "-0.0950"
+          },
+          "tradingVolume": "4771109",
+          "tradingAmount": "91271315.17"
+        },
+        {
+          "rank": 76,
+          "symbol": "MK075",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "2.97",
+            "basePrice": "2.4586",
+            "changeRate": "0.2080"
+          },
+          "tradingVolume": "4718935",
+          "tradingAmount": "14015236.95"
+        },
+        {
+          "rank": 77,
+          "symbol": "MK076",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "6",
+            "basePrice": "6.0302",
+            "changeRate": "-0.0050"
+          },
+          "tradingVolume": "4605185",
+          "tradingAmount": "27631110.00"
+        },
+        {
+          "rank": 78,
+          "symbol": "MK077",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "37.82",
+            "basePrice": "30.4509",
+            "changeRate": "0.2420"
+          },
+          "tradingVolume": "4539630",
+          "tradingAmount": "171688806.60"
+        },
+        {
+          "rank": 79,
+          "symbol": "MK078",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "39.48",
+            "basePrice": "31.8131",
+            "changeRate": "0.2410"
+          },
+          "tradingVolume": "4494493",
+          "tradingAmount": "177442583.64"
+        },
+        {
+          "rank": 80,
+          "symbol": "MK079",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "3.79",
+            "basePrice": "3.1822",
+            "changeRate": "0.1910"
+          },
+          "tradingVolume": "4439762",
+          "tradingAmount": "16826697.98"
+        },
+        {
+          "rank": 81,
+          "symbol": "MK080",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "39.94",
+            "basePrice": "41.0062",
+            "changeRate": "-0.0260"
+          },
+          "tradingVolume": "4344063",
+          "tradingAmount": "173501876.22"
+        },
+        {
+          "rank": 82,
+          "symbol": "MK081",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "6.14",
+            "basePrice": "5.7223",
+            "changeRate": "0.0730"
+          },
+          "tradingVolume": "4292342",
+          "tradingAmount": "26354979.88"
+        },
+        {
+          "rank": 83,
+          "symbol": "MK082",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "6.95",
+            "basePrice": "5.5823",
+            "changeRate": "0.2450"
+          },
+          "tradingVolume": "4204932",
+          "tradingAmount": "29224277.40"
+        },
+        {
+          "rank": 84,
+          "symbol": "MK083",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "24.07",
+            "basePrice": "22.7936",
+            "changeRate": "0.0560"
+          },
+          "tradingVolume": "4154668",
+          "tradingAmount": "100002858.76"
+        },
+        {
+          "rank": 85,
+          "symbol": "MK084",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "25.21",
+            "basePrice": "22.1335",
+            "changeRate": "0.1390"
+          },
+          "tradingVolume": "4084462",
+          "tradingAmount": "102969287.02"
+        },
+        {
+          "rank": 86,
+          "symbol": "MK085",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "10.67",
+            "basePrice": "8.2140",
+            "changeRate": "0.2990"
+          },
+          "tradingVolume": "3967366",
+          "tradingAmount": "42331795.22"
+        },
+        {
+          "rank": 87,
+          "symbol": "MK086",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "40.67",
+            "basePrice": "43.4509",
+            "changeRate": "-0.0640"
+          },
+          "tradingVolume": "3913788",
+          "tradingAmount": "159173757.96"
+        },
+        {
+          "rank": 88,
+          "symbol": "MK087",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "31.76",
+            "basePrice": "34.5217",
+            "changeRate": "-0.0800"
+          },
+          "tradingVolume": "3852866",
+          "tradingAmount": "122367024.16"
+        },
+        {
+          "rank": 89,
+          "symbol": "MK088",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "46.44",
+            "basePrice": "40.1036",
+            "changeRate": "0.1580"
+          },
+          "tradingVolume": "3786739",
+          "tradingAmount": "175856159.16"
+        },
+        {
+          "rank": 90,
+          "symbol": "MK089",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "37.35",
+            "basePrice": "30.0967",
+            "changeRate": "0.2410"
+          },
+          "tradingVolume": "3730862",
+          "tradingAmount": "139347695.70"
+        },
+        {
+          "rank": 91,
+          "symbol": "MK090",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "38.28",
+            "basePrice": "30.3810",
+            "changeRate": "0.2600"
+          },
+          "tradingVolume": "3622454",
+          "tradingAmount": "138667539.12"
+        },
+        {
+          "rank": 92,
+          "symbol": "MK091",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "24.23",
+            "basePrice": "19.6353",
+            "changeRate": "0.2340"
+          },
+          "tradingVolume": "3576628",
+          "tradingAmount": "86661696.44"
+        },
+        {
+          "rank": 93,
+          "symbol": "MK092",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "25.72",
+            "basePrice": "22.3070",
+            "changeRate": "0.1530"
+          },
+          "tradingVolume": "3516547",
+          "tradingAmount": "90445588.84"
+        },
+        {
+          "rank": 94,
+          "symbol": "MK093",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "44.27",
+            "basePrice": "38.1967",
+            "changeRate": "0.1590"
+          },
+          "tradingVolume": "3420384",
+          "tradingAmount": "151420399.68"
+        },
+        {
+          "rank": 95,
+          "symbol": "MK094",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "9.25",
+            "basePrice": "7.6510",
+            "changeRate": "0.2090"
+          },
+          "tradingVolume": "3340991",
+          "tradingAmount": "30904166.75"
+        },
+        {
+          "rank": 96,
+          "symbol": "MK095",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "2.76",
+            "basePrice": "2.7327",
+            "changeRate": "0.0100"
+          },
+          "tradingVolume": "3276358",
+          "tradingAmount": "9042748.08"
+        },
+        {
+          "rank": 97,
+          "symbol": "MK096",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "27.37",
+            "basePrice": "21.6706",
+            "changeRate": "0.2630"
+          },
+          "tradingVolume": "3223553",
+          "tradingAmount": "88228645.61"
+        },
+        {
+          "rank": 98,
+          "symbol": "MK097",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "30.01",
+            "basePrice": "24.9875",
+            "changeRate": "0.2010"
+          },
+          "tradingVolume": "3116709",
+          "tradingAmount": "93532437.09"
+        },
+        {
+          "rank": 99,
+          "symbol": "MK098",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1.59",
+            "basePrice": "1.7097",
+            "changeRate": "-0.0700"
+          },
+          "tradingVolume": "3051032",
+          "tradingAmount": "4851140.88"
+        },
+        {
+          "rank": 100,
+          "symbol": "MK099",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "6.56",
+            "basePrice": "7.0766",
+            "changeRate": "-0.0730"
+          },
+          "tradingVolume": "2976807",
+          "tradingAmount": "19527853.92"
+        }
+      ]
+    }
+  }
+}

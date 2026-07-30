@@ -1,0 +1,16 @@
+{
+  "endpoint": "GET /api/v1/orderbook",
+  "case": "empty",
+  "status": 200,
+  "source": "synthetic",
+  "note": "spec-derived (openapi.json v1.2.5 examples); replaced by live capture where available",
+  "captured_at_ms": 1785398400000,
+  "body": {
+    "result": {
+      "timestamp": null,
+      "currency": "USD",
+      "asks": [],
+      "bids": []
+    }
+  }
+}

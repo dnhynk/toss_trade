@@ -1,0 +1,24 @@
+{
+  "endpoint": "GET /api/v1/commissions",
+  "case": "default",
+  "status": 200,
+  "source": "synthetic",
+  "note": "실측 수수료율은 docs/06_live_facts.md 참조",
+  "captured_at_ms": 1785398400000,
+  "body": {
+    "result": [
+      {
+        "marketCountry": "KR",
+        "commissionRate": "0.015",
+        "startDate": null,
+        "endDate": null
+      },
+      {
+        "marketCountry": "US",
+        "commissionRate": "0.1",
+        "startDate": null,
+        "endDate": null
+      }
+    ]
+  }
+}

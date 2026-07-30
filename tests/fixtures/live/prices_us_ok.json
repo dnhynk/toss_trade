@@ -1,0 +1,84 @@
+{
+  "endpoint": "GET /api/v1/prices",
+  "case": "default",
+  "status": 200,
+  "source": "synthetic",
+  "note": "symbol catalogue for the mock; unknown symbols are synthesized deterministically",
+  "captured_at_ms": 1785398400000,
+  "body": {
+    "result": [
+      {
+        "symbol": "AAPL",
+        "timestamp": "2026-07-30T00:00:25.000+09:00",
+        "lastPrice": "212.45",
+        "currency": "USD"
+      },
+      {
+        "symbol": "NVDA",
+        "timestamp": "2026-07-30T00:00:29.000+09:00",
+        "lastPrice": "178.20",
+        "currency": "USD"
+      },
+      {
+        "symbol": "SNTI",
+        "timestamp": "2026-07-30T00:00:16.000+09:00",
+        "lastPrice": "1.87",
+        "currency": "USD"
+      },
+      {
+        "symbol": "BTAI",
+        "timestamp": "2026-07-30T00:00:49.000+09:00",
+        "lastPrice": "3.42",
+        "currency": "USD"
+      },
+      {
+        "symbol": "VTVT",
+        "timestamp": "2026-07-30T00:00:48.000+09:00",
+        "lastPrice": "0.61",
+        "currency": "USD"
+      },
+      {
+        "symbol": "CRKN",
+        "timestamp": "2026-07-30T00:00:38.000+09:00",
+        "lastPrice": "0.24",
+        "currency": "USD"
+      },
+      {
+        "symbol": "MULN",
+        "timestamp": "2026-07-30T00:00:58.000+09:00",
+        "lastPrice": "0.38",
+        "currency": "USD"
+      },
+      {
+        "symbol": "AEMD",
+        "timestamp": "2026-07-30T00:00:26.000+09:00",
+        "lastPrice": "2.15",
+        "currency": "USD"
+      },
+      {
+        "symbol": "HTOO",
+        "timestamp": "2026-07-30T00:00:42.000+09:00",
+        "lastPrice": "4.93",
+        "currency": "USD"
+      },
+      {
+        "symbol": "NUKK",
+        "timestamp": "2026-07-30T00:00:13.000+09:00",
+        "lastPrice": "8.11",
+        "currency": "USD"
+      },
+      {
+        "symbol": "SGLY",
+        "timestamp": "2026-07-30T00:00:16.000+09:00",
+        "lastPrice": "1.42",
+        "currency": "USD"
+      },
+      {
+        "symbol": "TOPS",
+        "timestamp": "2026-07-30T00:00:41.000+09:00",
+        "lastPrice": "0.95",
+        "currency": "USD"
+      }
+    ]
+  }
+}

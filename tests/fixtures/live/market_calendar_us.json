@@ -1,0 +1,69 @@
+{
+  "endpoint": "GET /api/v1/market-calendar/US",
+  "case": "default",
+  "status": 200,
+  "source": "synthetic",
+  "note": "spec-derived (openapi.json v1.2.5 examples); replaced by live capture where available",
+  "captured_at_ms": 1785398400000,
+  "body": {
+    "result": {
+      "today": {
+        "date": "2026-07-30",
+        "dayMarket": {
+          "startTime": "2026-07-30T09:00:00+09:00",
+          "endTime": "2026-07-30T16:50:00+09:00"
+        },
+        "preMarket": {
+          "startTime": "2026-07-30T17:00:00+09:00",
+          "endTime": "2026-07-30T22:30:00+09:00"
+        },
+        "regularMarket": {
+          "startTime": "2026-07-30T22:30:00+09:00",
+          "endTime": "2026-07-31T05:00:00+09:00"
+        },
+        "afterMarket": {
+          "startTime": "2026-07-31T05:00:00+09:00",
+          "endTime": "2026-07-31T07:00:00+09:00"
+        }
+      },
+      "previousBusinessDay": {
+        "date": "2026-07-29",
+        "dayMarket": {
+          "startTime": "2026-07-29T09:00:00+09:00",
+          "endTime": "2026-07-29T16:50:00+09:00"
+        },
+        "preMarket": {
+          "startTime": "2026-07-29T17:00:00+09:00",
+          "endTime": "2026-07-29T22:30:00+09:00"
+        },
+        "regularMarket": {
+          "startTime": "2026-07-29T22:30:00+09:00",
+          "endTime": "2026-07-30T05:00:00+09:00"
+        },
+        "afterMarket": {
+          "startTime": "2026-07-30T05:00:00+09:00",
+          "endTime": "2026-07-30T07:00:00+09:00"
+        }
+      },
+      "nextBusinessDay": {
+        "date": "2026-07-31",
+        "dayMarket": {
+          "startTime": "2026-07-31T09:00:00+09:00",
+          "endTime": "2026-07-31T16:50:00+09:00"
+        },
+        "preMarket": {
+          "startTime": "2026-07-31T17:00:00+09:00",
+          "endTime": "2026-07-31T22:30:00+09:00"
+        },
+        "regularMarket": {
+          "startTime": "2026-07-31T22:30:00+09:00",
+          "endTime": "2026-08-01T05:00:00+09:00"
+        },
+        "afterMarket": {
+          "startTime": "2026-08-01T05:00:00+09:00",
+          "endTime": "2026-08-01T07:00:00+09:00"
+        }
+      }
+    }
+  }
+}

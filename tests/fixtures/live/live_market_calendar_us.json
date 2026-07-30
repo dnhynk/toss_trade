@@ -1,0 +1,78 @@
+{
+  "endpoint": "GET /api/v1/market-calendar/US",
+  "case": "default",
+  "status": 200,
+  "source": "live",
+  "captured_at_ms": 1785402855991,
+  "note": "라이브 캡처",
+  "headers": {
+    "content-type": "application/json;charset=UTF-8",
+    "x-request-id": "***MASKED***",
+    "x-ratelimit-limit": "3",
+    "x-ratelimit-remaining": "2",
+    "x-ratelimit-reset": "1",
+    "date": "Thu, 30 Jul 2026 09:14:15 GMT",
+    "set-cookie": "***MASKED***"
+  },
+  "body": {
+    "result": {
+      "today": {
+        "date": "2026-07-30",
+        "dayMarket": {
+          "startTime": "2026-07-30T09:00:00.000+09:00",
+          "endTime": "2026-07-30T17:00:00.000+09:00"
+        },
+        "preMarket": {
+          "startTime": "2026-07-30T17:00:00.000+09:00",
+          "endTime": "2026-07-30T22:30:00.000+09:00"
+        },
+        "regularMarket": {
+          "startTime": "2026-07-30T22:30:00.000+09:00",
+          "endTime": "2026-07-31T05:00:00.000+09:00"
+        },
+        "afterMarket": {
+          "startTime": "2026-07-31T05:00:00.000+09:00",
+          "endTime": "2026-07-31T08:50:00.000+09:00"
+        }
+      },
+      "previousBusinessDay": {
+        "date": "2026-07-29",
+        "dayMarket": {
+          "startTime": "2026-07-29T09:00:00.000+09:00",
+          "endTime": "2026-07-29T17:00:00.000+09:00"
+        },
+        "preMarket": {
+          "startTime": "2026-07-29T17:00:00.000+09:00",
+          "endTime": "2026-07-29T22:30:00.000+09:00"
+        },
+        "regularMarket": {
+          "startTime": "2026-07-29T22:30:00.000+09:00",
+          "endTime": "2026-07-30T05:00:00.000+09:00"
+        },
+        "afterMarket": {
+          "startTime": "2026-07-30T05:00:00.000+09:00",
+          "endTime": "2026-07-30T08:50:00.000+09:00"
+        }
+      },
+      "nextBusinessDay": {
+        "date": "2026-07-31",
+        "dayMarket": {
+          "startTime": "2026-07-31T09:00:00.000+09:00",
+          "endTime": "2026-07-31T17:00:00.000+09:00"
+        },
+        "preMarket": {
+          "startTime": "2026-07-31T17:00:00.000+09:00",
+          "endTime": "2026-07-31T22:30:00.000+09:00"
+        },
+        "regularMarket": {
+          "startTime": "2026-07-31T22:30:00.000+09:00",
+          "endTime": "2026-08-01T05:00:00.000+09:00"
+        },
+        "afterMarket": {
+          "startTime": "2026-08-01T05:00:00.000+09:00",
+          "endTime": "2026-08-01T08:50:00.000+09:00"
+        }
+      }
+    }
+  }
+}
