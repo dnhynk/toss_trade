@@ -1,7 +1,13 @@
 # HANDOFF — W6 (적대적 감사자)
 
-> 런타임 리셋 대비 인수인계. 작성 시각 2026-07-31, 리셋 예고 직후.
-> 옛 taskId(`task_88a85411d02f`)·dispatchId(`ctx_411a9fd3357c`)는 **버릴 것**.
+> 런타임 리셋 대비 인수인계. 작성 2026-07-31.
+>
+> **갱신 (코디네이터 교체 공지 후):** 예고됐던 런타임 리셋은 **일어나지 않았다** —
+> 리셋이 아니라 **코디네이터 세션 교체**였다(새 Run `run_92948a1f80a5`).
+> 따라서 **옛 `task_88a85411d02f` / `ctx_411a9fd3357c` 는 그대로 유효하다**
+> (이 문서 최초 작성 시점의 "버릴 것" 지시는 무효).
+> 아래 "수정/미수정" 표는 그 사이 main 이 `4869293` → **`1ae493f`** 로 나아가서
+> **재대조해 갱신했다.** 갱신 시점 기준으로 읽어라.
 
 ## 신원
 
@@ -68,30 +74,45 @@ W6 를 다시 부를 때는 `main` 에서 새 브랜치를 따는 편이 낫다.
 | M-11 | `endpoints.py:75-80` dot segment 정규화 대신 **거부** |
 | M-7 | `d787c41` live_probe 호스트 상수 정리 |
 
-### **아직 안 고쳐진 것 (main 에서 확인)** ← 여기서 재개
+### 이후 추가로 수정 확인됨 (main `1ae493f` 재대조)
+
+| 감사 # | 근거 |
+|---|---|
+| M-2 | `models.py:72` — 절삭을 반올림으로 교체(주석에 이전 구현 명시) |
+| M-3 | `features.py` `_history_features` 가 calendar 를 받는다 (UTC 날짜 그룹핑 탈피) |
+| M-4 | `baselines.py` 에 조기폐장 처리 유입 |
+| 미확인 #3 | **계약 A7 로 해소** — `tokens.py:103` `os.chmod(p, 0o600)`, 그리고 `:88-90` 에
+  "Windows 의 `os.chmod` 는 읽기전용 비트만 만지고 **ACL 에는 영향 없다**"를 명시.
+  내가 §4 에 "Windows 에서 `st_mode` 는 무의미하다"고 남긴 caveat 이 그대로 반영됐다 |
+
+### **아직 안 고쳐진 것 (main `1ae493f` 에서 재확인)** ← 여기서 재개
+
+> ⚠️ 코디네이터 교체 공지는 "감사 blocker 3건 + **잔여 항목 해소 완료**"라고 했으나,
+> 재대조 결과 **아래 6건은 아직 남아 있다.** 치명 3건이 전부 해소된 것은 사실이다.
 
 1. **H-8 (높음) — `ops/opsconfig.py:64` 가 여전히 `["python","-m","tossmon.collector.main"]`.**
    그런 모듈은 없다(진입점은 `tossmon.collector`). `ops_config.yaml` 에 `collector_cmd` 가
    없으면 supervisor 가 즉사하는 자식을 반복 spawn 하다 재시작 폭주 가드에 걸려 **조용히 포기**한다.
-   **남은 것 중 가장 심각하다. 한 줄 수정이다.**
-2. **M-12 (중간)** — `last_ranking_snap_ms` 가 `state_snapshot`(`loops.py:703`)에 저장되지만
-   `load_state` 는 복원하지 않고, 코드 어디서도 읽지 않는다. `rankings_snap` 은 사후 조회가
-   불가능한 유일한 데이터인데 정전 구간 경고가 없다.
+   **남은 것 중 유일한 '높음'이고 한 줄 수정이다.**
+   지금 W5 가 supervisor 로 라이브 재수집 중이므로 **운영상 현재진행형 위험**이다 —
+   지금 도는 프로세스는 유효한 cmd 로 떴겠지만, 설정을 못 찾는 컨텍스트에서 재기동되면
+   그 밤 수집이 통째로 조용히 비어버린다.
+2. **M-12 (중간)** — `last_ranking_snap_ms` 가 `state_snapshot` 에 저장되지만
+   `load_state` 는 복원하지 않고(재확인: 해당 함수에 `ranking` 언급 0회), 코드 어디서도 읽지 않는다.
+   `rankings_snap` 은 사후 조회가 불가능한 유일한 데이터인데 정전 구간 경고가 없다.
 3. **M-8 (중간)** — `evaluate.py:63` `_gate` 가 `rvol_gated` 컬럼이 없으면 **조용히 전부 통과**시키고
    `n_ungated_excluded=0` 을 보고한다. `Reader.read_events` 는 `meta_json` 을 펼치지 않으므로
    `expand_meta_json` 없이 q1~q6 를 부르면 A1 §6 게이트가 통째로 무력화된다.
-4. **M-2 (중간)** — `models.py:62` `int(dt.timestamp()*1000)` 절삭 그대로. `round()` 로 바꾸면 끝.
-5. **M-10 (중간)** — `tools/dryrun_night.py:42-46` `EXPECTED_INTERVAL_S` 가 `trades:8/orderbook:8`,
+4. **M-10 (중간)** — `tools/dryrun_night.py:43-47` `EXPECTED_INTERVAL_S` 가 `trades:8/orderbook:8`,
    config 는 `4/16`. 테이프 공백을 놓치고 호가 공백을 허위 경보한다.
-6. **M-3 / M-4 (중간)** — 수정 흔적을 못 찾았다(재확인 필요).
-   ⚠️ **M-4 는 특히 주의**: `baselines.py:5-7` 의 docstring 이 "조기폐장·세션 길이 차이에
-   **자동 대응한다**"고 적어 두었는데 **내 재현이 그 반대를 보였다** (반일장 종가 스파이크가
-   `rvol_bar` 100배). 문서가 틀린 채로 남아 있으면 다음 사람이 믿는다.
-   **M-3 은 2026-11-01 서머타임 종료부터 발현한다 — 기한이 있다.**
-7. **M-5, M-6, L-1~L-7** — 미확인/미재확인. `SESSION_TIER_SCALE[CLOSED]=0.0`(`loops.py:129`)은
-   그대로라 M-5(세션 종료 시 티어 일괄 강등)는 남아 있을 것으로 보인다.
-   `on_new_data(..., reason="score")`(`detector.py:342`)와
-   `compute_daily_baseline(df_1d, window_days=20)`(`baselines.py:78`)도 그대로 → M-6 미해결.
+   **W5 의 재수집 리포트를 이 도구로 뽑는다면 그 결측 판정은 신뢰하지 마라.**
+5. **M-6 (중간)** — `detector.py:342-343` `on_new_data(..., reason: str = "score")` 그대로.
+   계약 A1 §2 는 `*` 뒤 기본값 None 키워드 전용만 허용한다. 호환성 문제는 없으니
+   "고치거나 계약 문구를 승인으로 완화하거나" 둘 중 하나면 된다.
+6. **M-5 (중간)** — `loops.py:129` `SESSION_TIER_SCALE[CLOSED]=0.0` 그대로 →
+   세션 종료 시 티어 일괄 강등 + `promotions` 테이블 오염 + 재개 직후 백필 폭풍이 남아 있다.
+
+`L-1~L-7` 은 재대조하지 않았다.
 
 ### 미확인 중 값싸게 해소되는 것 (우선)
 
