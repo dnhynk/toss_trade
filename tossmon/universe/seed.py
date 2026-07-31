@@ -35,6 +35,7 @@ def fetch_symbol_directory(cache_dir: Path) -> list[str]:
     failures: list[str] = []
     for filename, url in DIRECTORY_URLS.items():
         cache_path = cache_dir / filename
+        use_cache_fallback = False
         try:
             request = Request(url, headers={"User-Agent": "tossmon/0.1 symbol-directory"})
             with urlopen(request, timeout=15.0) as response:
@@ -55,6 +56,12 @@ def fetch_symbol_directory(cache_dir: Path) -> list[str]:
             if not cache_path.exists():
                 failures.append(f"{filename}: {exc}")
                 continue
+            use_cache_fallback = True
+        # 캐시 폴백 파싱은 except 블록 **밖**에서 한다(U-4) — 여기서 실패해도 새 예외의
+        # __context__ 가 방금 잡은 네트워크/파싱 예외에 매달리지 않는다. parse_directory_file
+        # 자체도 내용을 노출하지 않게 고쳐져 있지만(U-4), 체인까지 끊어야 감사 통과 기준을
+        # 만족한다 — 원문이 없어도 __context__ 가 남아 있으면 실패로 친다.
+        if use_cache_fallback:
             parsed = parse_directory_file(cache_path)
         symbols.update(parsed)
     if failures:
@@ -63,37 +70,53 @@ def fetch_symbol_directory(cache_dir: Path) -> list[str]:
 
 
 def parse_directory_file(path: Path) -> list[str]:
-    """파일 포맷 파싱 (테스트 심볼·ETF 플래그 등 이상 케이스 처리)."""
-    with Path(path).open("r", encoding="utf-8-sig", newline="") as handle:
-        rows = csv.DictReader(handle, delimiter="|")
-        if rows.fieldnames is None:
-            raise ValueError("symbol directory has no header")
-        fields = {field.strip() for field in rows.fieldnames if field}
-        symbol_field = next(
-            (name for name in ("Symbol", "ACT Symbol", "NASDAQ Symbol") if name in fields),
-            None,
-        )
-        if symbol_field is None:
-            raise ValueError("symbol directory has no recognized symbol column")
+    """파일 포맷 파싱 (테스트 심볼·ETF 플래그 등 이상 케이스 처리).
 
-        symbols: set[str] = set()
-        rejected_charset = 0
-        for raw in rows:
-            row = {
-                (key.strip() if key else ""): (value.strip() if value else "")
-                for key, value in raw.items()
-            }
-            symbol = row.get(symbol_field, "").upper()
-            if not symbol or symbol.startswith("FILE CREATION TIME"):
-                continue
-            if row.get("Test Issue", "").upper() == "Y":
-                continue
-            if row.get("ETF", "").upper() == "Y":
-                continue
-            if not TOSS_SYMBOL_RE.fullmatch(symbol):
-                rejected_charset += 1
-                continue
-            symbols.add(symbol)
+    인코딩이 깨진 파일을 열면 `UnicodeDecodeError.args`(`object` 필드)에 **읽던 바이트
+    원문 전체**가 그대로 실린다 (감사 U-4 실측 확인 — `str(exc)`는 안전해 보여도 `.args`는
+    아니다). 여기서 잡아 우리 문구로 갈아끼우고 except 블록 **밖**에서 raise 한다 —
+    `from None` 만으로는 traceback **표시**만 억제될 뿐 `__context__`엔 원본이 그대로
+    매달려 있다. 블록 밖에서 raise 해야 활성 예외가 없어 `__context__`가 아예 None이 된다.
+    """
+    bad_encoding = False
+    symbols: set[str] = set()
+    rejected_charset = 0
+    try:
+        with Path(path).open("r", encoding="utf-8-sig", newline="") as handle:
+            rows = csv.DictReader(handle, delimiter="|")
+            if rows.fieldnames is None:
+                raise ValueError("symbol directory has no header")
+            fields = {field.strip() for field in rows.fieldnames if field}
+            symbol_field = next(
+                (name for name in ("Symbol", "ACT Symbol", "NASDAQ Symbol") if name in fields),
+                None,
+            )
+            if symbol_field is None:
+                raise ValueError("symbol directory has no recognized symbol column")
+
+            for raw in rows:
+                row = {
+                    (key.strip() if key else ""): (value.strip() if value else "")
+                    for key, value in raw.items()
+                }
+                symbol = row.get(symbol_field, "").upper()
+                if not symbol or symbol.startswith("FILE CREATION TIME"):
+                    continue
+                if row.get("Test Issue", "").upper() == "Y":
+                    continue
+                if row.get("ETF", "").upper() == "Y":
+                    continue
+                if not TOSS_SYMBOL_RE.fullmatch(symbol):
+                    rejected_charset += 1
+                    continue
+                symbols.add(symbol)
+    except (UnicodeDecodeError, csv.Error):
+        bad_encoding = True
+    if bad_encoding:
+        raise ValueError(
+            f"{path} is not readable as a symbol directory (bad encoding — "
+            "content withheld, 감사 U-4)"
+        )
     if rejected_charset:
         log.info(
             "%s: %d symbol(s) rejected — outside Toss API charset [A-Za-z0-9.-] "

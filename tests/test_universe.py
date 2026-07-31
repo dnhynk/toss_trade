@@ -351,6 +351,75 @@ def test_seed_raises_when_network_and_cache_both_unavailable(tmp_path, monkeypat
         fetch_symbol_directory(cache_dir)
 
 
+def _assert_no_leak_in_chain(exc: BaseException, sentinel: str) -> None:
+    """감사 U-4 통과 기준: __context__/__cause__ 둘 다 None이고, str/traceback/
+    doc·msg·args 어디에도 원문이 없어야 한다 (체인 전체 재귀 확인)."""
+    import traceback
+
+    assert sentinel not in str(exc)
+    assert sentinel not in traceback.format_exc()
+    for attr in ("doc", "msg", "args"):
+        assert sentinel not in str(getattr(exc, attr, "")), f"leaked via .{attr}"
+    assert any(
+        sentinel.encode() in a for a in exc.args if isinstance(a, bytes)
+    ) is False, "leaked via raw bytes in .args"
+    assert exc.__context__ is None, "__context__ still holds the original exception"
+    assert exc.__cause__ is None, "__cause__ still holds the original exception"
+
+
+def test_parse_directory_file_bad_encoding_never_leaks_content(tmp_path):
+    """감사 U-4: `UnicodeDecodeError.args`(`object` 필드)는 읽던 바이트 원문 전체를
+    그대로 들고 다닌다 — str(exc)만 보고 안전하다 판단하면 놓친다(실측 확인)."""
+    sentinel = "SENTINEL_VALUE_LEAK_CHECK"
+    directory = tmp_path / "nasdaqlisted.txt"
+    payload = (
+        f"Symbol|Name\n{sentinel}|x\n".encode("utf-8")
+        + b"\xff\xfe"
+        + sentinel.encode()
+    )
+    directory.write_bytes(payload)
+
+    with pytest.raises(ValueError, match="not readable"):
+        parse_directory_file(directory)
+
+    # Re-raise to capture the exception object + a real traceback for the checklist.
+    try:
+        parse_directory_file(directory)
+    except ValueError as exc:
+        _assert_no_leak_in_chain(exc, sentinel)
+    else:
+        pytest.fail("expected ValueError")
+
+
+def test_fetch_symbol_directory_cache_fallback_never_leaks_content(tmp_path, monkeypatch):
+    """네트워크가 죽고 캐시도 깨졌을 때(라이브에서 있을 법한 조합) 최종 예외 체인에
+    원문이 남지 않는지 — parse_directory_file 자체의 방어와, fetch_symbol_directory 가
+    폴백 파싱을 except 블록 밖에서 하는 구조 둘 다를 함께 검증한다."""
+    sentinel = "SENTINEL_VALUE_LEAK_CHECK"
+    cache_dir = tmp_path / "nasdaq-trader"
+    cache_dir.mkdir()
+    payload = (
+        f"Symbol|Name\n{sentinel}|x\n".encode("utf-8")
+        + b"\xff\xfe"
+        + sentinel.encode()
+    )
+    (cache_dir / "nasdaqlisted.txt").write_bytes(payload)
+    (cache_dir / "otherlisted.txt").write_text(
+        "ACT Symbol|Name\nGOOD|x\n", encoding="utf-8"
+    )
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("network unavailable")
+
+    monkeypatch.setattr(seed_module, "urlopen", _boom)
+    try:
+        fetch_symbol_directory(cache_dir)
+    except Exception as exc:
+        _assert_no_leak_in_chain(exc, sentinel)
+    else:
+        pytest.fail("expected an exception (bad cache, no network)")
+
+
 def _yaml_path(path: Path) -> str:
     return Path(path).as_posix()
 
