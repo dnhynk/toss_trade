@@ -316,7 +316,9 @@ def test_sample_filter_keeps_only_qualifying_events() -> None:
     assert by["price_out_of_range"] == 2       # CHEAP($0.05), PRICEY($25)
     assert by["mcap_out_of_range"] == 1
     assert by["meta_missing"] == 1
-    assert set(reasons["reason"]) == set(E.EXCLUSION_REASONS), "0건 사유도 행으로 남는다"
+    assert set(E.EXCLUSION_REASONS) <= set(reasons["reason"]), "0건 사유도 행으로 남는다"
+    ev_rows = reasons[reasons["scope"] == "event"]
+    assert set(ev_rows["reason"]) == set(E.EXCLUSION_REASONS)
     assert int(reasons["n_total"].iloc[0]) == 7
     assert int(reasons["n_kept"].iloc[0]) == 1
 

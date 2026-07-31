@@ -189,6 +189,7 @@ def extract_precursor_features(df_1m: pd.DataFrame, rankings: pd.DataFrame,
                                shares_outstanding_qu: int | None = None,
                                prior_events: pd.DataFrame | None = None,
                                prev_close_u: int | None = None,
+                               split_dates: set[str] | None = None,
                                toss_type: str = TOSS_RANK_TYPE,
                                market_type: str = MARKET_RANK_TYPE) -> dict[str, float]:
     """T0 이전 구간만으로 전조 피처를 만든다. 반환 키는 `feature_names()` 와 동일.
@@ -204,6 +205,9 @@ def extract_precursor_features(df_1m: pd.DataFrame, rankings: pd.DataFrame,
         prev_close_u           직전 매매일 **정규장 마지막 1분봉 종가(원주가)**.
                                `gap_from_prev_close` 전용이며 없으면 그 피처는 NaN —
                                일봉(수정주가) 대체는 금지다 (사전등록 §2.3)
+        split_dates            분할 매매일 date 집합 (사전등록 §7-e). 컷오프가 분할일에
+                               속하면 `gap_from_prev_close` 를 NaN 으로 둔다 — 원주가
+                               계열에서 분할 전일 종가와 비교하면 가짜 갭이 나온다
         toss_type/market_type  토스 쏠림도에 쓸 랭킹 type 2종
     """
     pre = cut_frame(df_1m, t0_ms, include_t0=include_t0).sort_values("ts_ms")
@@ -229,6 +233,14 @@ def extract_precursor_features(df_1m: pd.DataFrame, rankings: pd.DataFrame,
 
     _volume_features(feats, pre, cutoff, windows_min, curve, calendar, baseline,
                      sess_start)
+    # 사전등록 §7-e: 분할 매매일이면 전일 종가 비교 자체가 무의미하다.
+    cutoff_day = None
+    for _lo, _hi, _d in market_day_spans(calendar):
+        if _lo <= cutoff < _hi:
+            cutoff_day = _d
+            break
+    if split_dates and cutoff_day is not None and cutoff_day in split_dates:
+        prev_close_u = None
     _price_features(feats, pre, cutoff, close_cut, windows_min, baseline, sess_start,
                     prev_close_u)
     _print_activity_features(feats, pre, cutoff, windows_min, sess_start)

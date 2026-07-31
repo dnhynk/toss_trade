@@ -190,7 +190,9 @@ def detect_events(df_1m: pd.DataFrame, params: EventParams, *,
                   rankings: pd.DataFrame | None = None,
                   ranking_type: str | None = None,
                   max_per_day: int = 1,
-                  halt_gap_min: int = HALT_GAP_MIN_DEFAULT) -> pd.DataFrame:
+                  halt_gap_min: int = HALT_GAP_MIN_DEFAULT,
+                  split_dates: set[str] | dict[str, set[str]] | None = None
+                  ) -> pd.DataFrame:
     """급등 이벤트 검출 + 라벨 전부. 반환 컬럼은 `EVENT_COLUMNS`.
 
     위치인자 시그니처는 계약 C-7 그대로. 키워드 전용 인자는 A1 §2 확장:
@@ -204,6 +206,13 @@ def detect_events(df_1m: pd.DataFrame, params: EventParams, *,
         ranking_type           랭킹 필터. None 이면 전달된 전체에서 최초 진입
         max_per_day            매매일당 최대 이벤트 수 (기본 1 = 최초 트리거만)
         halt_gap_min           홀트 프록시로 볼 캔들 공백 길이(분)
+        split_dates            분할 매매일 date 집합(심볼별 dict 허용) — 사전등록 §7-e.
+                               해당 매매일은 **당일 조건(+30%) 판정에서 제외**한다
+                               (윈도우 조건만, `kind='win'`). 원주가 계열에서 분할 전일
+                               종가 대비 가짜 ±N00% 갭이 그대로 판정되는 것을 막는다.
+                               `baselines.detect_split_dates()` 로 만든다.
+                               **미지정 시 결과는 주 분석에 쓸 수 없다** —
+                               `events.attrs["split_dates_applied"]=False` 로 표시된다
 
     `df_1m` 에 `symbol` 컬럼이 있으면 심볼별로 독립 처리한다.
     """
@@ -218,10 +227,13 @@ def detect_events(df_1m: pd.DataFrame, params: EventParams, *,
     rv_map = ({int(k): float(v) for k, v in rvol_series.items()}
               if (rvol_series is not None and not rvol_series.empty) else None)
 
+    n_split_excluded = 0
     rows: list[dict] = []
     for symbol, sdf in groups:
         prev_close = (prev_close_u.get(symbol) if isinstance(prev_close_u, dict)
                       else prev_close_u)
+        sym_splits = (split_dates.get(symbol, set()) if isinstance(split_dates, dict)
+                      else (split_dates or set()))
         shares = (shares_outstanding_qu.get(symbol)
                   if isinstance(shares_outstanding_qu, dict) else shares_outstanding_qu)
         # 매매일 슬라이싱을 O(log n) 으로 (봉×날짜 이중 스캔 방지)
@@ -241,6 +253,10 @@ def detect_events(df_1m: pd.DataFrame, params: EventParams, *,
             base_prev = prev_close
             if base_prev is None and i > 0:
                 base_prev = _prev_day_close_u(sdf, spans[i - 1], bounds[i - 1])
+            # 사전등록 §7-e: 분할 매매일은 당일 조건 판정에서 제외한다.
+            if md is not None and md.date in sym_splits:
+                base_prev = None
+                n_split_excluded += 1
             nxt_day = None
             if i + 1 < len(spans):
                 nlo, nhi = bounds[i + 1]
@@ -255,9 +271,12 @@ def detect_events(df_1m: pd.DataFrame, params: EventParams, *,
                 halt_gap_min=halt_gap_min))
 
     out = pd.DataFrame(rows, columns=EVENT_COLUMNS)
-    if out.empty:
-        return out
-    return out.sort_values(["t0_ms", "symbol"]).reset_index(drop=True)
+    if not out.empty:
+        out = out.sort_values(["t0_ms", "symbol"]).reset_index(drop=True)
+    # 주 분석 강제용 표식 (사전등록 §7-e) — 사유별 카운트가 이 값을 읽는다.
+    out.attrs["split_dates_applied"] = split_dates is not None
+    out.attrs["split_excluded"] = n_split_excluded
+    return out
 
 
 def _label_day(*, symbol, day, md, t_from, t_to, next_day, params, prev_close_u,
