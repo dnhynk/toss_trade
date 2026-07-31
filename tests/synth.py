@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 import random
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date as _date
 from datetime import datetime, timedelta, timezone
@@ -80,18 +81,40 @@ def _et_midnight_ms(d: _date, et_offset_h: int) -> int:
     return int(datetime(d.year, d.month, d.day, tzinfo=tz).timestamp() * 1000)
 
 
+#: 반일장(조기폐장) 정규장 종료 — 13:00 ET = ET 자정 기준 780분.
+#: 추수감사절 다음날·크리스마스 이브·독립기념일 전날 등 매년 여러 번 발생한다.
+HALF_DAY_REGULAR_END_MIN = 780
+#: 반일장의 애프터장 길이는 정상일과 동일하게 유지한다(조기폐장만 모사).
+AFTER_LEN_MIN = SESSION_MINUTES["after"][1] - SESSION_MINUTES["after"][0]
+
+
 def make_calendar(n_days: int = 3,
                   start: str = "2026-06-01",
-                  et_offset_h: int = DEFAULT_ET_OFFSET_H) -> list[UsMarketDay]:
-    """주말을 건너뛴 `n_days` 개의 `UsMarketDay` (4세션 전부 채움)."""
+                  et_offset_h: int = DEFAULT_ET_OFFSET_H,
+                  half_days: Iterable[str] | None = None) -> list[UsMarketDay]:
+    """주말을 건너뛴 `n_days` 개의 `UsMarketDay` (4세션 전부 채움).
+
+    `et_offset_h` 로 겨울(EST, -5)을 만들 수 있다 — EST 에서는 애프터장이 UTC 자정을
+    넘으므로 "UTC 날짜 = 매매일" 전제가 깨진다(감사 M-3). 회귀 테스트용.
+
+    `half_days` 에 ISO 날짜를 주면 그 날은 **반일장**(정규장 09:30-13:00 ET, 210분)이 되고
+    애프터장이 그만큼 당겨진다 — 분-of-session 곡선 오염 회귀 테스트용(감사 M-4).
+    """
+    half = set(half_days or ())
     d = _date.fromisoformat(start)
     out: list[UsMarketDay] = []
     while len(out) < n_days:
         if d.weekday() < 5:
             base = _et_midnight_ms(d, et_offset_h)
+            bounds = dict(SESSION_MINUTES)
+            if d.isoformat() in half:
+                r0 = bounds["regular"][0]
+                bounds["regular"] = (r0, HALF_DAY_REGULAR_END_MIN)
+                bounds["after"] = (HALF_DAY_REGULAR_END_MIN,
+                                   HALF_DAY_REGULAR_END_MIN + AFTER_LEN_MIN)
             win = {name: SessionWindow(start_ms=base + m0 * MIN_MS,
                                        end_ms=base + m1 * MIN_MS)
-                   for name, (m0, m1) in SESSION_MINUTES.items()}
+                   for name, (m0, m1) in bounds.items()}
             out.append(UsMarketDay(date=d.isoformat(), day=win["day"], pre=win["pre"],
                                    regular=win["regular"], after=win["after"]))
         d += timedelta(days=1)
@@ -708,7 +731,9 @@ def make_scenario(kind: str, seed: int = 0, *,
                   base_price_u: int = DEFAULT_BASE_PRICE_U,
                   cal_start: str = "2026-06-01",
                   include_next_day: bool = True,
-                  history_days: int = 3) -> tuple[pd.DataFrame, dict]:
+                  history_days: int = 3,
+                  et_offset_h: int = DEFAULT_ET_OFFSET_H,
+                  half_days: Iterable[str] | None = None) -> tuple[pd.DataFrame, dict]:
     """(df_1m, truth_labels) 반환. kind: coil_pop|instant|fade|dump|noise|daymarket|halt_gap.
 
     df_1m 컬럼: symbol, ts_ms, open_u, high_u, low_u, close_u, vol_qu (전부 int64,
@@ -749,7 +774,8 @@ def make_scenario(kind: str, seed: int = 0, *,
     plan = _plan_for(kind)
 
     n_days = history_days + (2 if include_next_day else 1)
-    cal = make_calendar(n_days, start=cal_start)
+    cal = make_calendar(n_days, start=cal_start, et_offset_h=et_offset_h,
+                        half_days=half_days)
     md = cal[history_days]
 
     # 이벤트 전 평범한 날들 — RVOL 곡선의 분모(시간대 보정 베이스라인) 재료

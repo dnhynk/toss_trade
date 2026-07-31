@@ -17,12 +17,14 @@
 from __future__ import annotations
 
 import math
+import warnings
+from bisect import bisect_right
 
 import pandas as pd
 
 from ..api.models import SessionWindow, UsMarketDay
-from .baselines import (MIN_MS, curve_locate, daily_volume_z, rvol_series,
-                        session_vwap_u, true_range_u)
+from .baselines import (MIN_MS, curve_key, curve_locate, daily_volume_z,
+                        rvol_series, session_vwap_u, session_windows, true_range_u)
 
 DEFAULT_WINDOWS_MIN = (5, 15, 30, 60)
 #: `vol_z_{w}` 비교 기준 구간 길이(분) — 윈도우 직전 구간
@@ -89,17 +91,48 @@ def _minute_volumes(pre: pd.DataFrame, t_from: int, t_to: int) -> list[float]:
     return [float(have.get(t_from + i * MIN_MS, 0)) for i in range(n)]
 
 
-def _locate_day_start(cutoff: int, calendar) -> int:
-    """cutoff 가 속한 **매매일** 시작 시각. calendar 없으면 UTC 날짜 경계
+DAY_MS = 86_400_000
 
-    (토스 4세션은 UTC 00:00~22:00 에 들어가므로 UTC 날짜 = 매매일 — docs/07 §3.1).
-    """
+
+def market_day_spans(calendar) -> list[tuple[int, int, str]]:
+    """캘린더 → 시간순 `(매매일 시작 ms, 종료 ms, date)` 목록. 휴장일은 빠진다."""
+    out: list[tuple[int, int, str]] = []
     for md in (calendar or []):
-        wins = [getattr(md, n) for n in ("day", "pre", "regular", "after")]
-        wins = [w for w in wins if w is not None]
-        if wins and wins[0].start_ms <= cutoff < wins[-1].end_ms:
-            return int(wins[0].start_ms)
-    return (cutoff // 86_400_000) * 86_400_000
+        wins = session_windows(md)
+        if wins:
+            out.append((int(wins[0][1].start_ms), int(wins[-1][1].end_ms), md.date))
+    return sorted(out)
+
+
+def assign_market_days(ts_list: list[int],
+                       spans: list[tuple[int, int, str]]) -> list[str | None]:
+    """각 ts 를 매매일 `date` 로 매핑. 캘린더 밖이면 None. (이진탐색, O(n log d))
+
+    **UTC 날짜로 묶으면 안 된다** — 겨울(EST)에는 애프터장이 UTC 자정을 넘어 하나의
+    매매일이 두 UTC 날짜로 쪼개진다 (감사 M-3, docs/07 §3.1a).
+    """
+    if not spans:
+        return [None] * len(ts_list)
+    starts = [s[0] for s in spans]
+    out: list[str | None] = []
+    for t in ts_list:
+        j = bisect_right(starts, t) - 1
+        out.append(spans[j][2] if (j >= 0 and spans[j][0] <= t < spans[j][1]) else None)
+    return out
+
+
+def _locate_day_start(cutoff: int, calendar) -> int:
+    """cutoff 가 속한 **매매일** 시작 시각.
+
+    캘린더가 있으면 `UsMarketDay` 기준. 없으면 UTC 날짜 경계로 폴백하는데,
+    **이 폴백은 겨울(EST)에 틀린다** — 매매일이 UTC 자정을 넘기 때문이다(M-3).
+    호출부는 캘린더를 주는 것이 원칙이며, 폴백 사용 사실은
+    `day_grouping_calendar` 피처로 드러난다.
+    """
+    for start_ms, end_ms, _date in market_day_spans(calendar):
+        if start_ms <= cutoff < end_ms:
+            return start_ms
+    return (cutoff // DAY_MS) * DAY_MS
 
 
 def _first_bar_vol_z_cross(pre: pd.DataFrame, day_lo: int, t_hi: int,
@@ -195,7 +228,8 @@ def extract_precursor_features(df_1m: pd.DataFrame, rankings: pd.DataFrame,
     _price_features(feats, pre, cutoff, close_cut, windows_min, baseline, sess_start)
     _print_activity_features(feats, pre, cutoff, windows_min, sess_start)
     _toss_concentration_features(feats, rk, symbol, cutoff, toss_type, market_type)
-    _history_features(feats, pre, cutoff, prior_events, shares_outstanding_qu, sess_start)
+    _history_features(feats, pre, cutoff, prior_events, shares_outstanding_qu,
+                      sess_start, calendar)
     return feats
 
 
@@ -218,7 +252,9 @@ def feature_names(windows_min: tuple[int, ...] = DEFAULT_WINDOWS_MIN) -> list[st
              "ranking_snaps_pre",
              # 이력
              "prior_event_count_20d", "days_since_prior_event", "former_runner",
-             "hist_days_available", "float_rotation_pre"]
+             "hist_days_available", "float_rotation_pre",
+             # 진단: 매매일 그룹화가 캘린더 기준이었나(1.0) UTC 날짜 폴백이었나(0.0) — M-3
+             "day_grouping_calendar"]
     for w in windows_min:
         names += [f"vol_z_{w}", f"vol_ratio_{w}", f"rvol_curve_{w}", f"vol_sum_{w}_qu",
                   f"ret_{w}", f"atr_pct_{w}", f"range_pct_{w}", f"no_print_ratio_{w}"]
@@ -235,11 +271,8 @@ def _expected_window_vol(curve, calendar, t_from: int, t_to: int) -> float:
         return _NAN
     total, seen = 0.0, 0
     for ts in range(t_from, t_to, MIN_MS):
-        loc = curve_locate(curve, ts, calendar=calendar)
-        if loc is None:
-            continue
-        key = (loc[0], loc[1])
-        if key in curve.index:
+        key = curve_key(curve, ts, calendar=calendar)   # (session, len, minute) — M-4
+        if key is not None and key in curve.index:
             total += float(curve.loc[key])
             seen += 1
     return total if seen else _NAN
@@ -472,25 +505,62 @@ def _toss_concentration_features(feats: dict, rk: pd.DataFrame, symbol: str | No
 def _history_features(feats: dict, pre: pd.DataFrame, cutoff: int,
                       prior_events: pd.DataFrame | None,
                       shares_outstanding_qu: int | None,
-                      sess_start: int | None) -> None:
-    day_ms = 86_400_000
+                      sess_start: int | None,
+                      calendar=None) -> None:
+    """이력 피처. **매매일 단위로 묶는다 — UTC 날짜가 아니다** (감사 M-3).
+
+    겨울(EST)에는 애프터장이 UTC 자정을 넘으므로 UTC 날짜로 묶으면 하나의 매매일이
+    둘로 쪼개져 `hist_days_available` 가 부풀고 former-runner 프록시가 **이중 계산**된다.
+    former runner 는 유니버스 선정의 핵심 축이라(docs/02 §2.4) 그대로 두면 러너 이력이
+    조작된 채 분석에 들어간다.
+
+    캘린더가 없거나 봉을 다 덮지 못하면 UTC 날짜로 폴백하되, `day_grouping_calendar=0.0`
+    으로 **결과에 드러내고** 경고를 낸다 — 조용히 틀리는 것이 최악이다.
+    """
     ts = [int(t) for t in pre["ts_ms"].tolist()]
+    spans = market_day_spans(calendar)
+    day_of = assign_market_days(ts, spans) if (ts and spans) else [None] * len(ts)
+    covered = bool(ts) and all(d is not None for d in day_of)
+    feats["day_grouping_calendar"] = 1.0 if covered else 0.0
+
+    if ts and not covered:
+        warnings.warn(
+            "features: 매매일 그룹화가 UTC 날짜 폴백으로 내려갔다 "
+            "(캘린더 미제공 또는 구간 미포함). 겨울(EST)에는 매매일이 UTC 자정을 넘어 "
+            "hist_days_available·former-runner 프록시가 이중 계산된다 — "
+            "calendar= 를 넘겨라 (감사 M-3, docs/07 §3.1a).",
+            RuntimeWarning, stacklevel=3)
+
     if ts:
-        feats["hist_days_available"] = float(len({t // day_ms for t in ts}))
+        keys = day_of if covered else [str(t // DAY_MS) for t in ts]
+        feats["hist_days_available"] = float(len(set(keys)))
 
     if prior_events is not None and len(prior_events):
         pe = prior_events[prior_events["t0_ms"] < cutoff]
         feats["prior_event_count_20d"] = float(
-            len(pe[pe["t0_ms"] >= cutoff - PRIOR_EVENT_LOOKBACK_DAYS * day_ms]))
+            len(pe[pe["t0_ms"] >= cutoff - PRIOR_EVENT_LOOKBACK_DAYS * DAY_MS]))
         if not pe.empty:
-            feats["days_since_prior_event"] = (cutoff - int(pe["t0_ms"].max())) / day_ms
+            feats["days_since_prior_event"] = (cutoff - int(pe["t0_ms"].max())) / DAY_MS
     elif ts:
-        # 프록시: 이전 UTC 날짜들 중 일중 저가→고가 상승률이 임계 이상이었던 날 수
-        cur_day = cutoff // day_ms
-        lo_day = (cutoff - PRIOR_EVENT_LOOKBACK_DAYS * day_ms) // day_ms
+        # 프록시: 컷오프 **이전 매매일들** 중 일중 저가→고가 상승률이 임계 이상이었던 날 수
+        lo_ms = cutoff - PRIOR_EVENT_LOOKBACK_DAYS * DAY_MS
+        if covered:
+            cur = next((d for (s, e, d) in spans if s <= cutoff < e), None)
+            buckets: dict[str, list[int]] = {}
+            for t, d in zip(ts, day_of):
+                if d is not None and d != cur and lo_ms <= t < cutoff:
+                    buckets.setdefault(d, []).append(t)
+        else:
+            cur = str(cutoff // DAY_MS)
+            buckets = {}
+            for t in ts:
+                d = str(t // DAY_MS)
+                if d != cur and lo_ms <= t < cutoff:
+                    buckets.setdefault(d, []).append(t)
+
         cnt, last_ms = 0, None
-        for d in sorted({t // day_ms for t in ts if lo_day <= t // day_ms < cur_day}):
-            sub = pre[(pre["ts_ms"] >= d * day_ms) & (pre["ts_ms"] < (d + 1) * day_ms)]
+        for _d, day_ts in sorted(buckets.items()):
+            sub = pre[(pre["ts_ms"] >= min(day_ts)) & (pre["ts_ms"] <= max(day_ts))]
             if sub.empty:
                 continue
             lo_u, hi_u = int(sub["low_u"].min()), int(sub["high_u"].max())
@@ -499,7 +569,7 @@ def _history_features(feats: dict, pre: pd.DataFrame, cutoff: int,
                 last_ms = int(sub["ts_ms"].to_numpy()[-1])
         feats["prior_event_count_20d"] = float(cnt)
         if last_ms is not None:
-            feats["days_since_prior_event"] = (cutoff - last_ms) / day_ms
+            feats["days_since_prior_event"] = (cutoff - last_ms) / DAY_MS
 
     c = feats.get("prior_event_count_20d", _NAN)
     if c == c:
