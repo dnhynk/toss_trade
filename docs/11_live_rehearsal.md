@@ -381,3 +381,99 @@ AAPL은 정규장에서 50건이 단 3초 분량이다(프리마켓 10분 대비
 ## 6. 토큰 위생
 
 리허설 종료 후 `data/token_state.json.lock` 잠김 여부를 확인해 이 절에 기록한다(미완).
+
+---
+
+# 재수집 (2026-07-31) — 유니버스 필터 적용
+
+> 어제(§0~6) 15시간 수집은 **파이프라인이 무인으로 도는가**를 검증했지만, 감사 결과 유니버스
+> 필터가 수집 경로에 전혀 적용되지 않아 NOK·AMD·ASML·META·GS 같은 대형주가 워치리스트를
+> 채우고 tier3 진입을 봉쇄했다(§5-1 관측2 참고) — **표적 모집단이 아니었다.** W4가 tier0
+> 게이트를 collector 에 연결했고, 이 절은 그 수정이 반영된 **분석에 쓸 수 있는 첫 데이터**의
+> 수집 기록이다. 어제 DB는 `data/tossmon_20260730_polluted.db` 로 보존(삭제 안 함), 오늘은
+> **새 DB**(`data/tossmon.db`)로 시작한다.
+
+## 7. 블로커 — NASDAQ `$` 우선주 심볼이 `/stocks` 배치를 통째로 400 시킴 — `해결됨`
+
+**증상**: `python -m tossmon.universe --config config/config.yaml` 라이브 실행 시 첫 청크
+(200종목)에서 즉시 `SchemaMismatch: http-400 code=invalid-request` 로 죽음(`build_universe`가
+예외를 잡지 않아 전체가 죽음).
+
+**원인 진단(최소 호출로 확인, ~5콜)**: `tossmon/universe/seed.py`의 `_SYMBOL_RE`가 `$`를
+유효 문자로 허용했다(NASDAQ Trader 는 우선주를 `ABR$D` 형식으로 표기). `/stocks`에 `$`
+포함 심볼을 단 하나라도 섞어 배치 조회하면(청정 심볼과 섞어도) **배치 전체**가 400으로
+거부된다 — 개별 무시가 아니라 요청 자체가 무효화. 참고로 `.` 포함 심볼(단위/워런트, 예
+`AAC.U`)은 문제없음 — 200+빈결과로 조용히 필터됨(기존 미존재 심볼 처리와 동일).
+
+**대응**: 코디네이터에게 즉시 escalate(정확한 원인 위치·1줄 수정안 포함), W2 재engage로
+핫픽스(`$` 제외 + 배치 격리 + `rejected_charset`/`skipped_batches`/`skipped_symbols` 카운터
+추가) → `main c5da76f`. 대기 중 **임시 지정 종목으로 먼저 수집을 시작할지**를 코디네이터와
+논의했으나(한때 (b) 진행하려 했다가 코디네이터가 직접 철회), 최종적으로 **W2 수정을 기다렸다가
+정식 유니버스로 한 번에 시작**하기로 결정했다(사전등록 프로토콜 오염 방지가 결정적 이유,
+docs/12_preregistration.md — W5 소유 아님, 상세는 코디네이터 판단 참고).
+
+## 8. 유니버스 빌드 결과 (2026-07-31T14:15~14:23 KST) — `확인됨`
+
+```
+tier0=1678 tier1=1500 former_runners=535 rejected_charset=0 skipped_batches=0 skipped_symbols=0
+```
+
+- **`rejected_charset=0` 은 정상이다(파싱 단계에서 이미 걸러짐)**: `parse_directory_file`이
+  콘솔에 `"...: 387 symbol(s) rejected — outside Toss API charset..."`를 로그로 남겼다(파싱
+  단계 1차 방어가 387개 전부 처리 → 배치 전송 전 2차 방어(`rejected_charset` 카운터)로 넘어올
+  게 남지 않았다는 뜻 — 코디네이터가 미리 예고한 두 시나리오 중 "0일 수 있다" 쪽으로 확정).
+  ⚠️ **부수 발견**: 이 로그 라인 자체가 Windows 콘솔 cp949 인코딩에서 em-dash(—) 때문에
+  `UnicodeEncodeError`로 실패했다(`--- Logging error ---`, Python `logging` 모듈이 내부적으로
+  잡아 프로세스는 안 죽었지만 그 줄은 유실됨) — 어제 `ops/supervisor.py`에서 고친 것과 **같은
+  부류의 버그**가 `tossmon/universe/seed.py`(W2 소유)에도 있다. 치명적이지 않아 자체 수정하지
+  않고 기록만 남긴다.
+- **tier0=1678 / tier1=1500(정원 상한)**: 시드 7,478종목 중 22.4%가 tier0 통과 — "수십 개"도
+  "수천 개"도 아닌 중간값이다. $0.1~$20 · $10M~$300M 은 미국 상장 마이크로/스몰캡 전반을
+  포괄하는 넓은 대역이라(이 프로젝트가 표적으로 삼는 "동전주" 자체가 원래 개체수가 많은
+  모집단), 이 정도 통과율은 필터가 헐겁다는 신호라기보다 **모집단 자체의 크기**로 해석한다
+  (아래 가격·시총 표본이 이 해석을 뒷받침한다).
+- **오염 사례 재확인 — 5종목 전부 `symbols` 테이블에 없음**:
+
+  | 종목 | 결과 |
+  |---|---|
+  | NOK | NOT IN symbols table |
+  | AMD | NOT IN symbols table |
+  | ASML | NOT IN symbols table |
+  | META | NOT IN symbols table |
+  | GS | NOT IN symbols table |
+
+  어제는 이 5종목이 전부 워치리스트를 채웠다 — 오늘은 유니버스 빌드 단계에서부터 존재하지
+  않는다. 필터 작동의 직접 증거다.
+- **가격·시총 분포 표본(tier1 무작위 15종목)**: 전부 `$0.90~$14.01` / `$24.5M~$275.3M` —
+  설정 경계($0.10~$20, $10M~$300M) 안에 깔끔하게 들어온다. 단위 변환 버그(예: 마이크로달러
+  스케일 오류로 경계를 우회하는 통과)의 흔적 없음.
+
+  | symbol | price(USD) | mcap(USD M) |
+  |---|---:|---:|
+  | ISPR | 1.440 | 82.7 |
+  | HOFT | 14.010 | 150.5 |
+  | CLNN | 5.040 | 64.4 |
+  | MHH | 7.950 | 95.4 |
+  | INLX | 5.455 | 24.5 |
+  | WTF | 2.680 | 129.3 |
+  | TLYS | 3.710 | 113.1 |
+  | OHAC | 9.930 | 224.7 |
+  | GRO | 2.050 | 125.7 |
+  | JABRU | 10.080 | 184.9 |
+  | EXOD | 5.340 | 160.3 |
+  | ZSQR | 5.220 | 275.3 |
+  | KBSX | 0.900 | 40.3 |
+  | BGSF | 5.250 | 56.3 |
+  | VNMEU | 10.300 | 206.0 |
+
+## 9. 수집 시작 (2026-07-31T14:25 KST, day 세션) — `진행 중`
+
+- `Start-Process`로 완전히 분리된 프로세스로 기동(PID 29704 → 자식 collector PID 25444) —
+  어제 배운 교훈(에이전트 세션 백그라운드 잡은 세션 정리 시 함께 죽음) 반영.
+- 시작 로그: `universe: seeded 1500 tier1 symbols from the symbols table (watch=1500)` →
+  `session closed → day` — 유니버스 시드가 정확히 소비됐고 세션도 즉시 올바르게 판정됨.
+- 초기 텔레메트리에 신규 필드 확인: `watch_outside_universe=0 universe_rejected=0`(W4가 노출).
+- 랭킹 진입 즉시 대형주 거부가 실측됨: MU, SNDK, SOXL, SKHY, KORU, EWY, DRAM, SOXS, TQQQ,
+  NVDA, TSLA, QLD 등이 `universe: X rejected at tier0`으로 즉시 걸러짐. 반면 CYCU, MGRX(둘 다
+  소형주, 어제도 tier3까지 올라갔던 종목)는 정상적으로 tier2 승격.
+- 이후 30분 관측·중간 보고는 이 절 아래에 계속 추가한다(미완).
