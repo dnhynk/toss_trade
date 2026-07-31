@@ -39,6 +39,14 @@ TOD_BUCKETS = [
 #: q5 기본 청산 정책 — 라벨만으로 계산 가능한 것들
 EXIT_POLICIES = ("t0_to_30m", "t0_to_close", "half_peak")
 
+#: **판정·선택에 쓸 수 있는 정책** (사전등록 §2.6).
+#: `half_peak` 은 피크의 절반을 항상 잡는다는 비현실적 가정이라 승률이 구조적으로 1.0 이
+#: 된다 — **실행 가능성 상한선 보고 전용**이며 §4.5 의 어떤 판정·선택에도 쓰지 않는다.
+#: 하류에서 정책을 고를 때는 EXIT_POLICIES 가 아니라 이 튜플을 참조하라.
+DECISION_POLICIES = ("t0_to_30m", "t0_to_close")
+#: 보고 전용(판정 금지) 정책
+REPORT_ONLY_POLICIES = ("half_peak",)
+
 #: docs/02 §2.4 SmallCapLab 실측 기저율 (우리 데이터로 재검증할 대상)
 KNOWN_BASE_RATES = {
     "fade_rate": 0.715,
@@ -426,26 +434,55 @@ def _hod_min_from_open(ev: pd.DataFrame) -> pd.Series:
     return (_num(ev, "hod_ms") - open_ms) / MIN_MS
 
 
-def q6_time_of_day(events: pd.DataFrame, *, gate: str = "exclude") -> pd.DataFrame:
+def _bucket_of(mfo: pd.Series) -> pd.Series:
+    """경과분 → 버킷 라벨 (어디에도 안 들어가면 NaN)."""
+    out = pd.Series([None] * len(mfo), index=mfo.index, dtype="object")
+    for bname, lo, hi in TOD_BUCKETS:
+        sel = (mfo >= lo) & (mfo < hi)
+        out[sel.fillna(False)] = bname
+    return out
+
+
+def q6_time_of_day(events: pd.DataFrame, *, gate: str = "exclude",
+                   sensitivity_min: int = 1) -> pd.DataFrame:
     """개장 15분 / 10:00 ET 전후 / 마감 전의 신호 성능 차이.
 
     버킷 기준은 `t0_min_from_open`(정규장 개장 후 경과분, 음수 = 개장 전).
     `hod_within_15min_share` 는 docs/02 §2.4 의 "HOD 46.6% 가 개장 15분 내" 재검증용.
+
+    **±1분 감도 의무 병기 (사전등록 §7-f)**: 봉 타임스탬프가 봉의 시작인지 끝인지 아직
+    미확정이라 버킷 경계가 1분 흔들릴 수 있다. 그래서 `t0_min_from_open` 을 ±`sensitivity_min`
+    만큼 민 경우의 버킷 인원(`n_minus`/`n_plus`)과 소속이 바뀌는 이벤트 수
+    (`n_boundary_sensitive`), 그리고 `boundary_sensitive` 플래그를 함께 낸다.
+    **경계 이동으로 결론이 뒤집히는 버킷은 판정 불가로 다룬다.**
     """
     ev, n_ex = _gate(events, gate)
     if len(ev) == 0 or "t0_min_from_open" not in ev.columns:
         return _stamp(pd.DataFrame([{"bucket": b, "min_from_open_lo": float(lo),
-                                     "min_from_open_hi": float(hi), "n": 0.0}
+                                     "min_from_open_hi": float(hi), "n": 0.0,
+                                     "n_minus": 0.0, "n_plus": 0.0,
+                                     "n_boundary_sensitive": 0.0,
+                                     "boundary_sensitive": False}
                                     for b, lo, hi in TOD_BUCKETS]), gate, n_ex)
 
     mfo = _num(ev, "t0_min_from_open")
+    base_bucket = _bucket_of(mfo)
+    minus_bucket = _bucket_of(mfo - sensitivity_min)
+    plus_bucket = _bucket_of(mfo + sensitivity_min)
+    moved = (base_bucket != minus_bucket) | (base_bucket != plus_bucket)
     hod_mfo = _hod_min_from_open(ev)
     rows: list[dict] = []
     for bname, lo, hi in TOD_BUCKETS:
         sel = (mfo >= lo) & (mfo < hi)
         g = ev[sel.fillna(False)]
+        n_sensitive = int((moved & sel.fillna(False)).sum())
         row = {"bucket": bname, "min_from_open_lo": float(lo),
-               "min_from_open_hi": float(hi), "n": float(len(g))}
+               "min_from_open_hi": float(hi), "n": float(len(g)),
+               # 사전등록 §7-f — ±1분 경계 감도 의무 병기
+               "n_minus": float((minus_bucket == bname).sum()),
+               "n_plus": float((plus_bucket == bname).sum()),
+               "n_boundary_sensitive": float(n_sensitive),
+               "boundary_sensitive": bool(n_sensitive)}
         if len(g):
             hm = hod_mfo[sel.fillna(False)]
             row.update({
@@ -495,11 +532,171 @@ def base_rate_comparison(events: pd.DataFrame, *,
     return _stamp(pd.DataFrame(rows), gate, n_ex)
 
 
+# --------------------------------------------------------------------------- #
+# 사전등록 §2.7 — 분석 표본 유니버스 필터
+# --------------------------------------------------------------------------- #
+MICRO = 1_000_000
+#: 사전등록 §2.7 확정값 (마이크로달러)
+SAMPLE_PRICE_MIN_U = 100_000                 # $0.10
+SAMPLE_PRICE_MAX_U = 20_000_000              # $20.00
+SAMPLE_MCAP_MIN_U = 10_000_000 * MICRO       # $10M
+SAMPLE_MCAP_MAX_U = 300_000_000 * MICRO      # $300M
+COMMON_SECURITY_TYPES = ("STOCK", "FOREIGN_STOCK")
+
+#: 제외 사유 코드 (리포트 카운트 키). 순서 = 판정 우선순위.
+EXCLUSION_REASONS = (
+    "not_common_stock",        # 보통주 아님 / ETF·ETN
+    "not_active",              # status != ACTIVE
+    "meta_missing",            # symbols 메타에 없음
+    "t0_price_unavailable",    # T0 봉 종가(원주가)를 못 구함 → 검증 불가
+    "price_out_of_range",      # 종가 ∉ [$0.10, $20]
+    "mcap_out_of_range",       # 시총 ∉ [$10M, $300M]
+    "half_day_length_sample",  # 반일장 — (세션,길이) 표본 부족으로 RVOL 미가용
+)
+
+
+def _t0_close_map(events: pd.DataFrame, df_1m: pd.DataFrame | None) -> dict:
+    """(symbol, t0_ms) → T0 봉 종가(원주가). df_1m 이 없으면 빈 맵."""
+    if df_1m is None or len(df_1m) == 0:
+        return {}
+    has_sym = "symbol" in df_1m.columns
+    cols = ["ts_ms", "close_u"] + (["symbol"] if has_sym else [])
+    sub = df_1m[cols]
+    if has_sym:
+        return {(str(s), int(t)): int(c)
+                for s, t, c in zip(sub["symbol"], sub["ts_ms"], sub["close_u"])}
+    return {(None, int(t)): int(c) for t, c in zip(sub["ts_ms"], sub["close_u"])}
+
+
+def _dropped_length_keys(curve) -> set:
+    if curve is None:
+        return set()
+    try:
+        return {tuple(k) for k in curve.attrs.get("dropped_below_min_days", [])}
+    except (AttributeError, TypeError):
+        return set()
+
+
+def apply_sample_filter(events: pd.DataFrame, meta: pd.DataFrame, *,
+                        df_1m: pd.DataFrame | None = None,
+                        curve=None,
+                        calendar=None,
+                        price_min_u: int = SAMPLE_PRICE_MIN_U,
+                        price_max_u: int = SAMPLE_PRICE_MAX_U,
+                        mcap_min_u: int = SAMPLE_MCAP_MIN_U,
+                        mcap_max_u: int = SAMPLE_MCAP_MAX_U
+                        ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """사전등록 §2.7 표본 필터. 반환 `(kept, reasons_df)`.
+
+    T0 **시점 기준**으로 판정한다:
+        증권 종류  보통주(STOCK/FOREIGN_STOCK, `is_common`) · status=ACTIVE (ETF/ETN 제외)
+        명목 가격  T0 봉 종가(**원주가**) ∈ [$0.10, $20.00]
+        시총       `sharesOutstanding × T0 종가(원주가)` ∈ [$10M, $300M]
+
+    추가로 **반일장(세션 길이 표본 부족)** 을 별도 사유로 센다 — 곡선에서
+    `dropped_below_min_days` 로 버려진 (세션, 길이) 버킷에 T0 가 속하면 RVOL 이 미가용이라
+    주 분석에 들어갈 수 없다 (docs/07 §2.4a).
+
+    `reasons_df` 컬럼: reason, n, share. 제외 0건인 사유도 행으로 남긴다 —
+    "그 사유가 0이었다"와 "그 사유를 검사하지 않았다"를 구분하기 위해서다.
+
+    한계(사전등록 §2.7 명문): `sharesOutstanding` 은 현재 스냅샷이라 과거 시점 시총은
+    근사치이고, float 이 아니라 발행주식수다. 둘 다 그대로 보고한다.
+    """
+    n_total = 0 if events is None else len(events)
+    counts = dict.fromkeys(EXCLUSION_REASONS, 0)
+    if n_total == 0:
+        reasons = pd.DataFrame({"reason": list(EXCLUSION_REASONS),
+                                "n": [0] * len(EXCLUSION_REASONS),
+                                "share": [_NAN] * len(EXCLUSION_REASONS)})
+        reasons["n_total"] = 0
+        reasons["n_kept"] = 0
+        return (events if events is not None else pd.DataFrame()), reasons
+
+    meta_by_symbol: dict = {}
+    if meta is not None and len(meta) and "symbol" in meta.columns:
+        meta_by_symbol = {str(r["symbol"]): r for _i, r in meta.iterrows()}
+    closes = _t0_close_map(events, df_1m)
+    dropped = _dropped_length_keys(curve)
+
+    keep_mask: list[bool] = []
+    for _i, e in events.iterrows():
+        sym = str(e.get("symbol")) if pd.notna(e.get("symbol")) else None
+        t0 = int(e["t0_ms"])
+        reason = None
+
+        m = meta_by_symbol.get(sym)
+        if m is None:
+            reason = "meta_missing"
+        else:
+            sec = str(m.get("security_type", "")).strip().upper()
+            is_common = m.get("is_common", True)
+            if pd.isna(is_common):
+                is_common = True
+            if (not bool(is_common)) or sec not in COMMON_SECURITY_TYPES:
+                reason = "not_common_stock"
+            elif str(m.get("status", "")).strip().upper() != "ACTIVE":
+                reason = "not_active"
+
+        close_u = closes.get((sym, t0), closes.get((None, t0)))
+        if reason is None:
+            if close_u is None:
+                reason = "t0_price_unavailable"
+            elif not (price_min_u <= close_u <= price_max_u):
+                reason = "price_out_of_range"
+            else:
+                shares = m.get("shares_outstanding_qu") if m is not None else None
+                if shares is None or pd.isna(shares) or int(shares) <= 0:
+                    reason = "meta_missing"
+                else:
+                    mcap_u = (close_u * int(shares)) // MICRO
+                    if not (mcap_min_u <= mcap_u <= mcap_max_u):
+                        reason = "mcap_out_of_range"
+
+        if reason is None and dropped:
+            from .baselines import curve_key
+            key = curve_key(curve, t0, calendar=calendar) if curve is not None else None
+            if key is not None and (key[0], key[1]) in dropped:
+                reason = "half_day_length_sample"
+
+        if reason is not None:
+            counts[reason] += 1
+        keep_mask.append(reason is None)
+
+    kept = events[pd.Series(keep_mask, index=events.index)]
+    reasons = pd.DataFrame({
+        "reason": list(EXCLUSION_REASONS),
+        "n": [counts[r] for r in EXCLUSION_REASONS],
+        "share": [counts[r] / n_total for r in EXCLUSION_REASONS],
+    })
+    reasons["n_total"] = n_total
+    reasons["n_kept"] = int(len(kept))
+    return kept, reasons
+
+
 def run_all(events: pd.DataFrame, feats: pd.DataFrame, rankings: pd.DataFrame,
             df_1m: pd.DataFrame, *, gate: str = "exclude",
-            cost_roundtrip: float = 0.01) -> dict[str, pd.DataFrame]:
-    """검증 질문 6개 + 기저율 대조를 한 번에. 리포트 입력."""
-    return {
+            cost_roundtrip: float = 0.01,
+            meta: pd.DataFrame | None = None,
+            curve=None, calendar=None) -> dict[str, pd.DataFrame]:
+    """검증 질문 6개 + 기저율 대조를 한 번에. 리포트 입력.
+
+    `meta`(W2 `Reader.symbols()`)를 주면 사전등록 §2.7 표본 필터를 적용하고 q1~q6 를
+    **걸러진 표본**으로 계산한다. 제외 내역은 `sample_filter` 섹션으로 나간다.
+    주지 않으면 필터를 적용하지 않고 그 사실을 섹션에 남긴다 — 필터를 안 돌린 것과
+    제외가 0건인 것은 리포트에서 반드시 구분돼야 한다.
+    """
+    if meta is not None:
+        events, reasons = apply_sample_filter(events, meta, df_1m=df_1m, curve=curve,
+                                              calendar=calendar)
+    else:
+        reasons = pd.DataFrame([{
+            "reason": "(filter_not_applied)", "n": _NAN, "share": _NAN,
+            "n_total": 0 if events is None else len(events),
+            "n_kept": 0 if events is None else len(events),
+            "note": "meta 미제공 — 사전등록 §2.7 표본 필터를 적용하지 않았다",
+        }])
+    out = {
         "q1_volume_leadtime": q1_volume_leadtime(events, feats, gate=gate),
         "q2_ranking_lead_lag": q2_ranking_lead_lag(events, rankings, gate=gate),
         "q3_daymarket_persistence": q3_daymarket_persistence(events, gate=gate),
@@ -507,4 +704,6 @@ def run_all(events: pd.DataFrame, feats: pd.DataFrame, rankings: pd.DataFrame,
         "q5_expectancy": q5_expectancy(events, feats, cost_roundtrip, gate=gate),
         "q6_time_of_day": q6_time_of_day(events, gate=gate),
         "base_rates": base_rate_comparison(events, gate=gate),
+        "sample_filter": reasons,
     }
+    return out

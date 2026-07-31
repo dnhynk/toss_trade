@@ -97,6 +97,28 @@ def _last_close_before(df: pd.DataFrame, ts_ms: int) -> int | None:
     return int(sub["close_u"].to_numpy()[-1]) if not sub.empty else None
 
 
+def _prev_day_close_u(sdf: pd.DataFrame,
+                      prev_span: tuple[UsMarketDay | None, int, int],
+                      prev_bounds: tuple[int, int]) -> int | None:
+    """직전 매매일의 전일 종가 (사전등록 §2.3).
+
+    정규장 마지막 1분봉 종가를 우선하고, 정규장 봉이 하나도 없으면 그 매매일의 마지막
+    1분봉 종가를 쓴다. 봉이 아예 없으면 None — 호출자는 **당일 조건 판정을 건너뛴다**
+    (당일 첫 시가로 대체하지 않는다).
+    """
+    pmd, _pfrom, _pto = prev_span
+    plo, phi = prev_bounds
+    if plo >= phi:
+        return None
+    prev_day = sdf.iloc[plo:phi]
+    if pmd is not None and pmd.regular is not None:
+        reg = prev_day[(prev_day["ts_ms"] >= pmd.regular.start_ms)
+                       & (prev_day["ts_ms"] < pmd.regular.end_ms)]
+        if not reg.empty:
+            return int(reg["close_u"].to_numpy()[-1])
+    return int(prev_day["close_u"].to_numpy()[-1])
+
+
 def _regular_frame(df: pd.DataFrame, md: UsMarketDay | None) -> pd.DataFrame:
     """정규장 봉만. calendar 가 없으면 입력 그대로."""
     if md is None or md.regular is None:
@@ -211,11 +233,14 @@ def detect_events(df_1m: pd.DataFrame, params: EventParams, *,
             if lo >= hi:
                 continue
             day = sdf.iloc[lo:hi]
+            # 사전등록 §2.3 전일 종가 대체 사슬 — **당일 첫 시가 대체는 금지**다.
+            #   ① 인자로 받은 prev_close_u
+            #   ② 직전 매매일의 **정규장** 마지막 1분봉 종가 (원주가)
+            #   ③ 직전 매매일의 마지막 1분봉 종가 (정규장 봉이 없을 때)
+            #   ④ 그래도 없으면 base_prev=None → **당일 조건(+30%) 판정 자체를 건너뛴다**
             base_prev = prev_close
-            if base_prev is None and lo > 0:
-                base_prev = int(sdf["close_u"].iloc[lo - 1])
-            if base_prev is None:
-                base_prev = int(day["open_u"].to_numpy()[0])
+            if base_prev is None and i > 0:
+                base_prev = _prev_day_close_u(sdf, spans[i - 1], bounds[i - 1])
             nxt_day = None
             if i + 1 < len(spans):
                 nlo, nhi = bounds[i + 1]
@@ -223,7 +248,8 @@ def detect_events(df_1m: pd.DataFrame, params: EventParams, *,
                     nxt_day = (spans[i + 1][0], sdf.iloc[nlo:nhi])
             rows.extend(_label_day(
                 symbol=symbol, day=day, md=md, t_from=t_from, t_to=t_to,
-                next_day=nxt_day, params=params, prev_close_u=int(base_prev),
+                next_day=nxt_day, params=params,
+                prev_close_u=None if base_prev is None else int(base_prev),
                 rv_map=rv_map, shares_outstanding_qu=shares, rankings=rankings,
                 ranking_type=ranking_type, max_per_day=max_per_day,
                 halt_gap_min=halt_gap_min))
@@ -251,9 +277,12 @@ def _label_day(*, symbol, day, md, t_from, t_to, next_day, params, prev_close_u,
             break
         base = win_min_close[i]
         win_ret = (close[i] / base - 1.0) if base > 0 else 0.0
-        day_ret = (close[i] / prev_close_u - 1.0) if prev_close_u > 0 else 0.0
         win_ok = win_ret >= params.ret_min
-        day_ok = day_ret >= params.day_ret_min
+        # 전일 종가가 없으면 당일 조건은 **판정하지 않는다** (사전등록 §2.3).
+        # 당일 첫 시가로 대체하면 갭업이 구조적으로 과소평가된다.
+        day_ok = False
+        if prev_close_u is not None and prev_close_u > 0:
+            day_ok = (close[i] / prev_close_u - 1.0) >= params.day_ret_min
         if not (win_ok or day_ok):
             continue
         rvol_at = rv.get(t, float("nan")) if gated else float("nan")
@@ -297,7 +326,8 @@ def _build_label(*, symbol, day, md, t_from, t_to, next_day, params, i, ts, clos
         else float("nan")
     ret_close = close_ref_u / c0 - 1.0
     peak_ret = peak_u / c0 - 1.0
-    hod_ret = (hod_u / prev_close_u - 1.0) if prev_close_u > 0 else float("nan")
+    hod_ret = ((hod_u / prev_close_u - 1.0)
+               if (prev_close_u is not None and prev_close_u > 0) else float("nan"))
 
     ap = day[(day["ts_ms"] > peak_ms) & (day["ts_ms"] <= peak_ms + 30 * MIN_MS)]
     retrace_30m = (int(ap["close_u"].to_numpy()[-1]) / peak_u - 1.0) if not ap.empty \
