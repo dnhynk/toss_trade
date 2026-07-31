@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import tempfile
 from collections import deque
@@ -45,15 +46,16 @@ from ..analysis.baselines import compute_daily_baseline
 from ..analysis.labeling import EventParams
 from ..api.client import BATCH_MAX, TossClient
 from ..api.errors import Forbidden, SchemaMismatch, TossApiError
-from ..api.models import Candle, Price, RankingPage, precision_stats
+from ..api.models import Candle, Price, RankingPage, StockMeta, precision_stats
 from ..config import Config
 from ..store.writer import Store
+from ..universe.filters import market_cap_u, passes_tier0
 from .budget import GROUP_CHART, GROUP_MARKET_DATA, GROUP_RANKING, BudgetGuard, TierPlan
 from .detector import (EventDetector, PriceActivityTracker, TierChange, TierStateMachine,
                        activity_score, build_curve)
 from .notifier import Notifier
 from .scheduler import (CLOSED, Clock, SessionScheduler, exclude_today_1d_cutoff,
-                        session_window)
+                        session_window, trading_day_of)
 
 MIN_MS = 60_000
 DAY_MS = 86_400_000
@@ -90,11 +92,20 @@ CANDLE_ADJUSTED: dict[str, bool] = {"1m": False, "1d": True}
 
 #: 승격 직후 API 백필 상한 (페이지). 이력은 원칙적으로 DB(백필 결과)에서 읽는다.
 MAX_BACKFILL_PAGES = 3
+#: 재시작 이어받기 백필 상한 (페이지). 정전 구간을 메울 때만 이 한도까지 늘린다 —
+#: 이걸로도 재개 지점에 못 닿으면 `_backfill_1m` 이 **반드시 경고**한다 (감사 H-9:
+#: 1분봉은 수백 일 보관되므로 구멍은 탐지만 되면 나중에 메울 수 있다).
+RESUME_BACKFILL_MAX_PAGES = 12
 #: 곡선/이력에 쓸 날 수. 곡선 분모는 **당일 제외** (자기오염 방지).
 HISTORY_DAYS = 3
 MAX_BARS_PER_SYMBOL = 4 * 1440
 #: 곡선 재계산 최소 간격 (ms).
 CURVE_TTL_MS = 3600_000
+#: 곡선 계산 **실패**(None)의 재시도 간격 (ms). 성공 TTL(1시간)로 None 을 캐시하면
+#: 승격 직후 이력이 모자란 1시간 내내 RVOL 게이트가 조용히 꺼진다 (감사 C-1).
+CURVE_NONE_TTL_MS = 5 * MIN_MS
+#: `/stocks` 예산 그룹 (계약 C-3 스펙의 STOCK 그룹).
+GROUP_STOCK = "STOCK"
 
 #: 세션이 닫혔을 때 루프가 도는 간격 (초).
 IDLE_SLEEP_S = 5.0
@@ -301,6 +312,12 @@ class CollectorContext:
     last_trade_ms: dict[str, int] = field(default_factory=dict)
     missing_streak: dict[str, int] = field(default_factory=dict)
     counters: dict[str, int] = field(default_factory=dict)
+    #: 심볼 → tier0(유니버스) 통과 여부. 워치리스트 등록 게이트가 이걸 본다 (감사 F-2).
+    #: 출처는 둘: `symbols` 테이블(build_universe 결과) 시드 + 랭킹 신규 심볼의
+    #: `/stocks` 실시간 판정. 여기 없는(미확인) 심볼은 등록하지 않는다.
+    universe_status: dict[str, bool] = field(default_factory=dict)
+    #: 운영자가 CLI `--symbols` 로 명시한 심볼 — 유니버스 게이트를 우회한다.
+    pinned: set[str] = field(default_factory=set)
     session: str = CLOSED
     state_path: Path | None = None
     stop: asyncio.Event = field(default_factory=asyncio.Event)
@@ -308,6 +325,11 @@ class CollectorContext:
     _last_telemetry_ms: int = 0
     _max_digits_seen: int = 0
     _http429: int = 0
+    #: client.counters["requests"] 고수위 — 재시도·실패까지 포함한 실제 HTTP 시도를
+    #: BudgetGuard 에 계상하기 위한 기준점.
+    _http_requests_seen: int = 0
+    #: 유니버스 거부를 이미 로그한 심볼 (같은 심볼이 12초마다 로그를 도배하지 않게).
+    _universe_logged: set[str] = field(default_factory=set)
     #: 재시작 시 복원한 심볼별 마지막 봉 시각 (백필 시작점 힌트).
     _resume_candle_ms: dict[str, int] = field(default_factory=dict)
 
@@ -334,13 +356,23 @@ class CollectorContext:
             EventParams(window_min=det.event_window_min, ret_min=det.event_ret_min,
                         day_ret_min=det.event_day_ret_min, rvol_min=det.event_rvol_min),
             notifier=notifier)
+        pinned = {s.upper() for s in symbols}
         ctx = cls(cfg=cfg, client=client, store=store, notifier=notifier, clock=clock,
                   scheduler=scheduler, budget=budget, tiers=tiers, detector=detector,
                   watchlist=[s.upper() for s in symbols],
+                  pinned=pinned,
+                  # 운영자 명시 심볼은 유니버스 판정을 기다리지 않는다.
+                  universe_status={s: True for s in pinned},
                   state_path=Path(state_path) if state_path
                   else _default_state_path(cfg))
+        # 재시도·실패 계상 기준점 — ctx 생성 이전의 호출(캘린더 등)은 귀속하지 않는다.
+        ctx._http_requests_seen = int(
+            (getattr(client, "counters", None) or {}).get("requests", 0) or 0)
         if resume:
             ctx.load_state()
+            # 재기동 직후 억제 집합이 비면 오늘 이벤트가 전부 "신규" 로 재기록된다 (감사 F-3).
+            _seed_event_suppression(ctx)
+        _seed_universe_from_db(ctx)
         ctx.refresh_plan()
         return ctx
 
@@ -369,21 +401,46 @@ class CollectorContext:
 
     # ---- API 호출 회계 ---------------------------------------------------
 
+    def _unaccounted_attempts(self) -> int:
+        """마지막 계상 이후 client 가 실제로 보낸 HTTP 시도 수 (재시도 포함).
+
+        고수위 비교라 여러 번 불려도 같은 시도를 두 번 세지 않는다. 여러 루프가
+        한 이벤트루프에서 겹칠 때 드물게 다른 그룹의 시도가 이쪽에 귀속될 수 있는데,
+        총량은 정확하고 방향은 보수적(과대 계상)이라 예산 감시 목적에는 안전하다.
+        """
+        counters = getattr(self.client, "counters", None)
+        if not isinstance(counters, dict):
+            return 0
+        seen = int(counters.get("requests", 0) or 0)
+        delta = seen - self._http_requests_seen
+        if delta <= 0:
+            return 0
+        self._http_requests_seen = seen
+        return delta
+
     def after_call(self, group: str, calls: int = 1) -> None:
-        """호출 1건(또는 배치 n건) 관측 — 예산 카운터 + 서버 시각 보정 + 429 감지."""
-        for _ in range(max(1, calls)):
+        """호출 1건(또는 배치 n건) 관측 — 예산 카운터 + 서버 시각 보정 + 429 감지.
+
+        예산에는 논리 호출 수가 아니라 **실제 HTTP 시도 수**(재시도 포함)를 계상한다 —
+        재시도가 0회로 계상되면 실사용이 과소평가되어 한도 사고를 놓친다 (감사 ②).
+        시도 수를 관측할 수 없는 클라이언트(테스트 더블)는 논리 호출 수로 폴백한다.
+        """
+        attempts = self._unaccounted_attempts()
+        for _ in range(max(max(1, calls), attempts)):
             self.budget.on_request(group)
         self.bump(f"req_{group}", max(1, calls))
         self.clock.observe_headers(getattr(self.client, "last_headers", None))
         self.sync_rate_limits(group)
 
     def sync_rate_limits(self, group: str = GROUP_MARKET_DATA) -> None:
-        """client 가 관측한 429 증가분을 예산 가드에 반영한다.
+        """client 가 관측한 429 증가분·미계상 시도를 예산 가드에 반영한다.
 
         **실패로 끝난 호출에서도** 반드시 불려야 한다 — 재시도까지 실패해 예외로 빠져나간
-        429 야말로 예산 사고의 신호이기 때문이다. 고수위(`_http429`)로 비교하므로
-        여러 번 불려도 중복 계상되지 않는다.
+        호출도 실제로 예산을 태웠고, 그 429 야말로 예산 사고의 신호이기 때문이다.
+        고수위 비교이므로 여러 번 불려도 중복 계상되지 않는다.
         """
+        for _ in range(self._unaccounted_attempts()):
+            self.budget.on_request(group)
         seen429 = int(getattr(self.client, "counters", {}).get("http_429", 0))
         if seen429 > self._http429:
             self._http429 = seen429
@@ -503,6 +560,11 @@ class CollectorContext:
         return {
             "session": self.current_session(),
             "watch": len(self.watchlist),
+            # 워치리스트에 있으면서 tier0 미통과인 심볼 수 — 0 이 아니면 유니버스 게이트가
+            # 새는 것이다 (감사 F-2 재발 감시. pinned 는 운영자 책임이라 True 로 계상).
+            "watch_outside_universe": sum(
+                1 for s in self.watchlist if self.universe_status.get(s) is False),
+            "universe_rejected": int(self.counters.get("universe_rejected", 0)),
             "tier2": len(self.tiers.at_least(2)),
             "tier3": len(self.tiers.members(3)),
             "events": int(self.counters.get("events", 0)),
@@ -580,8 +642,23 @@ class CollectorContext:
     # ---- 워치리스트 ------------------------------------------------------
 
     def watch(self, symbol: str) -> bool:
+        """워치리스트 등록 — **tier0 유니버스 게이트를 통과한 심볼만** (감사 F-2).
+
+        이 게이트가 없으면 거래대금 랭킹 상위(정의상 메가캡)가 그대로 워치리스트가 되어
+        tier2 정원을 잠식하고, tier3 후보는 tier2 에서만 나오므로 tier3 진입까지 봉쇄된다.
+        걸러진 심볼은 심볼당 1회 로그를 남긴다 — 조용히 거르면 "왜 이 종목이 없지" 를
+        나중에 추적할 수 없다.
+        """
         sym = symbol.upper()
         if sym in self.watchlist:
+            return False
+        ok = self.universe_status.get(sym)
+        if ok is not True:
+            self.bump("watch_rejected_universe" if ok is False else "watch_unknown_universe")
+            if sym not in self._universe_logged:
+                self._universe_logged.add(sym)
+                why = "tier0 필터 미통과" if ok is False else "메타 미확인"
+                self.notifier.info(f"universe: not watching {sym} ({why})")
             return False
         uni = self.cfg.require_universe()
         if len(self.watchlist) >= uni.tier1_max:
@@ -710,6 +787,77 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
         raise
 
 
+def _open_reader(ctx: CollectorContext):
+    """`store` DB 의 읽기 전용 Reader. DB 가 없으면 None."""
+    store_cfg = ctx.cfg.store
+    if store_cfg is None:
+        return None
+    try:
+        from ..store.reader import Reader
+
+        return Reader(Path(store_cfg.db_path))
+    except Exception:
+        return None
+
+
+def _seed_universe_from_db(ctx: CollectorContext) -> int:
+    """`symbols` 테이블(build_universe 결과)을 유니버스 캐시 + 워치리스트 시드로 읽는다.
+
+    감사 F-2: collector 는 지금까지 `symbols` 를 읽는 코드가 전혀 없었다 — 워치리스트
+    출처가 CLI 인자와 랭킹 누적뿐이라 유니버스 빌드가 돌아도 소비되지 않았다.
+    테이블의 행은 전부 tier0 통과분이므로 그대로 통과 캐시가 되고, tier1 이상은
+    워치리스트 시드가 된다 (랭킹은 시드가 아니라 승격 트리거다 — docs/03 §1).
+    """
+    reader = _open_reader(ctx)
+    if reader is None:
+        return 0
+    try:
+        df = reader.symbols()
+    except Exception:
+        return 0
+    finally:
+        reader.close()
+    if df is None or df.empty:
+        return 0
+    uni = ctx.cfg.require_universe()
+    seeded = 0
+    for row in df.itertuples():
+        sym = str(row.symbol).upper()
+        ctx.universe_status.setdefault(sym, True)
+        shares = int(getattr(row, "shares_outstanding_qu", 0) or 0)
+        if shares > 0:
+            ctx.shares_out.setdefault(sym, shares)
+        if int(getattr(row, "tier", 0) or 0) >= 1 and sym not in ctx.watchlist \
+                and len(ctx.watchlist) < uni.tier1_max:
+            ctx.watchlist.append(sym)
+            seeded += 1
+    if seeded:
+        ctx.bump("watchlist_seeded_from_db", seeded)
+        ctx.notifier.info(f"universe: seeded {seeded} tier1 symbols from the symbols table "
+                          f"(watch={len(ctx.watchlist)})")
+    return seeded
+
+
+def _seed_event_suppression(ctx: CollectorContext) -> int:
+    """최근 이틀치 `events` 를 검출기 억제 상태로 복원한다 (재시작 이어받기, 감사 F-3)."""
+    reader = _open_reader(ctx)
+    if reader is None:
+        return 0
+    try:
+        now = ctx.clock.now_ms()
+        df = reader.read_events(now - 2 * DAY_MS, now + DAY_MS)
+    except Exception:
+        return 0
+    finally:
+        reader.close()
+    if df is None or df.empty:
+        return 0
+    for row in df.itertuples():
+        ctx.detector.seed_suppression(str(row.symbol), int(row.t0_ms))
+    ctx.bump("event_suppression_seeded", len(df))
+    return len(df)
+
+
 # --------------------------------------------------------------------------- #
 # 공통 루프 골격
 # --------------------------------------------------------------------------- #
@@ -770,7 +918,7 @@ async def run_rankings(client: TossClient, store: Store, cfg: Config, *,
 
 
 async def rankings_once(ctx: CollectorContext) -> int:
-    """랭킹 4종 스냅샷 → DB + 실시간 버퍼 + 승격 트리거."""
+    """랭킹 4종 스냅샷 → DB + 실시간 버퍼 + 유니버스 판정 + 승격 트리거."""
     stored = 0
     watch = set(ctx.watchlist)
     for rtype in RANKING_TYPES:
@@ -781,22 +929,101 @@ async def rankings_once(ctx: CollectorContext) -> int:
         snap_ms = ctx.clock.now_ms()
         stored += ctx.store.insert_rankings(snap_ms, page)
         ctx.rankings.add(snap_ms, page, keep=watch)
+        # 워치리스트 후보(상위권)의 tier0 판정을 트리거 **이전에** 확정한다 (감사 F-2).
+        await _resolve_universe(
+            ctx, [(row.symbol, int(row.last_u)) for row in page.rows
+                  if row.rank <= RANKING_PROMOTE_TOP], snap_ms)
         _ranking_triggers(ctx, page, snap_ms)
         ctx.bump("ranking_snaps")
+    await _resolve_watchlist_unknowns(ctx)
     ctx.rankings.prune(ctx.clock.now_ms(), keep=set(ctx.watchlist) | set(ctx.buffers))
     return stored
 
 
+async def _resolve_universe(ctx: CollectorContext,
+                            candidates: Sequence[tuple[str, int]], snap_ms: int) -> None:
+    """(symbol, last_u) 후보의 tier0 통과 여부를 `/stocks` 배치로 확정해 캐시한다.
+
+    가격은 후보가 들고 온 관측치(랭킹 행·`/prices`)를 쓰고, 시총 분모(발행주식수)만
+    `/stocks` 에서 받는다. 판정은 심볼당 1회 캐시되므로 정상 상태에서 추가 호출은 0이다.
+    미통과 심볼이 이미 워치리스트에 있으면(pinned 제외) **내리면서 경고**한다 —
+    구 상태파일에서 복원된 대형주가 조용히 예산을 먹는 것을 여기서 끊는다.
+    """
+    todo = [(s.upper(), int(last_u)) for s, last_u in candidates
+            if s.upper() not in ctx.universe_status]
+    if not todo:
+        return
+    get_stocks = getattr(ctx.client, "get_stocks", None)
+    if get_stocks is None:
+        return                       # 메타를 줄 수 없는 클라이언트 — 미확인으로 남는다(등록 거부)
+    metas: list[StockMeta] = await get_stocks([s for s, _ in todo])
+    ctx.after_call(GROUP_STOCK, calls=max(1, math.ceil(len(todo) / BATCH_MAX)))
+    by_symbol = {m.symbol.upper(): m for m in metas}
+    uni = ctx.cfg.require_universe()
+    for sym, last_u in todo:
+        meta = by_symbol.get(sym)
+        if meta is None:
+            # 함정1: 미존재 심볼은 200 + 조용한 누락. 통과로 둘 수는 없다.
+            ctx.universe_status[sym] = False
+            ctx.bump("universe_meta_missing")
+        else:
+            price = Price(symbol=sym, ts_ms=int(snap_ms), last_u=int(last_u))
+            ok = bool(passes_tier0(meta, price, uni))
+            ctx.universe_status[sym] = ok
+            if ok:
+                ctx.shares_out.setdefault(sym, int(meta.shares_outstanding_qu))
+        if ctx.universe_status[sym]:
+            continue
+        ctx.bump("universe_rejected")
+        if sym not in ctx._universe_logged:
+            ctx._universe_logged.add(sym)
+            cap = (market_cap_u(meta, Price(symbol=sym, ts_ms=None, last_u=int(last_u)))
+                   if meta is not None else None)
+            ctx.notifier.info(
+                f"universe: {sym} rejected at tier0 (last_u={last_u} "
+                f"mcap_u={cap if cap is not None else 'unknown'})")
+        if sym in ctx.watchlist and sym not in ctx.pinned:
+            ctx.notifier.warn(f"universe: dropping {sym} from watchlist — tier0 미통과 "
+                              "(구 상태 복원분 정리)")
+            ctx.unwatch(sym)
+
+
+async def _resolve_watchlist_unknowns(ctx: CollectorContext) -> None:
+    """유니버스 판정이 없는 워치리스트 심볼(주로 구 상태파일 복원분)을 확정한다."""
+    unknowns = [s for s in ctx.watchlist if s not in ctx.universe_status]
+    if not unknowns:
+        return
+    get_prices = getattr(ctx.client, "get_prices", None)
+    if get_prices is None or getattr(ctx.client, "get_stocks", None) is None:
+        return
+    for i in range(0, len(unknowns), BATCH_MAX):
+        chunk = unknowns[i:i + BATCH_MAX]
+        prices: list[Price] = await get_prices(chunk)
+        ctx.after_call(GROUP_MARKET_DATA)
+        await _resolve_universe(ctx, [(p.symbol, int(p.last_u)) for p in prices],
+                                ctx.clock.now_ms())
+        # 응답에서 빠진 심볼(함정1)은 미확인으로 남는다 — tier1 스윕의 missing_streak 이 처리한다.
+
+
 def _ranking_triggers(ctx: CollectorContext, page: RankingPage, snap_ms: int) -> None:
-    """랭킹 상위 진입 = 승격 트리거 (docs/03 §1). 신규 심볼은 워치리스트에 누적한다."""
+    """랭킹 상위 진입 = 승격 트리거 (docs/03 §1). 신규 심볼은 워치리스트에 누적한다.
+
+    유니버스 게이트는 `ctx.watch()` 안에 있다 — 등록되지 못한 심볼은 승격도 하지 않는다.
+    승격 점수는 0.0 이다 (감사 H-7): 랭킹은 "볼 이유"이지 유망도가 아니다. 랭킹 유래
+    점수(0.50~0.77)를 스코어 채널에 섞으면 실제 스코어(0.3~0.6)를 항상 이겨 정원이 찼을 때
+    진짜 표적을 축출한다. 0.0 이면 정원이 찼을 때 기존 멤버를 밀어내지 못하고(진입만 허용),
+    자리가 있으면 들어가서 실제 봉 데이터로 스코어를 증명해야 남는다.
+    """
     toss = page.ranking_type.startswith("TOSS_SECURITIES")
     for row in page.rows:
         if row.rank > RANKING_PROMOTE_TOP:
             continue
-        ctx.watch(row.symbol)
-        if toss and ctx.tiers.tier_of(row.symbol) < 2:
-            score = 0.5 + 0.3 * (RANKING_PROMOTE_TOP - row.rank) / RANKING_PROMOTE_TOP
-            if ctx.tiers.force(row.symbol, 2, "ranking_entry", score, snap_ms) is not None:
+        sym = row.symbol.upper()
+        ctx.watch(sym)
+        if sym not in ctx.watchlist:
+            continue                     # 유니버스 게이트 또는 tier1 정원에 걸렸다
+        if toss and ctx.tiers.tier_of(sym) < 2:
+            if ctx.tiers.force(sym, 2, "ranking_entry", 0.0, snap_ms) is not None:
                 ctx.bump("ranking_promotions")
     ctx.flush_changes()
 
@@ -920,17 +1147,26 @@ async def tier2_symbol_once(ctx: CollectorContext, symbol: str) -> int:
 
 
 def _detect(ctx: CollectorContext, symbol: str) -> None:
-    """새 봉 기준으로 스코어 + 이벤트. 피처·이벤트는 전부 analysis 재사용이다."""
+    """새 봉 기준으로 스코어 + 이벤트. 피처·이벤트는 전부 analysis 재사용이다.
+
+    이벤트 판정은 **현재 매매일로 제한**한다 (감사 F-3): 버퍼에는 최대 4일이 남아 있고
+    검출기는 매 사이클 전체를 재스캔하므로, 제한이 없으면 전일 이벤트가 당일 거래량이
+    섞인 곡선(그 t0 기준 미래)으로 재판정되어 rvol 라벨이 무너지고 UPSERT 가 깨끗한
+    기록을 덮어쓴다. 전일 이벤트는 이미 기록됐다 — 다시 판정할 이유가 없다.
+    """
     buf = ctx.buffers.get(symbol)
     if buf is None or not len(buf):
         return
     df = buf.frame()
     now = ctx.clock.now_ms()
+    md = ctx.scheduler.market_day_at(now) or ctx.scheduler.today()
+    bounds = trading_day_of(md) if md is not None else None
     result = ctx.detector.evaluate(
         symbol, df, rankings=ctx.rankings.frame(symbol), calendar=ctx.calendar_list(),
         curve=_curve_for(ctx, symbol, df, now), baseline=ctx.baselines.get(symbol),
         shares_outstanding_qu=ctx.shares_out.get(symbol),
-        prev_close_u=ctx.prev_close.get(symbol), now_ms=now)
+        prev_close_u=ctx.prev_close.get(symbol), now_ms=now,
+        detect_from_ms=bounds[0] if bounds is not None else None)
     if result is None:
         return
     ctx.tiers.on_new_data(symbol, result.score, result.ts_ms, reason=result.path)
@@ -947,10 +1183,17 @@ def _detect(ctx: CollectorContext, symbol: str) -> None:
 
 
 def _curve_for(ctx: CollectorContext, symbol: str, df: pd.DataFrame, now_ms: int):
-    """시간대 보정 RVOL 분모. **당일은 제외**한다 (자기오염 방지 — W3 인수인계 §4)."""
+    """시간대 보정 RVOL 분모. **당일은 제외**한다 (자기오염 방지 — W3 인수인계 §4).
+
+    실패(None)는 성공 TTL(1시간)로 캐시하지 않는다 (감사 C-1): 승격 직후에는 버퍼에
+    당일 봉뿐이라 곡선이 자주 None 인데, 그걸 1시간 고착시키면 백필로 이력이 생긴 뒤에도
+    RVOL 게이트가 꺼진 채(`rvol_gated=False`) 가격 조건만으로 이벤트가 기록된다.
+    """
     cached = ctx.curves.get(symbol)
-    if cached is not None and now_ms - cached[0] < CURVE_TTL_MS:
-        return cached[1]
+    if cached is not None:
+        ttl = CURVE_TTL_MS if cached[1] is not None else CURVE_NONE_TTL_MS
+        if now_ms - cached[0] < ttl:
+            return cached[1]
     calendar = ctx.calendar_list()
     today = ctx.scheduler.market_day_at(now_ms) or ctx.scheduler.today()
     exclude = (today.date,) if today is not None else ()
@@ -960,7 +1203,15 @@ def _curve_for(ctx: CollectorContext, symbol: str, df: pd.DataFrame, now_ms: int
 
 
 async def _ensure_history(ctx: CollectorContext, symbol: str) -> None:
-    """승격 직후 1회: DB(백필 결과) → 부족하면 제한적 API 백필 → 일봉 베이스라인."""
+    """승격 직후 1회: DB(백필 결과) → API 백필로 재개 지점까지 연결 → 일봉 베이스라인.
+
+    감사 H-9: 예전에는 DB 에서 `CANDLE_PAGE` 이상 읽으면 백필을 통째로 건너뛰었다 —
+    그 분기에서는 `resume_point_ms` 가 조회조차 되지 않아, 정전이 실시간 폴링의 커버
+    범위(최신 200봉)를 넘으면 `candles_1m` 에 **영구적이고 조용한 구멍**이 남았다.
+    지금은 이어받기 지점이 있으면 정전 폭만큼 페이지를 늘려 **항상** 잇고,
+    상한 안에서 못 닿으면 `_backfill_1m` 이 경고를 남긴다 (탐지가 우선이다 —
+    1분봉은 수백 일 보관되므로 구멍은 알기만 하면 나중에 메울 수 있다).
+    """
     buf = ctx.buffer(symbol)
     if ctx.baselines.get(symbol) is not None and len(buf) > 0:
         return
@@ -968,9 +1219,20 @@ async def _ensure_history(ctx: CollectorContext, symbol: str) -> None:
     if not len(buf):
         loaded = _load_history_from_db(ctx, symbol, now)
         ctx.bump("history_from_db", 1 if loaded else 0)
-        if loaded < CANDLE_PAGE:
-            # 재시작이면 마지막 수집 지점까지만 메운다 (이어받기).
-            await _backfill_1m(ctx, symbol, stop_at_ms=ctx.resume_point_ms(symbol))
+        resume = ctx.resume_point_ms(symbol)
+        gap_bars = None if resume is None else max(0, (now - int(resume)) // MIN_MS)
+        if loaded >= CANDLE_PAGE and gap_bars is not None and gap_bars < CANDLE_PAGE:
+            # 이력이 충분하고 공백이 한 페이지 미만 — 바로 뒤의 실시간 폴링(count=200)이
+            # 그 구간을 덮으므로 백필이 필요 없다. (한 페이지를 넘는 공백은 실시간 폴링이
+            # 영원히 못 덮는다 — 그게 감사 H-9 의 구멍이었다.)
+            pass
+        else:
+            pages = MAX_BACKFILL_PAGES
+            if gap_bars is not None:
+                # 최신 페이지가 now 에 정렬되므로 +1 페이지 여유를 둔다.
+                pages = min(max(MAX_BACKFILL_PAGES, gap_bars // CANDLE_PAGE + 1),
+                            RESUME_BACKFILL_MAX_PAGES)
+            await _backfill_1m(ctx, symbol, pages=pages, stop_at_ms=resume)
     if ctx.baselines.get(symbol) is None:
         await _refresh_baseline(ctx, symbol, now)
 
@@ -1008,10 +1270,15 @@ async def _backfill_1m(ctx: CollectorContext, symbol: str,
 
     함정3: `before` 는 **inclusive** 라 `nextBefore` 를 그대로 넘기면 경계 봉이 중복된다.
     저장은 upsert 라 멱등이지만 카운팅이 틀어지므로 1ms 당겨 요청한다.
+
+    감사 H-9: `stop_at_ms` 가 있는데 페이지 상한/이력 끝 때문에 거기 못 닿고 끝나면
+    `candles_1m` 에 구멍이 남는 것이다 — **조용히 끝내지 않고 반드시 경고한다.**
     """
     before: int | None = None
     total = 0
     buf = ctx.buffer(symbol)
+    oldest: int | None = None
+    reached = stop_at_ms is None
     for _ in range(max(1, pages)):
         page = await ctx.client.get_candles(symbol, "1m", count=CANDLE_PAGE,
                                             before_ms=before,
@@ -1023,11 +1290,18 @@ async def _backfill_1m(ctx: CollectorContext, symbol: str,
         total += buf.upsert(page.candles)
         oldest = int(page.candles[0].ts_ms)             # client 가 오름차순 정규화
         if stop_at_ms is not None and oldest <= int(stop_at_ms):
+            reached = True
             break                                        # 마지막 수집 지점까지 메웠다
         if page.next_before_ms is None:
             break
         before = int(page.next_before_ms) - 1
     ctx.bump("backfill_bars", total)
+    if not reached:
+        ctx.bump("backfill_gaps")
+        ctx.notifier.warn(
+            f"backfill gap {symbol}: oldest fetched={oldest} did not reach resume point "
+            f"{stop_at_ms} — candles_1m 에 구멍이 남았다 (1분봉 보관기간 내 수동 백필로 "
+            "메울 수 있다)")
     return total
 
 
@@ -1170,6 +1444,13 @@ def reconfigure_tiers(ctx: CollectorContext, session: str) -> dict[str, int]:
                                      **caps)
     ctx.flush_changes()
     ctx.curves.clear()                                  # 날이 바뀌면 곡선도 다시 만든다
+    # 감사 H-6: baselines/prev_close/history_days 는 심볼당 1회만 계산되고 아무도 지우지
+    # 않았다 — 승격 시점의 ADV20·전일종가가 프로세스 수명 내내 얼어붙어, 2일차부터
+    # `day` 트리거의 분모가 틀린 날의 종가가 된다. 세션 전환마다 무효화해 재계산시킨다
+    # (`_ensure_history`/`_session_tick` 이 다음 사이클에 자연히 다시 채운다).
+    ctx.baselines.clear()
+    ctx.prev_close.clear()
+    ctx.history_days = []
     ctx.refresh_plan()
     if changes:
         ctx.notifier.info(f"session {session}: tier caps {caps} (demoted {len(changes)})")

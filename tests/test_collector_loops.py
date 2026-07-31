@@ -424,13 +424,13 @@ def test_demotion_keeps_event_history_but_drops_heavy_state(tmp_path):
     try:
         ctx.buffer("ABCD").upsert([bar(DAY0)])
         ctx.curves["ABCD"] = (0, None)
-        ctx.detector._emitted[("ABCD", 111)] = "digest"
+        ctx.detector.seed_suppression("ABCD", 111)
 
         ctx.drop_symbol_state("ABCD")
 
         assert "ABCD" not in ctx.buffers                  # 메모리는 회수하고
         assert "ABCD" not in ctx.curves
-        assert ("ABCD", 111) in ctx.detector._emitted     # 이력은 남긴다
+        assert ctx.detector.emitted_count() == 1          # 이력은 남긴다
     finally:
         ctx.store.close()
 
@@ -642,3 +642,347 @@ def test_loops_idle_while_the_market_is_closed(tmp_path):
 def day_closed() -> int:
     day = simple_day("2026-07-30", DAY0)
     return day.after.end_ms + MIN_MS
+
+
+# --------------------------------------------------------------------------- #
+# 감사 F-2 — 유니버스 게이트: 랭킹 출현 대형주가 워치리스트에 오르면 안 된다
+# --------------------------------------------------------------------------- #
+from tossmon.api.models import StockMeta  # noqa: E402  (테스트 하단 그룹 전용)
+
+
+def meta(symbol, shares, *, security_type="STOCK", common=True, status="ACTIVE"):
+    return StockMeta(symbol=symbol, name=f"T {symbol}", market="NASDAQ",
+                     security_type=security_type, is_common=common, status=status,
+                     list_date="2015-01-05",
+                     shares_outstanding_qu=shares * 1_000_000)      # 주 → 마이크로주
+
+
+class MetaClient(StubClient):
+    """유니버스 판정용 `/stocks` 를 갖춘 스텁."""
+
+    def __init__(self, known=None, stocks=None):
+        super().__init__(known or {})
+        self.stocks = stocks or {}
+        self.stock_requests: list[list[str]] = []
+
+    async def get_stocks(self, symbols):
+        self.stock_requests.append(list(symbols))
+        self.counters["requests"] += 1
+        return [self.stocks[s] for s in symbols if s in self.stocks]
+
+
+def toss_page(*rows):
+    return RankingPage(ranking_type="TOSS_SECURITIES_TRADING_AMOUNT",
+                       duration="realtime", ranked_at_ms=None,
+                       rows=[RankingRow(rank=r, symbol=s, last_u=last_u,
+                                        base_u=last_u, change_rate=0.1,
+                                        vol_qu=10, amount_u=1_000_000_000)
+                             for r, s, last_u in rows])
+
+
+def test_large_caps_from_rankings_are_rejected_and_small_caps_pass(tmp_path):
+    """감사 F-2 회귀: NOK·AMD 류가 랭킹으로 정상 등록되던 결함.
+
+    가격($0.10~$20)·시총($10M~$300M) 미달 심볼은 워치리스트에도, tier2 에도 못 오른다.
+    걸러진 심볼은 로그로 드러난다 — 조용히 거르면 사후 추적이 불가능하다.
+    """
+    client = MetaClient(stocks={
+        "AMD": meta("AMD", 1_600_000_000),               # $170 → 가격 초과
+        "NOK": meta("NOK", 5_500_000_000),               # $3.5 이지만 시총 $19B → 초과
+        "SNTI": meta("SNTI", 40_000_000),                # $0.35 × 40M주 = $14M → 통과
+    })
+    ctx, _ = build_ctx(tmp_path, client)
+    try:
+        page = toss_page((1, "AMD", 170_000_000), (2, "NOK", 3_500_000),
+                         (3, "SNTI", 350_000))
+        snap = ctx.clock.now_ms()
+        asyncio.run(loops._resolve_universe(
+            ctx, [(r.symbol, r.last_u) for r in page.rows], snap))
+        loops._ranking_triggers(ctx, page, snap)
+
+        assert "SNTI" in ctx.watchlist
+        assert "AMD" not in ctx.watchlist and "NOK" not in ctx.watchlist
+        assert ctx.tiers.tier_of("SNTI") == 2            # 통과분만 승격 트리거
+        assert ctx.tiers.tier_of("AMD") == 1
+        assert ctx.counters["universe_rejected"] == 2
+        infos = ctx.notifier.counters["info"]
+        assert infos >= 2                                 # 거부 로그가 남았다
+        assert ctx.universe_status == {"AMD": False, "NOK": False, "SNTI": True}
+        assert ctx.shares_out["SNTI"] == 40_000_000 * 1_000_000
+        # 판정은 심볼당 1회 — 다음 스냅샷에서는 /stocks 를 다시 부르지 않는다
+        calls_before = len(client.stock_requests)
+        asyncio.run(loops._resolve_universe(
+            ctx, [(r.symbol, r.last_u) for r in page.rows], snap + 12_000))
+        assert len(client.stock_requests) == calls_before
+        # 텔레메트리 게이지: 워치리스트 안에 미통과 심볼이 없다
+        assert ctx.telemetry()["watch_outside_universe"] == 0
+    finally:
+        ctx.store.close()
+
+
+def test_resumed_large_cap_watchlist_is_cleaned_with_a_warning(tmp_path):
+    """구 상태파일에서 복원된 대형주는 판정 즉시 경고와 함께 내린다 (조용한 잠식 금지)."""
+    client = MetaClient(stocks={"META": meta("META", 2_200_000_000)})
+    ctx, _ = build_ctx(tmp_path, client)
+    try:
+        ctx.watchlist.append("META")                     # 구 상태 복원분을 재현
+        snap = ctx.clock.now_ms()
+        asyncio.run(loops._resolve_universe(ctx, [("META", 532_600_000)], snap))
+        assert "META" not in ctx.watchlist
+        assert ctx.notifier.counters["warn"] >= 1
+    finally:
+        ctx.store.close()
+
+
+def test_pinned_cli_symbols_bypass_the_universe_gate(tmp_path):
+    """운영자가 CLI 로 명시한 심볼은 게이트를 기다리지 않는다 (기존 운용 방식 보존)."""
+    ctx, _ = build_ctx(tmp_path, StubClient({}), symbols=("AAPL",))
+    try:
+        assert "AAPL" in ctx.watchlist
+        assert ctx.universe_status["AAPL"] is True
+        assert "AAPL" in ctx.pinned
+    finally:
+        ctx.store.close()
+
+
+def test_watchlist_seeds_from_the_symbols_table(tmp_path):
+    """감사 F-2: collector 가 `symbols` 테이블(build_universe 결과)을 실제로 소비한다."""
+    cfg = make_config(tmp_path)
+    store = Store(cfg.store.db_path)
+    store.upsert_symbols([meta("BTAI", 19_000_000), meta("CRKN", 31_000_000)], tier=1)
+    store.upsert_symbols([meta("VTVT", 97_000_000)], tier=0)
+    store.close()
+
+    ctx, _ = build_ctx(tmp_path, StubClient({}))
+    try:
+        assert {"BTAI", "CRKN"} <= set(ctx.watchlist)     # tier1 은 워치리스트 시드
+        assert "VTVT" not in ctx.watchlist                # tier0 은 통과 캐시만
+        assert ctx.universe_status["VTVT"] is True
+        assert ctx.watch("VTVT") is True                  # 랭킹 진입 시 즉시 등록 가능
+        assert ctx.shares_out["BTAI"] == 19_000_000 * 1_000_000
+    finally:
+        ctx.store.close()
+
+
+def test_ranking_symbols_without_meta_are_not_watched(tmp_path):
+    """`/stocks` 가 조용히 누락한 심볼(함정1)은 통과로 치지 않는다."""
+    client = MetaClient(stocks={})                        # 메타 없음
+    ctx, _ = build_ctx(tmp_path, client)
+    try:
+        snap = ctx.clock.now_ms()
+        asyncio.run(loops._resolve_universe(ctx, [("GHOST", 1_000_000)], snap))
+        assert ctx.universe_status["GHOST"] is False
+        assert ctx.watch("GHOST") is False
+        assert "GHOST" not in ctx.watchlist
+    finally:
+        ctx.store.close()
+
+
+def test_ranking_promotion_cannot_evict_scored_members_when_full(tmp_path):
+    """감사 H-7 회귀: 랭킹 유래 점수(0.50~0.77)가 실제 스코어(0.3~0.6)를 축출하던 결함.
+
+    랭킹 승격은 tier2 **진입**만 허용한다 — 정원이 찼으면 기존 멤버를 밀어내지 못한다.
+    """
+    client = MetaClient(stocks={"NEWP": meta("NEWP", 40_000_000)})
+    ctx, _ = build_ctx(tmp_path, client, universe={"tier2_max": 2, "tier3_max": 2})
+    try:
+        now = ctx.clock.now_ms()
+        for sym in ("BTAI", "CRKN"):                      # 실제 스코어로 정원을 채운다
+            ctx.tiers.on_new_data(sym, 0.40, now)
+        ctx.flush_changes()
+        assert sorted(ctx.tiers.at_least(2)) == ["BTAI", "CRKN"]
+
+        page = toss_page((1, "NEWP", 350_000))            # 통과 심볼의 랭킹 1위 진입
+        asyncio.run(loops._resolve_universe(ctx, [("NEWP", 350_000)], now))
+        loops._ranking_triggers(ctx, page, now)
+
+        assert "NEWP" in ctx.watchlist                    # 보긴 본다 (tier1 스윕 대상)
+        assert ctx.tiers.tier_of("NEWP") == 1             # 그러나 축출은 없다
+        assert sorted(ctx.tiers.at_least(2)) == ["BTAI", "CRKN"]
+    finally:
+        ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 감사 F-3 — 실시간 재판정은 현재 매매일로 제한된다
+# --------------------------------------------------------------------------- #
+def two_day_calendar():
+    day1 = simple_day("2026-07-30", DAY0)
+    day2 = simple_day("2026-07-31", DAY0 + 1440 * MIN_MS)
+    return day1, day2
+
+
+def spike_bars(base_ms, symbol="ABCD"):
+    """30분 창 +15% 를 확실히 넘는 급등 하루 (가격 조건만으로 이벤트가 되는 데이터)."""
+    bars = []
+    for i in range(120):
+        close = 1_000_000 if i < 60 else 1_600_000       # 60분째 +60% 점프
+        bars.append(bar(base_ms + i * MIN_MS, close_u=close, symbol=symbol))
+    return bars
+
+
+def test_previous_day_events_are_not_rejudged(tmp_path):
+    """감사 F-3 회귀: D 일 이벤트가 D+1 재스캔에서 다시 판정되면 안 된다.
+
+    D+1 의 곡선에는 D 일 폭등 거래량(그 t0 기준 미래)이 들어가 rvol 라벨이 17.6→3.4 로
+    무너지고, UPSERT 가 깨끗한 기록을 덮어쓴다. 검출 자체를 당일로 제한하면 사라진다.
+    """
+    day1, day2 = two_day_calendar()
+    now = day2.regular.start_ms + 30 * MIN_MS
+    ctx, _ = build_ctx(tmp_path, StubClient({}), now_ms=now)
+    try:
+        ctx.scheduler.calendar = {"previous": day1, "today": day2}
+        ctx.history_days = [day1]
+        # 승격 직후처럼 곡선이 아직 없다 (감사 C-1 의 정상 경로) — 가격 조건만으로 판정된다.
+        ctx.curves["ABCD"] = (now, None)
+        # 버퍼: D 일의 급등 + D+1 의 평탄한 봉 (실제 tier2 버퍼가 이틀을 든 상황)
+        buf = ctx.buffer("ABCD")
+        buf.upsert(spike_bars(day1.regular.start_ms))
+        buf.upsert([bar(day2.regular.start_ms + i * MIN_MS, close_u=1_600_000,
+                        symbol="ABCD") for i in range(25)])
+
+        loops._detect(ctx, "ABCD")
+
+        rows = ctx.store._conn.execute("SELECT symbol, t0_ms FROM events").fetchall()
+        day2_start = day2.day.start_ms
+        assert all(t0 >= day2_start for _s, t0 in rows), \
+            f"전일 이벤트가 재판정·기록됐다: {rows}"
+    finally:
+        ctx.store.close()
+
+
+def test_detection_still_fires_for_todays_event(tmp_path):
+    """당일 제한이 당일 이벤트까지 죽이면 안 된다 — 검출 경로 자체의 생존 확인."""
+    day1, day2 = two_day_calendar()
+    now = day2.regular.start_ms + 119 * MIN_MS
+    ctx, _ = build_ctx(tmp_path, StubClient({}), now_ms=now)
+    try:
+        ctx.scheduler.calendar = {"previous": day1, "today": day2}
+        ctx.buffer("ABCD").upsert(spike_bars(day2.regular.start_ms))
+        loops._detect(ctx, "ABCD")
+        rows = ctx.store._conn.execute("SELECT t0_ms FROM events").fetchall()
+        assert rows and all(t0 >= day2.day.start_ms for (t0,) in rows)
+    finally:
+        ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 감사 C-1 — 곡선 실패(None)가 1시간 고착되면 RVOL 게이트가 조용히 꺼진다
+# --------------------------------------------------------------------------- #
+def test_curve_failure_is_retried_quickly_not_cached_for_an_hour(tmp_path):
+    day1, day2 = two_day_calendar()
+    now = day2.regular.start_ms + 30 * MIN_MS
+    ctx, _ = build_ctx(tmp_path, StubClient({}), now_ms=now)
+    try:
+        ctx.scheduler.calendar = {"previous": day1, "today": day2}
+        ctx.history_days = [day1]
+        today_only = candles_frame(
+            [bar(day2.regular.start_ms + i * MIN_MS) for i in range(30)])
+        assert loops._curve_for(ctx, "AAA", today_only, now) is None   # 이력 부족
+
+        # 5분 뒤 백필로 전일 봉이 생겼다 — 성공 TTL(1시간) 안이지만 다시 시도해야 한다
+        with_history = candles_frame(
+            [bar(day1.regular.start_ms + i * MIN_MS, vol_qu=5_000_000)
+             for i in range(120)]
+            + [bar(day2.regular.start_ms + i * MIN_MS) for i in range(30)])
+        later = now + loops.CURVE_NONE_TTL_MS + 1
+        curve = loops._curve_for(ctx, "AAA", with_history, later)
+        assert curve is not None, "곡선 실패가 장시간 캐시되어 게이트가 꺼진 채 남는다"
+
+        # 성공한 곡선은 여전히 1시간 캐시된다 (재계산 비용 억제)
+        assert loops._curve_for(ctx, "AAA", today_only, later + 10 * MIN_MS) is curve
+    finally:
+        ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 감사 H-6 — 세션 전환 시 베이스라인·전일종가·이력일 무효화
+# --------------------------------------------------------------------------- #
+def test_session_change_invalidates_baselines_and_prev_close(tmp_path):
+    """승격 시점 값이 프로세스 수명 내내 얼어붙으면 2일차부터 라벨 분모가 틀린다."""
+    ctx, _ = build_ctx(tmp_path, StubClient({}))
+    try:
+        ctx.baselines["AAA"] = {"adv20_qu": 1}
+        ctx.prev_close["AAA"] = 1_000_000
+        ctx.history_days = ["sentinel"]
+        ctx.curves["AAA"] = (0, None)
+
+        loops.reconfigure_tiers(ctx, "regular")
+
+        assert ctx.baselines == {} and ctx.prev_close == {}
+        assert ctx.history_days == [] and ctx.curves == {}
+    finally:
+        ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 감사 H-9 — 재시작 이어받기 구멍: 백필 강제 + 못 메우면 경고
+# --------------------------------------------------------------------------- #
+def test_resume_backfills_past_the_db_history_fast_path(tmp_path):
+    """DB 에서 CANDLE_PAGE 이상 읽었다고 백필을 건너뛰면 정전 구간이 영구 구멍이 된다."""
+    bars = [bar(DAY0 + i * MIN_MS) for i in range(30)]
+    client = PagingClient(bars)
+    ctx, _ = build_ctx(tmp_path, client, now_ms=DAY0 + 30 * MIN_MS)
+    original = loops.CANDLE_PAGE
+    loops.CANDLE_PAGE = 5
+    try:
+        # 정전 전: 봉 0..9 까지 수집돼 있었다 (DB 에 10봉 ≥ CANDLE_PAGE=5)
+        ctx.store.upsert_candles_1m(bars[:10])
+        ctx._resume_candle_ms["AAA"] = DAY0 + 9 * MIN_MS
+        ctx.baselines["AAA"] = {"n_days": 1}             # 일봉 경로는 이 테스트 밖
+
+        asyncio.run(loops._ensure_history(ctx, "AAA"))
+
+        buf_ts = set(ctx.buffer("AAA").bars)
+        missing = [DAY0 + i * MIN_MS for i in range(10, 30)
+                   if DAY0 + i * MIN_MS not in buf_ts]
+        assert missing == [], f"정전 구간이 메워지지 않았다: {len(missing)}분 구멍"
+        assert ctx.counters.get("backfill_gaps", 0) == 0   # 닿았으므로 경고도 없다
+    finally:
+        loops.CANDLE_PAGE = original
+        ctx.store.close()
+
+
+def test_unreachable_resume_point_warns_loudly(tmp_path):
+    """페이지 상한 때문에 재개 지점에 못 닿으면 **반드시** 경고한다 (탐지가 본질이다)."""
+    bars = [bar(DAY0 + i * MIN_MS) for i in range(12)]
+    client = PagingClient(bars)
+    ctx, _ = build_ctx(tmp_path, client)
+    original = loops.CANDLE_PAGE
+    loops.CANDLE_PAGE = 4
+    try:
+        warns_before = ctx.notifier.counters["warn"]
+        asyncio.run(loops._backfill_1m(ctx, "AAA", pages=1,
+                                       stop_at_ms=DAY0 - 60 * MIN_MS))
+        assert ctx.counters["backfill_gaps"] == 1
+        assert ctx.notifier.counters["warn"] == warns_before + 1
+    finally:
+        loops.CANDLE_PAGE = original
+        ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 감사 ② — 재시도·실패 호출의 BudgetGuard 계상
+# --------------------------------------------------------------------------- #
+def test_failed_and_retried_attempts_reach_the_budget_guard(tmp_path):
+    """예외로 끝난 호출·내부 재시도가 0회로 계상되면 실사용이 과소평가된다."""
+    client = StubClient({})
+    ctx, _ = build_ctx(tmp_path, client)
+    try:
+        base = ctx.budget.counters.get("MARKET_DATA", 0)
+        # 실패로 끝난 호출: after_call 은 불리지 않지만 시도는 3회 있었다 (재시도 2회 포함)
+        client.counters["requests"] += 3
+        ctx.sync_rate_limits("MARKET_DATA")
+        assert ctx.budget.counters.get("MARKET_DATA", 0) == base + 3
+
+        # 성공 호출: 시도 2회(재시도 1회) → 논리 1회가 아니라 2회로 계상
+        client.counters["requests"] += 2
+        ctx.after_call("MARKET_DATA")
+        assert ctx.budget.counters.get("MARKET_DATA", 0) == base + 5
+        assert ctx.counters["req_MARKET_DATA"] == 1       # 논리 카운터는 그대로 1
+
+        # 새 시도가 없으면 다시 불려도 중복 계상하지 않는다 (고수위 비교)
+        ctx.sync_rate_limits("MARKET_DATA")
+        assert ctx.budget.counters.get("MARKET_DATA", 0) == base + 5
+    finally:
+        ctx.store.close()

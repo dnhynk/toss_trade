@@ -39,6 +39,7 @@ from ..analysis.labeling import EventParams, detect_events
 from ..api.models import Price, UsMarketDay
 
 MIN_MS = 60_000
+DAY_MS = 86_400_000
 _NAN = float("nan")
 
 #: 계약 C-6 `events` 의 고정 7컬럼. 나머지 라벨은 전부 meta_json 으로 간다.
@@ -356,14 +357,19 @@ class TierStateMachine:
 
     def force(self, symbol: str, tier: int, reason: str, score: float,
               ts_ms: int) -> int | None:
-        """스코어와 무관한 승격 (A2 §3 `first_print`). 강등에는 쓰지 않는다."""
+        """스코어와 무관한 승격 (A2 §3 `first_print`). 강등에는 쓰지 않는다.
+
+        dwell 은 **우회하지 않는다** (감사 H-7/J-1): 랭킹 스냅샷은 12초마다 오므로
+        여기가 dwell 을 건너뛰면 "강등 1ms 뒤 재승격" 왕복이 영구히 돈다.
+        방금 강등된 심볼은 `hysteresis_s` 가 지나야 다시 올라올 수 있다.
+        """
         st = self.states.setdefault(symbol, _SymbolState())
         st.score = max(st.score, float(score))
         st.last_ts_ms = int(ts_ms)
         if tier <= st.tier:
             return None
         st.below_since_ms = None
-        return self._change(symbol, st, int(tier), reason, ts_ms, ignore_dwell=True)
+        return self._change(symbol, st, int(tier), reason, ts_ms)
 
     # ---- 유지보수 -------------------------------------------------------
 
@@ -566,12 +572,23 @@ class EventDetector:
         self.notifier = notifier
         self.max_per_day = int(max_per_day)
         self.seen_limit = int(seen_limit)
-        #: (symbol, t0_ms) → 마지막으로 내보낸 **라벨 해시**. 검출기는 매 사이클 버퍼 전체를
-        #: 다시 스캔하므로 이게 없으면 같은 이벤트가 사이클마다 재기록된다(라이브 실측:
-        #: 7분에 15행 / 고유 9개 = 40% 중복). 해시가 바뀔 때만 다시 내보낸다.
-        self._emitted: dict[tuple[str, int], str] = {}
+        #: (symbol, UTC 매매일) → {t0_ms: 마지막으로 내보낸 라벨 해시}.
+        #:
+        #: 검출기는 매 사이클 버퍼를 다시 스캔하므로 억제가 없으면 같은 이벤트가
+        #: 사이클마다 재기록된다(라이브 실측: 7분에 15행 / 고유 9개 = 40% 중복).
+        #: 해시가 바뀔 때만 다시 내보낸다.
+        #:
+        #: 키가 (symbol, t0_ms) 가 아니라 **매매일 단위**인 이유 (감사 ⑨/I-1):
+        #: DB 의 UNIQUE(symbol, t0_ms) 와 같은 키를 쓰면 방어가 2층이 아니라 같은 방어가
+        #: 두 번 있는 것이다 — RVOL 게이트가 꺼졌다 켜져 t0 가 이동하면 두 층이 동시에
+        #: 뚫려 같은 급등이 두 행이 된다. 매매일당 t0 수를 `max_per_day` 로 상한하면
+        #: t0 가 어디로 움직여도 새 행이 생기지 않는다.
+        #: 토스 매매일(KST 09:00~다음날 07:00)은 UTC 날짜와 1:1 이므로 (docs/07 §3.1)
+        #: UTC 날짜를 매매일 키로 쓴다.
+        self._emitted: dict[tuple[str, int], dict[int, str]] = {}
         self.counters: dict[str, int] = {"scored": 0, "events": 0, "errors": 0,
-                                         "suppressed": 0, "updated": 0}
+                                         "suppressed": 0, "updated": 0,
+                                         "t0_shift_suppressed": 0}
 
     def evaluate(self, symbol: str, df_1m: pd.DataFrame, *,
                  rankings: pd.DataFrame | None = None,
@@ -580,8 +597,16 @@ class EventDetector:
                  baseline: dict | None = None,
                  shares_outstanding_qu: int | None = None,
                  prev_close_u: int | None = None,
-                 now_ms: int | None = None) -> DetectionResult | None:
-        """마지막 완성봉 기준으로 스코어 + 신규 이벤트를 낸다."""
+                 now_ms: int | None = None,
+                 detect_from_ms: int | None = None) -> DetectionResult | None:
+        """마지막 완성봉 기준으로 스코어 + 신규 이벤트를 낸다.
+
+        `detect_from_ms` 가 주어지면 **이벤트 판정만** 그 시각 이후 봉으로 제한한다
+        (감사 F-3: 버퍼에 남은 전일 이벤트를 당일이 섞인 곡선으로 재판정하면
+        `rvol_at_t0` 가 미래 거래량으로 오염되고 UPSERT 가 깨끗한 기록을 덮어쓴다 —
+        전일 이벤트는 이미 기록됐으므로 다시 판정할 이유가 없다).
+        피처/스코어는 버퍼 전체를 계속 쓴다 — 전조 피처에는 이력이 필요하다.
+        """
         if df_1m is None or df_1m.empty:
             return None
         t0_ms = int(df_1m["ts_ms"].to_numpy()[-1])
@@ -601,16 +626,23 @@ class EventDetector:
                                   rvol=rv, prev_close_u=prev_close_u,
                                   shares_outstanding_qu=shares_outstanding_qu,
                                   scores=(prec, conf, path),
-                                  now_ms=now_ms if now_ms is not None else t0_ms)
+                                  now_ms=now_ms if now_ms is not None else t0_ms,
+                                  detect_from_ms=detect_from_ms)
         return DetectionResult(symbol=symbol, ts_ms=t0_ms, score=score, path=path,
                                precursor=prec, confirm=conf, feats=feats, events=events)
 
     def _new_events(self, symbol: str, df_1m: pd.DataFrame, *, rankings, calendar,
                     rvol, prev_close_u, shares_outstanding_qu,
-                    scores: tuple[float, float, str], now_ms: int) -> list[dict]:
+                    scores: tuple[float, float, str], now_ms: int,
+                    detect_from_ms: int | None = None) -> list[dict]:
+        df_detect = df_1m
+        if detect_from_ms is not None and not df_1m.empty:
+            df_detect = df_1m[df_1m["ts_ms"] >= int(detect_from_ms)]
+            if df_detect.empty:
+                return []
         try:
             found = detect_events(
-                df_1m, self.params, calendar=calendar, rvol_series=rvol,
+                df_detect, self.params, calendar=calendar, rvol_series=rvol,
                 prev_close_u=prev_close_u, shares_outstanding_qu=shares_outstanding_qu,
                 rankings=rankings, max_per_day=self.max_per_day)
         except Exception as exc:                       # 검출 실패가 수집을 죽이면 안 된다
@@ -625,13 +657,23 @@ class EventDetector:
         prec, conf, path = scores
         for row in found.to_dict("records"):
             t0 = int(row["t0_ms"])
-            key = (symbol, t0)
+            day = self._emitted.setdefault((symbol, t0 // DAY_MS), {})
             digest = label_hash(row)
-            previous = self._emitted.get(key)
+            previous = day.get(t0)
             if previous == digest:
                 self.counters["suppressed"] += 1
                 continue                       # 라벨이 그대로면 다시 쓸 이유가 없다
-            self._emitted[key] = digest
+            if previous is None and len(day) >= self.max_per_day:
+                # t0 이동 (감사 I-1): 같은 매매일에 이미 기록한 이벤트의 t0 가 게이트
+                # 변화/prev_close 변화로 다른 봉으로 옮겨왔다. (symbol, t0) 만 보면
+                # 새 이벤트로 보여 DB 에 두 번째 행이 생긴다 — 조용히 버리지 않고 남긴다.
+                self.counters["t0_shift_suppressed"] += 1
+                if self.notifier is not None:
+                    self.notifier.warn(
+                        f"event t0 shift suppressed {symbol}: day already has "
+                        f"t0={sorted(day)} — new t0={t0} would duplicate the event")
+                continue
+            day[t0] = digest
             is_new = previous is None
             self.counters["events" if is_new else "updated"] += 1
             record = event_record(row, symbol, extra_meta={
@@ -645,8 +687,20 @@ class EventDetector:
         self._evict()
         return out
 
+    def seed_suppression(self, symbol: str, t0_ms: int) -> None:
+        """DB 에 이미 있는 이벤트를 억제 상태로 복원한다 (재시작 이어받기).
+
+        재기동 직후 억제 집합이 비어 있으면 버퍼의 모든 이벤트가 "신규" 로 재기록된다
+        (감사 F-3: state_snapshot 은 이 상태를 저장하지 않는다 — 진실은 events 테이블에
+        있으므로 거기서 되살린다). 라벨 해시는 알 수 없어 빈 지문을 넣는다 — 같은 t0 의
+        첫 재검출은 해시가 달라 **갱신**(is_new=False)으로 나가고, t0 가 이동한 재검출은
+        매매일 상한에 걸려 새 행을 만들지 못한다.
+        """
+        t0 = int(t0_ms)
+        self._emitted.setdefault((symbol, t0 // DAY_MS), {}).setdefault(t0, "")
+
     def _evict(self) -> None:
-        """무인 실행 메모리 안정성 — 오래된 (symbol, t0) 부터 버린다 (삽입 순서 = 시간 순)."""
+        """무인 실행 메모리 안정성 — 오래된 (symbol, 매매일) 부터 버린다 (삽입 순서 = 시간 순)."""
         excess = len(self._emitted) - self.seen_limit
         for key in list(self._emitted)[:max(0, excess)]:
             self._emitted.pop(key, None)
