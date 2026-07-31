@@ -71,10 +71,17 @@ async def main_async(args: argparse.Namespace) -> int:
         store.close()
         tokens.release()
 
-    log.info("universe build done tier0=%d tier1=%d former_runners=%d",
-              summary["tier0"], summary["tier1"], summary["former_runners"])
+    log.info(
+        "universe build done tier0=%d tier1=%d former_runners=%d "
+        "rejected_charset=%d skipped_batches=%d skipped_symbols=%d",
+        summary["tier0"], summary["tier1"], summary["former_runners"],
+        summary["rejected_charset"], summary["skipped_batches"], summary["skipped_symbols"],
+    )
     print(f"tier0={summary['tier0']} tier1={summary['tier1']} "
-          f"former_runners={summary['former_runners']}")
+          f"former_runners={summary['former_runners']} "
+          f"rejected_charset={summary['rejected_charset']} "
+          f"skipped_batches={summary['skipped_batches']} "
+          f"skipped_symbols={summary['skipped_symbols']}")
     return 0
 
 

@@ -6,16 +6,25 @@ NASDAQ Trader symbol directory 등 공개 소스에서 US 상장 심볼 전체�
 from __future__ import annotations
 
 import csv
+import logging
 import re
 import tempfile
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+log = logging.getLogger(__name__)
+
 DIRECTORY_URLS = {
     "nasdaqlisted.txt": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
     "otherlisted.txt": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
 }
-_SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.$-]*$")
+#: 토스 API 가 실제로 받는 심볼 문자셋 — 영문 대/소문자, 숫자, `.`, `-` 만 (docs/01_api_analysis.md
+#: §3.1). NASDAQ 디렉토리는 우선주를 `ABR$D` 형식(`$` 포함)으로 표기하는데, `$` 는 이 문자셋
+#: 밖이라 배치 콜에 하나만 섞여도 그 배치 전체가 400 으로 죽는다(라이브에서 실제로 발생).
+#: 우선주는 어차피 `is_common=True` 필터로 걸러질 대상이므로 여기서 배제해도 손실이 아니다.
+#: `build.py` 가 배치 전송 직전 방어적 재검증에도 그대로 재사용한다(다른 심볼 소스가 붙어도
+#: 배치 하나가 통째로 죽는 사고를 반복하지 않기 위함).
+TOSS_SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]*$")
 
 
 def fetch_symbol_directory(cache_dir: Path) -> list[str]:
@@ -68,6 +77,7 @@ def parse_directory_file(path: Path) -> list[str]:
             raise ValueError("symbol directory has no recognized symbol column")
 
         symbols: set[str] = set()
+        rejected_charset = 0
         for raw in rows:
             row = {
                 (key.strip() if key else ""): (value.strip() if value else "")
@@ -80,7 +90,14 @@ def parse_directory_file(path: Path) -> list[str]:
                 continue
             if row.get("ETF", "").upper() == "Y":
                 continue
-            if not _SYMBOL_RE.fullmatch(symbol):
+            if not TOSS_SYMBOL_RE.fullmatch(symbol):
+                rejected_charset += 1
                 continue
             symbols.add(symbol)
+    if rejected_charset:
+        log.info(
+            "%s: %d symbol(s) rejected — outside Toss API charset [A-Za-z0-9.-] "
+            "(e.g. NASDAQ preferred-share '$' suffixes)",
+            path, rejected_charset,
+        )
     return sorted(symbols)
