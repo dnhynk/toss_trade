@@ -83,6 +83,36 @@ A4 진단이 드러낸 **분석상의 함정**: 수정주가는 과거 가격을
 **적용**: `TossClient.get_candles`의 `adjusted` 기본값은 바꾸지 않는다(호출자가 명시).
 collector와 universe 빌더가 호출 시점에 `interval`에 맞춰 명시적으로 넘긴다.
 
+### C-4/C-5/C-9 개정 A6 (2026-07-31, 적대적 감사 반영 → 코디네이터 승인)
+
+감사 2건이 **독립적으로** 확인한 치명 결함: 토큰 리스가 `{state_path}.lock`(상대경로) 기반이라
+**CWD 종속**이었다. 워크트리마다 다른 락을 잡아 두 프로세스가 동시에 토큰을 발급하는 것이
+실측 재현됐다 — **client당 토큰 1개라는 이 프로젝트의 최우선 제약을 지키는 장치가 애초에
+작동하지 않고 있었다.**
+
+1. **`ForbiddenEndpoint`는 `TossApiError`를 상속하지 않는다** (`Exception` 직속).
+   계약이 "잡지 말 것"이라고 쓴 것을 **타입이 강제**하게 한다. 상위 `except TossApiError`에
+   삼켜지면 Phase 2에서 주문 차단 가드레일이 warn 한 줄로 무력화된다.
+   **주의**: 이 변경으로 `except (TossApiError, ...)`가 더 이상 잡지 않으므로,
+   호출 루프는 `except ForbiddenEndpoint`를 **명시적으로** 두어 shutdown+경보해야 한다
+   (안 두면 미처리 예외로 루프가 죽는다).
+2. **`TokenManager.invalidate(token=None)`** — CAS. 인자로 받은 토큰이 현재 토큰과 같을 때만
+   무효화한다. 무조건 삭제하면 다른 요청이 방금 발급한 유효 토큰까지 날린다.
+3. **`TokenManager.__init__(..., limiter=None)`** — 토큰 발급이 AUTH rate limit을 우회하던 것을
+   막는다. `TossClient`가 자동 주입하므로 기존 호출자는 변경 불필요.
+4. **리스는 자격증명 단위**로 잡는다 — `sha256(client_id)` 유도 + **리포 밖 고정 위치**.
+   상태파일 경로를 다르게 준 두 프로세스도 같은 락을 잡아야 한다.
+   위치 재정의는 **`TOSSMON_LEASE_DIR`** env (미설정 시 `LOCALAPPDATA`(win) /
+   `XDG_STATE_HOME`(posix) → `~/.local/state/tossmon`). 테스트 격리에 필수.
+5. **헤더 기반 rate 상향의 천장**은 `max(SPEC_LIMITS[group], config값)`이다.
+   감사 제안(`min(limit, SPEC_LIMITS)`)보다 완화한 것인데, 운영자가 config에 공시값보다 높게
+   잡은 것은 **사람의 의도적 결정**이라 코드가 조용히 덮어쓰면 안 되기 때문이다.
+   서버 헤더가 천장을 넘기는 것만 막는다는 목적은 동일하게 달성된다.
+
+**전환 규칙 (중요)**: 리스 위치가 바뀌었으므로 **구코드 프로세스의 락은 신코드에게 보이지 않는다.**
+구코드 라이브 프로세스를 **완전히 종료하고 락 해제를 확인한 뒤에만** 신코드 라이브 프로세스를
+띄운다. 이 절차를 어기면 고친 것과 정확히 같은 상호 토큰 살해가 재발한다.
+
 ## C-3. 데이터 모델 (`tossmon/api/models.py`, 전부 `@dataclass(frozen=True, slots=True)`)
 
 ```python
@@ -107,9 +137,9 @@ UsMarketDay(date: str, day: SessionWindow | None, pre: SessionWindow | None,
 ```python
 # tokens.py — 단일 토큰 보장. OS 파일락(filelock) + 상태파일(json: token, expires_at_ms).
 class TokenManager:
-    def __init__(self, keys_path: Path, state_path: Path, live: bool): ...
+    def __init__(self, keys_path: Path, state_path: Path, live: bool, limiter=None): ...
     async def get(self) -> str            # 유효 토큰 반환. 만료 60s 전 선제 재발급.
-    async def invalidate(self) -> None    # AuthExpired 수신 시 호출 → 다음 get()이 재발급
+    async def invalidate(self, token: str | None = None) -> None   # CAS. A6 참조
     # live=False면 발급 시도 자체가 RuntimeError. 파일락 획득 실패(다른 프로세스 보유)면 즉시 예외 — 발급 강행 금지.
 
 # limiter.py — 그룹별 토큰버킷. 기본 사용률 = 공시 한도 × usage_ratio(기본 0.7).
@@ -155,7 +185,7 @@ class AuthExpired(TossApiError): ...
 class TransientHTTP(TossApiError):    # .status: int  (5xx, 타임아웃, 연결오류)
 class SchemaMismatch(TossApiError):   # .detail: str  (필수필드 결손, 파싱 불가)
 class Forbidden(TossApiError):        # .reason: str  (403: IP 미등록/권한)
-class ForbiddenEndpoint(TossApiError):# allowlist 위반 — 잡지 말 것(버그)
+class ForbiddenEndpoint(Exception): # allowlist 위반 — 잡지 말 것(버그). A6: TossApiError 밖
 ```
 
 | 예외 | 처리 주체 | 정책 |
