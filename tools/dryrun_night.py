@@ -534,14 +534,31 @@ def render_markdown(start_ms: int, end_ms: int, coverage: CoverageReport,
         for table, n in sorted(coverage.table_counts.items()):
             lines.append(f"- `{table}`: {n:,} rows")
         if coverage.candle_coverage:
+            pct_values = [c["coverage_pct"] for c in coverage.candle_coverage.values()]
             lines.append("")
-            lines.append("### candles_1m 채움률 (심볼별)")
+            lines.append(
+                f"### candles_1m 채움률 요약 — {len(pct_values)}개 심볼, "
+                f"평균 {sum(pct_values) / len(pct_values):.1f}%, "
+                f"중앙값 {sorted(pct_values)[len(pct_values) // 2]:.1f}%"
+            )
+            lines.append(
+                "> ⚠️ 이 window(15시간)에는 `closed` 세션(폴링 없음)이 포함돼 있어 "
+                "coverage%가 세션 전체를 하나로 뭉뚱그리면 구조적으로 낮게 나온다 — "
+                "심볼 간 **상대 비교**용으로만 쓸 것, 절대치로 \"수집이 부실하다\"고 "
+                "읽지 말 것."
+            )
+            lines.append("")
+            worst_n = 25
+            worst = sorted(coverage.candle_coverage.items(), key=lambda kv: kv[1]["coverage_pct"])
+            lines.append(f"#### 채움률 최하위 {min(worst_n, len(worst))}개 (전체 {len(worst)}개 중)")
             lines.append("")
             lines.append("| symbol | bars | expected_min | coverage% | 5분+ 공백 수 |")
             lines.append("|---|---:|---:|---:|---:|")
-            for symbol, c in sorted(coverage.candle_coverage.items()):
+            for symbol, c in worst[:worst_n]:
                 lines.append(f"| {symbol} | {c['bars']} | {c['expected_minutes']} | "
                              f"{c['coverage_pct']}% | {len(c['gaps'])} |")
+            if len(worst) > worst_n:
+                lines.append(f"\n_(나머지 {len(worst) - worst_n}개 심볼 생략 — coverage% 상위)_")
 
     lines += ["", "## 2. Rate limit 여유 (로그 기반, 최선노력)", ""]
     if log_stats.count_429 is None:
@@ -554,21 +571,27 @@ def render_markdown(start_ms: int, end_ms: int, coverage: CoverageReport,
                      f"창 {log_stats.window_s:.0f}s)")
         lines.append(f"- request 관련 로그 라인 수: {log_stats.request_lines}")
 
-    lines += ["", "## 3. 결측 구간 (예상 주기 대비)", ""]
-    any_gap = False
+    lines += ["", "## 3. 결측 구간 (예상 주기 대비, 긴 공백 상위순)", ""]
+    all_gaps: list[tuple[str, str, int, int, float]] = []
     for table, gap in coverage.snapshot_gaps.items():
         for key, gaps in gap.items():
-            any_gap = True
-            for a, b, mins in gaps[:10]:
-                lines.append(f"- `{table}`[{key}]: {ms_to_iso_kst(a)} ~ {ms_to_iso_kst(b)} "
-                             f"({mins}분 공백)")
+            for a, b, mins in gaps:
+                all_gaps.append((table, key, a, b, mins))
     for symbol, c in coverage.candle_coverage.items():
-        for a, b, mins in c["gaps"][:10]:
-            any_gap = True
-            lines.append(f"- `candles_1m`[{symbol}]: {ms_to_iso_kst(a)} ~ {ms_to_iso_kst(b)} "
-                         f"({mins}분 공백)")
-    if not any_gap:
+        for a, b, mins in c["gaps"]:
+            all_gaps.append(("candles_1m", symbol, a, b, mins))
+    if not all_gaps:
         lines.append("(표시할 만한 결측 구간 없음)")
+    else:
+        all_gaps.sort(key=lambda g: g[4], reverse=True)
+        gap_cap = 40
+        lines.append(f"- 총 결측 구간 {len(all_gaps)}건 — 가장 긴 {min(gap_cap, len(all_gaps))}건만 표시")
+        lines.append("")
+        for table, key, a, b, mins in all_gaps[:gap_cap]:
+            lines.append(f"- `{table}`[{key}]: {ms_to_iso_kst(a)} ~ {ms_to_iso_kst(b)} "
+                         f"({mins}분 공백)")
+        if len(all_gaps) > gap_cap:
+            lines.append(f"\n_(나머지 {len(all_gaps) - gap_cap}건 생략 — 공백 길이 짧은 순)_")
 
     lines += ["", "## 4. 이벤트 후보 목록 (가격 조건만, rvol_gated=False)", ""]
     if events is None or events.empty:
