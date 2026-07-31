@@ -26,7 +26,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -47,6 +49,14 @@ TOKEN_PATH = "/oauth2/token"
 
 # 리스 디렉터리 재정의 env (테스트 격리 / 운영 배치용).
 LEASE_DIR_ENV = "TOSSMON_LEASE_DIR"
+
+_log = logging.getLogger(__name__)
+
+# icacls 호출 시 콘솔 창이 튀지 않게 (Windows 전용 플래그, 다른 OS 에서는 0).
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+# 권한 제한 시도 관측 (계약 A7 §2 — 실패해도 죽지 않되 조용히 넘어가지도 않는다).
+PERMISSION_STATS: dict[str, object] = {"applied": 0, "failed": 0, "last_error": None}
 
 # OAuth2 표준 error 코드 enum. 이 밖의 값은 서버가 넣은 임의 텍스트로 보고 로그에 싣지 않는다.
 _OAUTH_ERRORS = frozenset({
@@ -70,6 +80,64 @@ def lease_dir() -> Path:
     if home and str(home) not in ("", "/"):
         return (home / ".local" / "state" / "tossmon").resolve()
     return Path(tempfile.gettempdir()).resolve() / "tossmon"
+
+
+def restrict_to_owner(path: str | Path) -> bool:
+    """파일을 **소유자 전용**으로 제한한다 (계약 A7 §2). 성공하면 True.
+
+    - POSIX: `chmod 0600`.
+    - Windows: `icacls /inheritance:r` 로 상속을 끊고 현재 사용자 + SYSTEM 만 남긴다.
+      Windows 의 `os.chmod` 는 읽기전용 비트만 만지고 **ACL 에는 아무 영향이 없다** —
+      그래서 실제 ACL 조작이 필요하다.
+
+    ⚠️ **실패해도 예외를 던지지 않는다** (계약 A7 §2 명시).
+    권한 강화는 심층방어이지 기능이 아니다. 플랫폼별 ACL 조작은 도메인 계정·이상한
+    파일시스템·정책 제한 등으로 깨질 수 있는데, 그것 때문에 토큰 발급이 실패하면
+    **보안 강화가 가용성을 무너뜨리는** 결과가 된다. 실패는 경고로만 남긴다.
+
+    관측: 실패 건수는 `PERMISSION_STATS` 에 누적된다(조용히 넘어가지 않도록).
+    """
+    p = Path(path)
+    try:
+        if os.name != "nt":
+            os.chmod(p, 0o600)
+            PERMISSION_STATS["applied"] += 1
+            return True
+        return _restrict_to_owner_windows(p)
+    except Exception as exc:                      # noqa: BLE001 — 어떤 실패도 치명이 아니다
+        _note_permission_failure(p, exc)
+        return False
+
+
+def _restrict_to_owner_windows(p: Path) -> bool:
+    """icacls 로 상속을 끊고 현재 사용자·SYSTEM 만 남긴다."""
+    user = os.environ.get("USERNAME") or ""
+    domain = os.environ.get("USERDOMAIN") or ""
+    principal = f"{domain}\\{user}" if domain and user else user
+    if not principal:
+        _note_permission_failure(p, RuntimeError("USERNAME/USERDOMAIN not set"))
+        return False
+    cmd = ["icacls", str(p), "/inheritance:r",
+           "/grant:r", f"{principal}:(F)",
+           "/grant:r", "*S-1-5-18:(F)"]           # SID 로 지정 — 로캘 무관 (SYSTEM)
+    proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                          timeout=15, creationflags=_NO_WINDOW)
+    if proc.returncode != 0:
+        _note_permission_failure(
+            p, RuntimeError(f"icacls rc={proc.returncode}: {proc.stderr.strip()[:200]}"))
+        return False
+    PERMISSION_STATS["applied"] += 1
+    return True
+
+
+def _note_permission_failure(p: Path, exc: BaseException) -> None:
+    PERMISSION_STATS["failed"] += 1
+    # 경로만 남긴다 — 파일 내용(토큰)은 절대 싣지 않는다.
+    PERMISSION_STATS["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
+    _log.warning(
+        "could not restrict permissions on %s (%s) — 토큰 흐름은 계속한다. "
+        "이 파일에 소유자 외 접근이 가능한지 확인할 것 (계약 A7 §2)",
+        p, type(exc).__name__)
 
 
 def lease_path_for_client(client_id: str) -> Path:
@@ -221,12 +289,19 @@ class TokenManager:
             return None
 
     def _write_state(self, token: str, expires_at_ms: int) -> None:
-        """원자적 교체. 내용(토큰)은 절대 로그에 남기지 않는다."""
+        """원자적 교체 + 소유자 전용 권한 (계약 A7 §2). 내용(토큰)은 절대 로그에 남기지 않는다.
+
+        권한을 **임시 파일 단계에서 먼저** 건다. `os.replace` 는 대상 경로의 기존 권한이
+        아니라 원본(임시 파일)의 권한을 그대로 가져오므로, 이 순서라면 토큰이 디스크에
+        존재하는 어떤 순간에도 넓은 권한으로 노출되는 창이 없다.
+        (`mkstemp` 자체가 POSIX 0600 으로 만들지만, 그건 구현 세부라 명시적으로 다시 건다.)
+        """
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(self.state_path.parent), suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump({"token": token, "expires_at_ms": expires_at_ms}, fh)
+            restrict_to_owner(tmp)          # 교체 **전**에 제한 — 노출 창 없음
             os.replace(tmp, self.state_path)
         except BaseException:
             try:
@@ -234,6 +309,8 @@ class TokenManager:
             except OSError:
                 pass
             raise
+        # 교체 후에도 유지되는지 확인 사살 (일부 파일시스템/도구가 모드를 건드릴 수 있다).
+        restrict_to_owner(self.state_path)
 
     # ---- issuance -------------------------------------------------------
 
