@@ -6,17 +6,21 @@ seed → /stocks 메타 보강(mock) → 필터 → former runner 태깅 → sym
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 import pandas as pd
 
 from ..api.client import TossClient
+from ..api.errors import SchemaMismatch
 from ..api.models import Price, StockMeta
 from ..config import UniverseConfig
 from ..store.writer import Store
 from .filters import market_cap_u, passes_tier0
 from .runners import detect_former_runners, tag_dilution_stub
-from .seed import fetch_symbol_directory
+from .seed import TOSS_SYMBOL_RE, fetch_symbol_directory
+
+log = logging.getLogger(__name__)
 
 DEFAULT_CACHE_DIR = Path(".cache") / "nasdaq-trader"
 
@@ -27,16 +31,50 @@ def _chunks(rows: list[str], size: int = 200):
 
 
 async def build_universe(client: TossClient, store: Store, cfg: UniverseConfig) -> dict:
-    """반환: {"tier0": n, "tier1": n, "former_runners": n} 요약."""
+    """반환: {"tier0", "tier1", "former_runners", "rejected_charset",
+    "skipped_batches", "skipped_symbols"} 요약.
+
+    `rejected_charset` 은 토스 API 문자셋(`seed.TOSS_SYMBOL_RE`) 밖이라 배치 전송 전에
+    제외된 심볼 수 — `seed.py` 가 이미 걸러내므로 정상 경로에서는 보통 0이지만, 심볼
+    소스가 바뀌거나 캐시가 오염돼도 배치 하나가 통째로 죽는 사고(라이브에서 실제 발생)를
+    막는 두 번째 방어선이다. `skipped_batches`/`skipped_symbols` 는 방어를 통과했는데도
+    `/stocks`·`/prices` 가 `SchemaMismatch`(계약 C-5: 재시도 금지, caller가 로그+스킵)로
+    거부한 배치 — 그 배치만 스킵하고 나머지 배치는 계속 진행한다.
+    """
     seed_symbols = await asyncio.to_thread(fetch_symbol_directory, DEFAULT_CACHE_DIR)
+
+    valid_symbols = [s for s in seed_symbols if TOSS_SYMBOL_RE.fullmatch(s)]
+    rejected_charset = len(seed_symbols) - len(valid_symbols)
+    if rejected_charset:
+        log.warning(
+            "build_universe: %d seed symbol(s) rejected before /stocks — outside "
+            "Toss API charset [A-Za-z0-9.-]", rejected_charset,
+        )
+    seed_symbols = valid_symbols
 
     metas: list[StockMeta] = []
     prices: list[Price] = []
+    skipped_batches = 0
+    skipped_symbols = 0
     # Keep batching at this boundary even though TossClient also guarantees it;
     # fakes and alternative clients then receive the same <=200 request shape.
     for chunk in _chunks(seed_symbols):
-        metas.extend(await client.get_stocks(chunk))
-        prices.extend(await client.get_prices(chunk))
+        try:
+            chunk_metas = await client.get_stocks(chunk)
+            chunk_prices = await client.get_prices(chunk)
+        except SchemaMismatch as exc:
+            # 계약 C-5: SchemaMismatch 는 재시도 금지, caller(이 루프)가 로그+스킵+카운터.
+            # 배치 하나를 통째로 버려도 나머지 배치는 계속 진행한다 — 그렇지 않으면
+            # 배치 200개 중 불량 심볼 1개가 유니버스 빌드 전체를 죽인다(라이브에서 실제 발생).
+            skipped_batches += 1
+            skipped_symbols += len(chunk)
+            log.warning(
+                "build_universe: batch of %d symbols skipped (%s) — starting %s",
+                len(chunk), exc.detail, chunk[0],
+            )
+            continue
+        metas.extend(chunk_metas)
+        prices.extend(chunk_prices)
 
     meta_by_symbol = {meta.symbol: meta for meta in metas}
     price_by_symbol = {price.symbol: price for price in prices}
@@ -92,4 +130,7 @@ async def build_universe(client: TossClient, store: Store, cfg: UniverseConfig) 
         "tier0": len(eligible),
         "tier1": len(tier1),
         "former_runners": len(former_symbols),
+        "rejected_charset": rejected_charset,
+        "skipped_batches": skipped_batches,
+        "skipped_symbols": skipped_symbols,
     }

@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from tossmon.api.errors import SchemaMismatch
 from tossmon.api.models import Candle, CandlePage, Price, StockMeta
 from tossmon.config import UniverseConfig
 from tossmon.store.reader import Reader
@@ -99,6 +100,26 @@ def test_parse_nasdaq_directory_handles_footer_etf_tests_and_duplicates(tmp_path
     assert parse_directory_file(directory) == ["GOOD"]
 
 
+def test_parse_directory_rejects_dollar_sign_preferred_shares(tmp_path, caplog):
+    """라이브 사고 재현: NASDAQ 디렉토리는 우선주를 `ABR$D` 형식으로 적는데 `$` 는
+    토스 API 문자셋 밖이다 — 배치에 하나만 섞여도 그 배치 전체가 400 으로 죽는다."""
+    directory = tmp_path / "nasdaqlisted.txt"
+    directory.write_text(
+        "Symbol|Security Name|Market Category|Test Issue|Financial Status|"
+        "Round Lot Size|ETF|NextShares\n"
+        "GOOD|Good Inc|Q|N|N|100|N|N\n"
+        "ABR$D|Arbor Realty Pfd D|Q|N|N|100|N|N\n"
+        "ABR$E|Arbor Realty Pfd E|Q|N|N|100|N|N\n"
+        "ABR$F|Arbor Realty Pfd F|Q|N|N|100|N|N\n"
+        "ACP$A|AllianzGI Pfd A|Q|N|N|100|N|N\n",
+        encoding="utf-8",
+    )
+    with caplog.at_level("INFO", logger="tossmon.universe.seed"):
+        result = parse_directory_file(directory)
+    assert result == ["GOOD"]
+    assert any("4 symbol" in record.message for record in caplog.records)
+
+
 def test_parse_otherlisted_uses_act_symbol_and_rejects_bad_header(tmp_path):
     directory = tmp_path / "otherlisted.txt"
     directory.write_text(
@@ -160,7 +181,10 @@ async def test_build_batches_200_and_persists_tiers(monkeypatch, tmp_path, cfg):
 
     assert client.stock_batch_sizes == [200, 1]
     assert client.price_batch_sizes == [200, 1]
-    assert summary == {"tier0": 201, "tier1": 200, "former_runners": 1}
+    assert summary == {
+        "tier0": 201, "tier1": 200, "former_runners": 1,
+        "rejected_charset": 0, "skipped_batches": 0, "skipped_symbols": 0,
+    }
     with Reader(db_path) as reader:
         symbols_frame = reader.symbols()
         assert len(symbols_frame) == 201
@@ -182,7 +206,11 @@ async def test_build_universe_is_idempotent_on_rerun(monkeypatch, tmp_path, cfg)
         second = await build_universe(client, store, cfg)
         third = await build_universe(client, store, cfg)
 
-        assert first == second == third == {"tier0": 5, "tier1": 5, "former_runners": 1}
+        expected = {
+            "tier0": 5, "tier1": 5, "former_runners": 1,
+            "rejected_charset": 0, "skipped_batches": 0, "skipped_symbols": 0,
+        }
+        assert first == second == third == expected
         assert store._conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 5
         assert store._conn.execute("SELECT COUNT(*) FROM candles_1d").fetchone()[0] == 5
         assert store._conn.execute("SELECT COUNT(*) FROM promotions").fetchone()[0] == 0
@@ -229,8 +257,63 @@ async def test_build_universe_partial_failure_preserves_state_and_recovers(
 
         working_client = FakeClient()
         summary = await build_universe(working_client, store, cfg)
-        assert summary == {"tier0": 3, "tier1": 3, "former_runners": 1}
+        assert summary == {
+            "tier0": 3, "tier1": 3, "former_runners": 1,
+            "rejected_charset": 0, "skipped_batches": 0, "skipped_symbols": 0,
+        }
         assert store._conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 3
+
+
+@pytest.mark.asyncio
+async def test_build_universe_defensively_rejects_bad_charset_symbols(
+    monkeypatch, tmp_path, cfg
+):
+    """seed.py 가 이미 걸러내지만, 심볼 소스가 바뀌거나 캐시가 오염돼도 build.py 자체가
+    /stocks 호출 전에 문자셋을 다시 검증해 배치 하나가 통째로 죽지 않게 하는 두 번째
+    방어선을 증명한다."""
+    symbols = ["S000", "S001", "ABR$D", "ACP$A"]
+    monkeypatch.setattr(build_module, "fetch_symbol_directory", lambda _path: symbols)
+    client = FakeClient()
+    db_path = tmp_path / "monitor.db"
+    with Store(db_path) as store:
+        summary = await build_universe(client, store, cfg)
+
+    assert summary["rejected_charset"] == 2
+    assert summary["tier0"] == 2
+    # The rejected symbols must never even reach the client.
+    assert client.stock_batch_sizes == [2]
+    assert client.price_batch_sizes == [2]
+
+
+class OneBadBatchClient(FakeClient):
+    """첫 `/stocks` 배치가 SchemaMismatch(라이브의 http-400) 로 실패한다."""
+
+    async def get_stocks(self, symbols):
+        self.stock_batch_sizes.append(len(symbols))
+        if len(self.stock_batch_sizes) == 1:
+            raise SchemaMismatch("http-400 code=invalid-request message=요청 필드가 올바르지 않습니다")
+        return [_meta(symbol, shares=20_000_000) for symbol in symbols]
+
+
+@pytest.mark.asyncio
+async def test_build_universe_isolates_a_bad_batch_instead_of_aborting(
+    monkeypatch, tmp_path, cfg
+):
+    """라이브 실패 재현: 배치 하나가 400 으로 죽어도 유니버스 빌드 전체가 중단되지
+    않고, 나머지 배치는 계속 진행돼 결과에 반영돼야 한다. 스킵은 요약에 드러나야 한다
+    (조용한 스킵 금지)."""
+    symbols = [f"S{i:03d}" for i in range(201)]  # 2 batches: 200 + 1
+    monkeypatch.setattr(build_module, "fetch_symbol_directory", lambda _path: symbols)
+    client = OneBadBatchClient()
+    db_path = tmp_path / "monitor.db"
+    with Store(db_path) as store:
+        summary = await build_universe(client, store, cfg)
+
+    assert summary["skipped_batches"] == 1
+    assert summary["skipped_symbols"] == 200
+    assert summary["tier0"] == 1
+    with Reader(db_path) as reader:
+        assert len(reader.symbols()) == 1
 
 
 def test_seed_falls_back_to_cache_when_network_unavailable(tmp_path, monkeypatch):
