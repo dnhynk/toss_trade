@@ -1,7 +1,8 @@
 # 코디네이터 상태 — 새 세션 인수인계용
 
-갱신: 2026-07-31 15:45 KST · main = `6def9b5` · **749 passed, 1 skipped**
-> (이 세션은 여기서 종료한다. 다음 코디네이터가 §0 절차로 이어받으면 된다.)
+갱신: 2026-07-31 16:05 KST · main = `69e2ffe` · **749 passed, 1 skipped**
+> 새 코디네이터(term_7a86158d)가 §0 절차로 인수 완료. 밀린 delivery 14건 확인·ack 완료
+> (전부 이전 세션에서 이미 처리된 보고였음).
 
 > **새 세션에서 이 프로젝트의 코디네이터를 이어받는 경우 이 문서부터 읽어라.**
 > 배경·전략·아키텍처는 `docs/00_HANDOFF.md`, 계약 정본은 `docs/04_contracts.md`.
@@ -36,8 +37,14 @@ orca orchestration check --wait --types worker_done,escalation,question,status -
 | 대상 | 상태 |
 |---|---|
 | **W5 라이브 재수집** | **진행 중** (분리 프로세스). 15:32 기준 watch=1500, tier2=58, tier3=1, promotions=369, `watch_outside_universe=0`, `api_errors=0`. 데이마켓 → 프리(17:00) → **정규장(22:30)** → 애프터(~08:50) |
-| **워커 태스크** | **전부 완료·머지됨. 진행 중인 워커 작업 없음** (W5 수집만 가동) |
+| **§3-(B) 정리 3건** | **16:00 디스패치됨** — W7 사전등록 갱신(`task_9ac0a2b9a6e8`/`ctx_15a492f00122`/term_fc910286, worker-start로 신규 기동), W3 사전등록 정합(`task_5f310cd4496f`/`ctx_f460397e000e`/term_2c49ee20), W2 U-4 점검(`task_cdce9f5b2e59`/`ctx_0997615b06fa`/term_143a90de). 스펙: `coordination/specs/w7_prereg_update.md`, `w3_prereg_align.md`, `w2_u4_check.md` |
 | 라이브 리스 | **W5 단독 보유.** 다른 워커·코디네이터는 라이브 호출 금지 |
+
+> 참고: w7-prereg 워크트리의 저수준 `terminal create`는 "Timed out waiting for terminal
+> handle" 로 반복 실패했고 기존 셸 2개는 유령(PTY 무반응, 1개는 tab_not_found)이었다.
+> `orchestration worker-start` 조합 경로는 정상 동작 — 같은 증상이 나오면 이쪽을 쓸 것.
+> 스펙 본문에 큰따옴표가 있으면 PowerShell 5.1 이 native 인자를 깨뜨린다 —
+> `task-create --spec` 은 Bash 로 실행할 것.
 
 **정규장 개장(22:30) 이 오늘의 본 시험이다.** 확인할 것:
 - **tier3 점유** (데이마켓 1/20 → 정규장에서 얼마나 차는지)
@@ -82,7 +89,7 @@ orca orchestration check --wait --types worker_done,escalation,question,status -
 
 > W1 의 A7(KR 제거 + 상태파일 권한)은 `6def9b5` 로 **머지 완료**. 현재 열린 태스크 없음.
 
-### (B) 분석 착수 전 정리 3건 (아직 미착수)
+### (B) 분석 착수 전 정리 3건 (**16:00 전부 디스패치됨** — §1 표 참조, 머지 게이트 대기)
 1. **사전등록 반영** — W3 가 넘긴 오염목록 해소 2건 + §2.2 문장 + §2.7 제외사유.
    `docs/12_preregistration.md` 는 **W7 소유**라 W7 에 디스패치할 것.
 2. **HANDOFF-W3 §3 의 사전등록 미정합 3건** (곡선 20일 창 미구현 등).
