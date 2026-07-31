@@ -36,7 +36,7 @@ orca orchestration check --wait --types worker_done,escalation,question,status -
 
 | 대상 | 상태 |
 |---|---|
-| **W5 라이브 재수집** | **진행 중 — 18:15:36 재기동본** (작업 스케줄러 하, 부모=svchost(Schedule), Orca 트리 밖). **수집기가 18:07:30 Orca PTY 정리에 살해당해 8분 06초 공백**(프리 세션, 랭킹·테이프 영구 유실, 1분봉은 백필 가능 — docs/11 §11 공백 매니페스트, w5-ops `f1e8325`). 재기동본은 **최신 main(fc3a9cc) 코드** — 가짜 RANKING ERROR 소멸·ForbiddenEndpoint 처리 탑재 확인. 상태파일 이어받기 정상(watch=1500, 카운터 연속). **정규장(22:30)** → 애프터(~08:50) |
+| **W5 라이브 재수집** | **진행 중 — 22:39:18 기동본** (작업 스케줄러, 최신 main 코드). 오늘 사고 2건: **사고1** 18:07:30 Orca PTY 정리가 수집기 트리 살해 → 8분 공백 → 18:15 스케줄러 재기동. **사고2** 재기동 env 에 `TOSS_BASE_URL` 누락 → 20:48 토큰 만료 후 재발급 전부 실패(프로세스는 생존, API 만 사망 — 모니터 사각) → 22:39 env 수정 재기동. **공백: 20:48:20~22:30:59, 22:31:19~22:39:18** (docs/11 매니페스트 기록). 재기동 중간 발견: 툴콜 안에서 schtasks /Run 후 대기하면 샌드박스 정리가 새 트리도 죽임(3회 연속) — **fire-and-forget 후 별도 콜 검증**으로 해결. 애프터(~08:50)까지 계속 |
 | **W5-b 관찰 교대** | 진행 중 — `task_999bd2c75b52`/term_9727154b. 체크포인트: 22:25 개장준비 → 22:30~22:50 본 시험 보고 → 심야 status → 내일 ~09:00 검증·worker_done. 원 태스크 `task_04201cf60649` 는 dispatched 로 남음 — W5-b 완료 시 코디네이터가 수동 정리 |
 | **§3-(B) 정리 3건** | **전부 머지 완료** — W2 U-4(`0dc427f`, 실유출 1건 수정: `UnicodeDecodeError.args` 바이트 원문), W7 사전등록 개정(`a492810`, A6/A7 충돌 없음 판정), W3 사전등록 정합(`2961e7a`, P0 3+P1+P2 2, 신규 22테스트). **통합 773 passed·1 skipped 실측** |
 | **W7 후속 개정** | **머지 완료** — §7-e 분할 탐지 문언 확정(r=1d수정/1m원주가 비율, 경계 급변 ≥1.5배, `split_dates` 인자, `split_excluded` 카운트, 미전달 시 주 분석 금지)·§2.2 일봉 as-of 앵커 의무·§2.7 시총 ±10% 밴드 |
@@ -50,11 +50,15 @@ orca orchestration check --wait --types worker_done,escalation,question,status -
 > 스펙 본문에 큰따옴표가 있으면 PowerShell 5.1 이 native 인자를 깨뜨린다 —
 > `task-create --spec` 은 Bash 로 실행할 것.
 
-**정규장 개장(22:30) 이 오늘의 본 시험이다.** 확인할 것:
-- **tier3 점유** (데이마켓 1/20 → 정규장에서 얼마나 차는지)
-- 승격 사유 분포를 어제와 대조 — 특히 `evicted` 가 계속 0인지(어제 6,653),
-  스코어 기반(`precursor`/`confirm`) 비중이 오르는지
-- **개장 15분(22:30~22:45)** 이 가장 값진 구간 (LULD 밴드 2배, HOD 46.6% 형성)
+**정규장 개장(22:30) 본 시험 결과 (22:50 보고 — 통과)**:
+- tier3 **13→17/20** 실 소형주로 채워짐 (어제 4/20 대형주 쏠림과 대조). 11분간 신규 승격 12건:
+  confirm 8 (ACRE·CIGL·RANI·REBN·VFF·CAAS·EARN·LAKE), **precursor 4 (PMA·TYGO·WALD·AMCI —
+  전조 경로 첫 발화)**
+- `evicted`-as-promotion **0 유지** (어제 6,653 병리 소멸). 승격 1,164건 중 price_activity 93.6%
+- 예산 거버너: 개장 풀부하에서 MARKET_DATA 최대 6.27/7.00, **429 0건**, api_errors=0
+- 유니버스 게이트: `watch_outside_universe=0` 시종 유지, INTC 등 대형주 tier0 거부
+- 실 이벤트: **EVENT CIGL kind=win path=confirm score=0.712** (22:40:05)
+- **유의**: 개장 첫 분 유실 — 아래 사고 2 참조. 커버는 22:31:06~19 + 22:39:18~
 
 **주의 — 돌고 있는 collector 는 기동 시점 코드다.** 15:43 현재도 로그에
 `budget: RANKING predicted 0.33 req/s > target 3.50` 이라는 **가짜 ERROR** 가 찍히는데,
