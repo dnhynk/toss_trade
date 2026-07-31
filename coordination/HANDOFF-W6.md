@@ -128,7 +128,6 @@ import os, sys, types
 root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(root, "tests"))
 sys.path.insert(0, root)
-sys.path.insert(0, r"<filelock 을 --target 으로 깐 디렉터리>")
 if "tests" not in sys.modules:
     m = types.ModuleType("tests"); m.__path__ = [os.path.join(root, "tests")]
     sys.modules["tests"] = m
@@ -136,6 +135,27 @@ if "tests" not in sys.modules:
 
 `pip install --target <dir> filelock` 로 `filelock` 만 따로 깔면 나머지(pandas/httpx/yaml)는
 전역에 이미 있다. **운영·CI 환경과 다른 점이라 "테스트가 깨졌다"고 오판하지 말 것.**
+
+#### ⚠️ 그리고 filelock 경로는 반드시 **`PYTHONPATH` 로** 줘라 (내가 실제로 걸린 함정)
+
+`conftest.py` 안에서 `sys.path.insert` 로 filelock 을 넣으면 **자식 프로세스가 물려받지 못한다.**
+`tests/test_api_audit_regressions.py::test_lease_blocks_a_genuinely_separate_process` 는
+`subprocess.Popen` 으로 **진짜 별도 프로세스**를 띄워 OS 파일락을 검증하는데(감사 F-1 의 회귀 테스트),
+그 자식이 `filelock` 임포트에 실패해 죽는다:
+
+```
+E   Failed: holder died: Traceback (most recent call last):
+E   ModuleNotFoundError: No module named 'filelock'
+```
+
+**이건 회귀가 아니라 내 샌드박스 구성 실패였다.** 처음 돌렸을 때 `1 failed, 693 passed` 가 나와서
+"F-1 회귀 테스트가 깨졌나" 싶었는데, `PYTHONPATH` 로 다시 주니 그 파일 35개가 전부 통과했다.
+**하필 가장 심각했던 감사 지적(F-1 토큰 리스)의 회귀 테스트라 오진하기 딱 좋다** — 조심할 것.
+
+```
+# 올바른 실행
+PYTHONPATH="<filelock --target 디렉터리>" python -m pytest -q
+```
 
 ### 2. 감사에 쓴 재현은 리포 밖에 있고, 커밋하지 않았다
 
@@ -167,21 +187,20 @@ mock 이 필요하면 `python tools/mock_server.py --port 8899`,
 
 ## 테스트 상태
 
-| 대상 | 결과 | 실행 방법 |
+| 대상 | 결과 | 비고 |
 |---|---|---|
-| 내 브랜치 `w6-audit` @ `7992aca` | **636 passed** (기준선 `e1ed22d` 와 동일 — 내 커밋은 문서 1개라 코드 영향 0) | 아래 |
-| main `4869293` | 코디네이터 보고 **694 green**. 리셋 예고 시점에 내가 직접 재실행 중이었고 결과는 아래 각주 참조 |
+| 내 브랜치 `w6-audit` @ `c06b068` | **636 passed** | 기준선 `e1ed22d` 와 동일 — 내 커밋 2개가 전부 문서라 코드 영향 0 |
+| main `4869293` | **694 green — 직접 재실행해 확인함** | 코디네이터 보고와 일치 |
 
 ```
-# 이 워크트리에서 직접 실행하면 collection error 로 실패한다 (§1 참조). 샌드박스에서:
+# 이 워크트리에서 그냥 실행하면 collection error 로 실패한다 (§1 참조). 샌드박스에서:
 git archive main | tar -x -C <sandbox>
-cp <conftest.py 위 §1>  <sandbox>/conftest.py
-cd <sandbox> && python -m pytest -q          # 약 3분
+cp <conftest.py — 위 §1>  <sandbox>/conftest.py
+cd <sandbox> && PYTHONPATH="<filelock --target 디렉터리>" python -m pytest -q    # 약 5분
 ```
 
-각주: 리셋 공지를 받은 시점에 main 전체 스위트를 샌드박스에서 재실행하고 있었다.
-**내가 직접 확인한 수치는 `e1ed22d` 기준 636 passed 뿐**이고, main 의 694 는
-코디네이터 보고를 인용한 것이다 — 재개 후 필요하면 위 명령으로 직접 확인하라.
+**PYTHONPATH 를 빼먹으면 `1 failed, 693 passed` 가 나오는데 그건 가짜다** — 위 §1 의 경고 참조.
+내가 정확히 그렇게 한 번 오진할 뻔했다.
 
 ## 규칙 준수 확인
 
