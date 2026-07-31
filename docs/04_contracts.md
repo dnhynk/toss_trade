@@ -113,6 +113,19 @@ collector와 universe 빌더가 호출 시점에 `interval`에 맞춰 명시적�
 구코드 라이브 프로세스를 **완전히 종료하고 락 해제를 확인한 뒤에만** 신코드 라이브 프로세스를
 띄운다. 이 절차를 어기면 고친 것과 정확히 같은 상호 토큰 살해가 재발한다.
 
+### C-4 개정 A7 (2026-07-31) — 허용 목록 축소, 상태파일 권한
+
+1. **`/api/v1/market-calendar/KR` 를 ALLOWLIST 에서 제거한다.**
+   이 프로젝트는 미국 주식 전용이고(docs/00 §1), 감사 G-4 가 지적한 대로 쓰이지 않는 항목은
+   공격 표면일 뿐이다. W1 이 감사의 주장을 검증해 **실제로 미사용인 것은 이 하나뿐**임을
+   확인했다(나머지 4개는 `live_probe` 가 `_request` 로 사용 중). 필요해지면 계약 개정으로 다시 넣는다.
+2. **토큰 상태파일 권한을 코드로 보장한다.** W1 이 `icacls` 로 실측해 현재 world 접근이 없음을
+   확인했으나, 그건 **상속 ACL 이라 코드의 보장이 아니다**(감사 E-2). 소유자 전용으로 명시 설정한다.
+   - POSIX: `0600`
+   - Windows: 소유자/SYSTEM 만 남기는 ACL
+   - **실패해도 토큰 흐름을 죽이지 않는다** — 권한 설정 실패는 경고로 남기고 진행한다.
+     플랫폼별 ACL 조작은 그 자체가 깨질 수 있으므로, 보안 강화가 가용성을 무너뜨리지 않게 한다.
+
 ## C-3. 데이터 모델 (`tossmon/api/models.py`, 전부 `@dataclass(frozen=True, slots=True)`)
 
 ```python
@@ -171,7 +184,7 @@ class TossClient:
 
 - **HTTP 허용 목록 (이 밖은 메서드/전송 레벨 이중 차단, 위반 시 `ForbiddenEndpoint` raise)**:
   `POST /oauth2/token` + GET `/api/v1/prices`, `/candles`, `/trades`, `/orderbook`, `/price-limits`,
-  `/rankings`, `/stocks`, `/stocks/{symbol}/warnings`, `/market-calendar/KR`, `/market-calendar/US`,
+  `/rankings`, `/stocks`, `/stocks/{symbol}/warnings`, `/market-calendar/US`,
   `/exchange-rate`, `/accounts`, `/commissions`.
   주문·조건주문·잔고변경 계열은 **GET 포함 어떤 메서드도 금지**(래퍼 자체를 만들지 않는다).
 - 전송 차단 구현: 단일 `_request(method, path, ...)` 관문에서 allowlist 검사. 테스트 필수.
