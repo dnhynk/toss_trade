@@ -110,6 +110,16 @@ orca orchestration check --wait --types worker_done,escalation,question,status -
 > 순서: ① W6 감사 결과 수령 ② (W4 백필 러너 완성 시 그 코드까지 감사 범위에 추가 검토)
 > ③ 사용자에게 감사 요약 보고(턴 마지막 텍스트로) ④ blocker 없으면 그때 백필 승인.
 > blocker 가 있으면 승인 보류하고 수정 먼저.
+
+**밤사이 진행 (08-01 00:50 기준)**: W6 3차 감사 **완료·머지**(docs/14, 치명 F-1 일봉
+as-of 룩어헤드·F-2 분할일 오등록 + 중간 3·낮음 4·테스트 결함 2 — 전부 재현 실측).
+수정 파상 즉시 디스패치: **W3** `task_c55e92f32cb9`/`ctx_04871cd04217`(term_2c49ee20,
+blocker 2 + fixture + 권고 3 + F-8), **W7** `task_c702a5701779`/`ctx_85e6480d960b`
+(**term_4a50ac78** — 핸들 또 재발급됨, §7-e 보수 등록·§2.2 date-단위 문언 추인).
+**W4 백필 러너** 진행 중(`task_e99983f09016`, heartbeat 00:02·00:17 investigating/reviewing).
+아침 잔여: F-1 관련 실캘린더 `dayMarket=None` 라이브 실측 1콜(백필 사전 점검에 포함),
+F-9·loops.py prev_close 수정주가(W4 백로그, 나중), W6 worker_done 본문 인코딩 깨짐
+(내용은 docs/14 로 무손실 — 워커 보고 본문은 ASCII 강제로 스펙에 반영함).
 **`docs/12_preregistration.md` 를 먼저 읽고 그대로 따를 것** (개정 4건 전부 머지된 최신판).
 `docs/13_trial_registry.md` 는 **첫 시행 전에** 생성해야 한다(형식은 사전등록에 규정).
 분석 대상은 오늘 재수집분 + 백필. **어제(7/30) DB(`tossmon_20260730_polluted.db`)는
