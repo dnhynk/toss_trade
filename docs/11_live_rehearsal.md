@@ -477,3 +477,24 @@ tier0=1678 tier1=1500 former_runners=535 rejected_charset=0 skipped_batches=0 sk
   NVDA, TSLA, QLD 등이 `universe: X rejected at tier0`으로 즉시 걸러짐. 반면 CYCU, MGRX(둘 다
   소형주, 어제도 tier3까지 올라갔던 종목)는 정상적으로 tier2 승격.
 - 이후 30분 관측·중간 보고는 이 절 아래에 계속 추가한다(미완).
+
+## 10. 30분 중간 점검 (14:25~14:48 KST) — `확인됨`
+
+- **워치리스트 거부 카운터 실측**: 텔레메트리 신규 필드 `universe_rejected`가 0(14:25) →
+  22(14:30) → 23(14:35) → 23(14:40) → 24(14:45)로 계속 증가 — 게이트가 살아서 계속 일하고
+  있다는 직접 증거. `watch_outside_universe`는 시종 0(대형주가 워치리스트에 새는 사고 없음).
+- **tier2/tier3 점유**: tier2 는 43~66 사이에서 유동적(day 세션은 `SESSION_TIER_SCALE`로
+  정원이 300의 40%로 줄어 있어 원래도 좁다 — 정상 범위). **tier3 는 대부분 0이었다가
+  14:46:23 에 `PLYX`가 `confirm` 경로(score=0.682)로 처음 진입** — 어제는 정원 20 중 최대
+  4개였던 게 전부 대형주에 밀려난 자리싸움의 산물이었는데, 오늘은 유니버스가 깨끗해진 뒤
+  **표적 소형주가 실제로 tier3 에 오른 첫 사례**다. 계속 관찰 필요(세션 종료 리포트에 tier3
+  체류 이력을 어제와 나란히 비교할 것).
+- **예산 실측**: `MARKET_DATA 0.15~0.33/7.00`, `MARKET_DATA_CHART 0.55~1.02/3.50`,
+  `RANKING 0.28~0.32/3.50`, 신규 `STOCK 0~0.02/3.50`(tier0 실시간 판정용 `/stocks` 호출 —
+  어제는 없던 그룹, W4가 `_resolve_universe`에서 추가). 전부 여유 큼.
+- **429 실측(정상 처리 확인)**: 14:30:05 `budget: 429 on MARKET_DATA_CHART (count=1) —
+  forcing tier shrink` 1건 발생·정상 대응 로그 확인. `api_errors=0` 유지. `ForbiddenEndpoint`
+  미처리 예외(W4 미머지 항목) 관련 크래시 없음.
+- **대형주 거부 실측 로그**: `MU, SNDK, SOXL, SKHY, KORU, EWY, DRAM, SOXS, TQQQ, NVDA, TSLA,
+  QLD` 등이 랭킹 진입 즉시 `universe: X rejected at tier0`으로 걸러짐(가격·시총 로그까지 함께
+  남아 근거 확인 가능).
