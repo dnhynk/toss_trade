@@ -251,7 +251,8 @@ def test_pipeline_scales_to_backfill_volume(history_days: int) -> None:
     curve = B.minute_of_session_volume_curve(df, truth["baseline_calendar"])
     rv = B.rvol_series(df, curve, calendar=truth["calendar"])
     events = L.detect_events(df, L.EventParams(), calendar=truth["calendar"],
-                             rvol_series=rv, prev_close_u=truth["prev_close_u"],
+                             rvol_series=rv, prev_close_u={(truth["symbol"], truth["market_day"].date):
+                                       truth["prev_close_u"]},
                              shares_outstanding_qu=truth["shares_outstanding_qu"])
     feats = F.extract_precursor_features(df, truth["rankings"],
                                          truth["t0_expected_ms"], curve=curve,
@@ -270,7 +271,8 @@ def test_detect_events_cost_grows_subquadratically() -> None:
         df, truth = synth.make_scenario("noise", seed=1, history_days=days)
         t = time.perf_counter()
         L.detect_events(df, L.EventParams(), calendar=truth["calendar"],
-                        prev_close_u=truth["prev_close_u"])
+                        prev_close_u={(truth["symbol"], truth["market_day"].date):
+                                       truth["prev_close_u"]})
         return time.perf_counter() - t
 
     small = run(10)

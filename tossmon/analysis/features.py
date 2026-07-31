@@ -210,6 +210,9 @@ def extract_precursor_features(df_1m: pd.DataFrame, rankings: pd.DataFrame,
                                계열에서 분할 전일 종가와 비교하면 가짜 갭이 나온다
         toss_type/market_type  토스 쏠림도에 쓸 랭킹 type 2종
     """
+    if split_dates is not None and calendar is None:
+        # 3차 감사 F-3 계열: calendar 없이는 컷오프의 매매일을 알 수 없어 무음 스킵된다.
+        raise ValueError("split_dates 를 쓰려면 calendar 가 필요하다 (3차 감사 F-3)")
     pre = cut_frame(df_1m, t0_ms, include_t0=include_t0).sort_values("ts_ms")
     rk = cut_frame(rankings, t0_ms, "snap_ms", include_t0=include_t0)
 

@@ -216,6 +216,11 @@ def detect_events(df_1m: pd.DataFrame, params: EventParams, *,
 
     `df_1m` 에 `symbol` 컬럼이 있으면 심볼별로 독립 처리한다.
     """
+    if split_dates is not None and calendar is None:
+        # 3차 감사 F-3: calendar 없이는 매매일 date 를 알 수 없어 split_dates 가 조용히
+        # 무위가 되고, provenance 만 "적용됨"으로 남아 거짓 안심을 준다.
+        raise ValueError("split_dates 를 쓰려면 calendar 가 필요하다 "
+                         "(매매일 date 매핑 없이는 무위 — 3차 감사 F-3)")
     if df_1m is None or df_1m.empty:
         return pd.DataFrame(columns=EVENT_COLUMNS)
 
@@ -228,10 +233,13 @@ def detect_events(df_1m: pd.DataFrame, params: EventParams, *,
               if (rvol_series is not None and not rvol_series.empty) else None)
 
     n_split_excluded = 0
+    per_day_prev = (isinstance(prev_close_u, dict)
+                    and any(isinstance(k, tuple) for k in prev_close_u))
     rows: list[dict] = []
     for symbol, sdf in groups:
-        prev_close = (prev_close_u.get(symbol) if isinstance(prev_close_u, dict)
-                      else prev_close_u)
+        prev_close = (None if per_day_prev
+                      else (prev_close_u.get(symbol) if isinstance(prev_close_u, dict)
+                            else prev_close_u))
         sym_splits = (split_dates.get(symbol, set()) if isinstance(split_dates, dict)
                       else (split_dates or set()))
         shares = (shares_outstanding_qu.get(symbol)
@@ -240,6 +248,13 @@ def detect_events(df_1m: pd.DataFrame, params: EventParams, *,
         sts = sdf["ts_ms"].to_numpy()
         bounds = [(int(sts.searchsorted(a, side="left")),
                    int(sts.searchsorted(b, side="left"))) for _md, a, b in spans]
+        # 3차 감사 F-4: 스칼라(또는 심볼별) 전일 종가는 **하루치 프레임에만** 유효하다.
+        # 다일 프레임에 주면 그 값이 모든 매매일의 기준가로 쓰여 당일 조건이 전부 오염된다.
+        if prev_close is not None and sum(1 for lo, hi in bounds if lo < hi) > 1:
+            raise ValueError(
+                "다일 프레임에는 스칼라/심볼별 prev_close_u 를 쓸 수 없다 — "
+                "{(symbol, date): value} 로 매매일별로 주거나 생략해 대체 사슬에 맡겨라 "
+                "(3차 감사 F-4)")
         for i, (md, t_from, t_to) in enumerate(spans):
             lo, hi = bounds[i]
             if lo >= hi:
@@ -251,6 +266,8 @@ def detect_events(df_1m: pd.DataFrame, params: EventParams, *,
             #   ③ 직전 매매일의 마지막 1분봉 종가 (정규장 봉이 없을 때)
             #   ④ 그래도 없으면 base_prev=None → **당일 조건(+30%) 판정 자체를 건너뛴다**
             base_prev = prev_close
+            if per_day_prev and md is not None:
+                base_prev = prev_close_u.get((symbol, md.date))
             if base_prev is None and i > 0:
                 base_prev = _prev_day_close_u(sdf, spans[i - 1], bounds[i - 1])
             # 사전등록 §7-e: 분할 매매일은 당일 조건 판정에서 제외한다.

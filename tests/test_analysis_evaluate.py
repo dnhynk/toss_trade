@@ -34,7 +34,7 @@ def _pipeline(counts: dict[str, int] | None = None, seed: int = 2):
         rv = B.rvol_series(d, curve, calendar=t["calendar"])
         base = B.compute_daily_baseline(t["df_1d"])
         ev = L.detect_events(d, L.EventParams(), calendar=t["calendar"], rvol_series=rv,
-                             prev_close_u=t["prev_close_u"],
+                             prev_close_u={(t["symbol"], t["market_day"].date): t["prev_close_u"]},
                              shares_outstanding_qu=t["shares_outstanding_qu"],
                              rankings=t["rankings"], ranking_type=TOSS)
         md = t["market_day"]

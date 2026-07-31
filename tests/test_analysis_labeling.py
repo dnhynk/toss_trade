@@ -24,7 +24,8 @@ def _label(kind: str, seed: int = 1, **kw):
     rv = B.rvol_series(df, curve, calendar=truth["calendar"])
     events = L.detect_events(
         df, L.EventParams(), calendar=truth["calendar"], rvol_series=rv,
-        prev_close_u=truth["prev_close_u"],
+        prev_close_u={(truth["symbol"], truth["market_day"].date):
+                                       truth["prev_close_u"]},
         shares_outstanding_qu=truth["shares_outstanding_qu"],
         rankings=truth["rankings"], ranking_type=TOSS)
     md = truth["market_day"]
@@ -210,7 +211,8 @@ def test_random_missing_bars_still_detects() -> None:
     curve = B.minute_of_session_volume_curve(thin, truth["baseline_calendar"])
     rv = B.rvol_series(thin, curve, calendar=truth["calendar"])
     ev = L.detect_events(thin, L.EventParams(), calendar=truth["calendar"],
-                         rvol_series=rv, prev_close_u=truth["prev_close_u"])
+                         rvol_series=rv, prev_close_u={(truth["symbol"], truth["market_day"].date):
+                                       truth["prev_close_u"]})
     md = truth["market_day"]
     ev = ev[(ev["t0_ms"] >= md.day.start_ms) & (ev["t0_ms"] < md.after.end_ms)]
     assert len(ev) == 1
@@ -223,7 +225,8 @@ def test_thin_session_only_symbol_does_not_crash() -> None:
     md = truth["market_day"]
     day_only = df[(df["ts_ms"] >= md.day.start_ms) & (df["ts_ms"] < md.day.end_ms)]
     ev = L.detect_events(day_only, L.EventParams(), calendar=truth["calendar"],
-                         prev_close_u=truth["prev_close_u"])
+                         prev_close_u={(truth["symbol"], truth["market_day"].date):
+                                       truth["prev_close_u"]})
     assert len(ev) >= 1
     r = ev.iloc[0]
     assert r["session"] == "day"
@@ -236,7 +239,8 @@ def test_thin_session_only_symbol_does_not_crash() -> None:
 def test_ungated_path_is_flagged_not_silent() -> None:
     df, truth = synth.make_scenario("coil_pop", seed=1)
     ev = L.detect_events(df, L.EventParams(), calendar=truth["calendar"],
-                         prev_close_u=truth["prev_close_u"])
+                         prev_close_u={(truth["symbol"], truth["market_day"].date):
+                                       truth["prev_close_u"]})
     assert not ev.empty
     assert (~ev["rvol_gated"]).all()
     assert ev["rvol_at_t0"].isna().all()
@@ -255,7 +259,8 @@ def test_rvol_gate_can_suppress_detection() -> None:
     rv = B.rvol_series(df, curve, calendar=truth["calendar"])
     ev = L.detect_events(df, L.EventParams(rvol_min=10_000.0),
                          calendar=truth["calendar"], rvol_series=rv,
-                         prev_close_u=truth["prev_close_u"])
+                         prev_close_u={(truth["symbol"], truth["market_day"].date):
+                                       truth["prev_close_u"]})
     assert ev.empty
 
 
@@ -269,7 +274,8 @@ def test_params_change_detection() -> None:
     loose = L.detect_events(df, L.EventParams(ret_min=0.02, day_ret_min=0.03,
                                               rvol_min=1.0),
                             calendar=truth["calendar"], rvol_series=rv,
-                            prev_close_u=truth["prev_close_u"])
+                            prev_close_u={(truth["symbol"], truth["market_day"].date):
+                                       truth["prev_close_u"]})
     assert not loose.empty, "임계를 낮추면 노이즈도 잡혀야 한다 (파라미터화 확인)"
 
 
@@ -278,7 +284,8 @@ def test_max_per_day() -> None:
     curve = B.minute_of_session_volume_curve(df, truth["baseline_calendar"])
     rv = B.rvol_series(df, curve, calendar=truth["calendar"])
     kw = dict(calendar=truth["calendar"], rvol_series=rv,
-              prev_close_u=truth["prev_close_u"])
+              prev_close_u={(truth["symbol"], truth["market_day"].date):
+                                       truth["prev_close_u"]})
     one = L.detect_events(df, L.EventParams(), max_per_day=1, **kw)
     many = L.detect_events(df, L.EventParams(), max_per_day=5, **kw)
     assert len(many) >= len(one)
@@ -288,8 +295,8 @@ def test_multi_symbol_independent() -> None:
     bundle = synth.make_dataset({"coil_pop": 2, "noise": 1}, seed=5)
     ev = L.detect_events(bundle.df_1m, L.EventParams(),
                          calendar=bundle.calendar,
-                         prev_close_u={t["symbol"]: t["prev_close_u"]
-                                       for t in bundle.truths})
+                         prev_close_u={(t["symbol"], t["market_day"].date):
+                                       t["prev_close_u"] for t in bundle.truths})
     assert set(ev["symbol"]) <= set(bundle.symbols)
     coil_syms = [t["symbol"] for t in bundle.truths if t["kind"] == "coil_pop"]
     assert set(coil_syms) <= set(ev["symbol"])
@@ -298,7 +305,8 @@ def test_multi_symbol_independent() -> None:
 def test_works_without_calendar_using_utc_dates() -> None:
     """calendar 없이도 UTC 날짜 = 매매일 로 동작 (docs/07 §3.1)."""
     df, truth = synth.make_scenario("coil_pop", seed=1)
-    ev = L.detect_events(df, L.EventParams(), prev_close_u=truth["prev_close_u"])
+    ev = L.detect_events(df, L.EventParams(), prev_close_u={(truth["symbol"], truth["market_day"].date):
+                                       truth["prev_close_u"]})
     assert not ev.empty
     assert (ev["session"] == "unknown").all()
     day_ms = 86_400_000
