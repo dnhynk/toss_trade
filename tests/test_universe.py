@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -9,11 +11,19 @@ from tossmon.api.models import Candle, CandlePage, Price, StockMeta
 from tossmon.config import UniverseConfig
 from tossmon.store.reader import Reader
 from tossmon.store.writer import Store
+from tossmon.universe import __main__ as universe_main
 from tossmon.universe import build as build_module
+from tossmon.universe import seed as seed_module
 from tossmon.universe.build import build_universe
 from tossmon.universe.filters import market_cap_u, passes_tier0
 from tossmon.universe.runners import detect_former_runners, tag_dilution_stub
-from tossmon.universe.seed import parse_directory_file
+from tossmon.universe.seed import fetch_symbol_directory, parse_directory_file
+
+TESTS_DIR = Path(__file__).resolve().parent
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from test_api_support import mock_server  # noqa: E402,F401
 
 
 @pytest.fixture
@@ -158,3 +168,157 @@ async def test_build_batches_200_and_persists_tiers(monkeypatch, tmp_path, cfg):
             symbols_frame["symbol"] == "S000", "is_former_runner"
         ].item() == 1
         assert len(reader.symbols(tier=1)) == 200
+
+
+@pytest.mark.asyncio
+async def test_build_universe_is_idempotent_on_rerun(monkeypatch, tmp_path, cfg):
+    """일 1회 실행 전제이지만 재실행(수동 재시도 포함)해도 상태가 불어나선 안 된다."""
+    symbols = [f"S{i:03d}" for i in range(5)]
+    monkeypatch.setattr(build_module, "fetch_symbol_directory", lambda _path: symbols)
+    client = FakeClient()
+    db_path = tmp_path / "monitor.db"
+    with Store(db_path) as store:
+        first = await build_universe(client, store, cfg)
+        second = await build_universe(client, store, cfg)
+        third = await build_universe(client, store, cfg)
+
+        assert first == second == third == {"tier0": 5, "tier1": 5, "former_runners": 1}
+        assert store._conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 5
+        assert store._conn.execute("SELECT COUNT(*) FROM candles_1d").fetchone()[0] == 5
+        assert store._conn.execute("SELECT COUNT(*) FROM promotions").fetchone()[0] == 0
+
+
+class FailingCandleClient(FakeClient):
+    """get_candles 가 첫 호출에서 실패한다 — 파이프라인 중간 실패 시뮬레이션."""
+
+    def __init__(self):
+        super().__init__()
+        self.candle_calls = 0
+
+    async def get_candles(self, symbol, interval, count=200, before_ms=None, adjusted=True):
+        self.candle_calls += 1
+        if self.candle_calls == 1:
+            raise RuntimeError("simulated network failure mid-build")
+        return await super().get_candles(
+            symbol, interval, count=count, before_ms=before_ms, adjusted=adjusted
+        )
+
+
+@pytest.mark.asyncio
+async def test_build_universe_partial_failure_preserves_state_and_recovers(
+    monkeypatch, tmp_path, cfg
+):
+    """tier0 upsert 는 candle 루프보다 먼저 커밋된다 — 중간 실패 후에도 그 상태는
+    보존돼야 하고, 다음 성공 실행이 정상 최종 상태로 회복해야 한다."""
+    symbols = [f"S{i:03d}" for i in range(3)]
+    monkeypatch.setattr(build_module, "fetch_symbol_directory", lambda _path: symbols)
+    db_path = tmp_path / "monitor.db"
+
+    with Store(db_path) as store:
+        failing_client = FailingCandleClient()
+        with pytest.raises(RuntimeError, match="simulated network failure"):
+            await build_universe(failing_client, store, cfg)
+
+        # tier0 upsert (build.py:50) ran before the candle loop (build.py:52-67)
+        # that failed — it must have survived the aborted run untouched.
+        assert store._conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 3
+        assert store._conn.execute("SELECT COUNT(*) FROM candles_1d").fetchone()[0] == 0
+        assert store._conn.execute(
+            "SELECT COUNT(*) FROM symbols WHERE is_former_runner=1"
+        ).fetchone()[0] == 0
+
+        working_client = FakeClient()
+        summary = await build_universe(working_client, store, cfg)
+        assert summary == {"tier0": 3, "tier1": 3, "former_runners": 1}
+        assert store._conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 3
+
+
+def test_seed_falls_back_to_cache_when_network_unavailable(tmp_path, monkeypatch):
+    """무인 운영: nasdaqtrader.com 이 죽어도 캐시가 있으면 유니버스 빌드가 멈추면 안 된다."""
+    cache_dir = tmp_path / "nasdaq-trader"
+    cache_dir.mkdir()
+    (cache_dir / "nasdaqlisted.txt").write_text(
+        "Symbol|Security Name|Market Category|Test Issue|Financial Status|"
+        "Round Lot Size|ETF|NextShares\n"
+        "GOOD|Good Inc|Q|N|N|100|N|N\n",
+        encoding="utf-8",
+    )
+    (cache_dir / "otherlisted.txt").write_text(
+        "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|"
+        "Test Issue|NASDAQ Symbol\n"
+        "OTHR|Other Inc|N|OTHR|N|100|N|OTHR\n",
+        encoding="utf-8",
+    )
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("network unavailable")
+
+    monkeypatch.setattr(seed_module, "urlopen", _boom)
+    assert fetch_symbol_directory(cache_dir) == ["GOOD", "OTHR"]
+
+
+def test_seed_raises_when_network_and_cache_both_unavailable(tmp_path, monkeypatch):
+    cache_dir = tmp_path / "nasdaq-trader"
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("network unavailable")
+
+    monkeypatch.setattr(seed_module, "urlopen", _boom)
+    with pytest.raises(RuntimeError, match="unavailable"):
+        fetch_symbol_directory(cache_dir)
+
+
+def _yaml_path(path: Path) -> str:
+    return Path(path).as_posix()
+
+
+def test_main_entrypoint_smoke_against_mock_server(monkeypatch, tmp_path, mock_server):
+    """`python -m tossmon.universe` 진입점 전체 배선을 mock 서버로 스모크 테스트한다.
+    TOSS_LIVE=0 등가(live: false) — 라이브 호출 없음, 토큰은 고정 mock 토큰."""
+    symbols = ["S000", "S001", "S002"]
+    monkeypatch.setattr(build_module, "fetch_symbol_directory", lambda _path: symbols)
+
+    db_path = tmp_path / "monitor.db"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"""
+api:
+  base_url: '{mock_server.url}'
+  live: false
+  keys_path: '{_yaml_path(tmp_path / "api_keys")}'
+  token_state_path: '{_yaml_path(tmp_path / "token_state.json")}'
+  timeout_s: 5.0
+  usage_ratio: 0.7
+
+store:
+  db_path: '{_yaml_path(db_path)}'
+  archive_dir: '{_yaml_path(tmp_path / "archive")}'
+
+universe:
+  price_min_usd: "0.01"
+  price_max_usd: "10000"
+  mcap_min_usd: "1"
+  mcap_max_usd: "2000000000000"
+  tier1_max: 10
+  tier2_max: 5
+  tier3_max: 2
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = universe_main.main(["--config", str(config_path)])
+    assert exit_code == 0
+
+    # Every mock-synthesized symbol is a common ACTIVE stock (tools/mock_server.py
+    # synth_stock) and the config bounds above are wide enough to admit all of
+    # them regardless of the per-symbol synthetic price/mcap, so this is a
+    # deterministic wiring check, not a filter-boundary test (those live in
+    # test_tier0_filter_boundaries).
+    with Reader(db_path) as reader:
+        frame = reader.symbols()
+        assert set(frame["symbol"]) == set(symbols)
+        assert (frame["tier"] == 1).all()
+
+    log_path = db_path.parent / "universe_build.log"
+    assert log_path.exists()
+    assert "universe build done" in log_path.read_text(encoding="utf-8")
