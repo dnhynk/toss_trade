@@ -498,3 +498,45 @@ tier0=1678 tier1=1500 former_runners=535 rejected_charset=0 skipped_batches=0 sk
 - **대형주 거부 실측 로그**: `MU, SNDK, SOXL, SKHY, KORU, EWY, DRAM, SOXS, TQQQ, NVDA, TSLA,
   QLD` 등이 랭킹 진입 즉시 `universe: X rejected at tier0`으로 걸러짐(가격·시총 로그까지 함께
   남아 근거 확인 가능).
+
+## 11. 비계획 정지 #3 — 외부 프로세스 트리 종료, 수집 공백 8분 (18:07:30~18:15:36 KST) — `해결됨` / docs/12 §7-(b) 갭 매니페스트 등재
+
+**공백 구간 (docs/12 §7-(b) 매니페스트 항목)**:
+
+| # | 정지 (KST) | 재개 (KST) | 길이 | 세션 | 영구 손실 | 복구 가능 |
+|---|---|---|---|---|---|---|
+| ③ | 2026-07-31 18:07:30 | 2026-07-31 18:15:36 | 8분 06초 | pre | 랭킹 스냅샷·테이프 | 1분봉(백필) |
+
+- 처리 규칙은 docs/12 §7-(b) 그대로: 랭킹 의존 지표(Q2·쏠림도)에서 이벤트의
+  [T0−120분, T0+120분]이 이 구간과 겹치면 Q2 표본 제외 + 제외 수 보고.
+
+**사망 정황 (원인: 외부 종료로 판단)**:
+
+- collector PID 29236·supervisor PID 29704 가 **동시에, 흔적 없이** 소멸. 마지막 로그는
+  18:07:30,798 정상 INFO(`tier ↑ SLND: 2→3 confirm`) — traceback 없음, stderr 출력 없음,
+  Windows Application 이벤트 로그(WER/Application Error)에도 항목 없음, supervisor 의
+  재시작 시도 로그도 없음(부모까지 같이 죽었다는 뜻).
+- `ForbiddenEndpoint` 미처리 크래시(교대 인수인계의 1차 용의자)라면 traceback 이 남고
+  supervisor 가 자식을 재시작했어야 한다 — 정황 불일치. **부모+자식 동시·무음 소멸은 외부
+  프로세스 트리 킬**과 일치하며, 같은 날 원 W5 에이전트 PTY 소실(14:2x)·본 교대 요원의
+  분리 백그라운드 모니터 외부 종료(17:41)와 같은 계열(Orca 런타임의 PTY/잡 정리)로 추정.
+  §9 의 `Start-Process` 분리 기동도 이 종료 경로 앞에서는 불충분했다.
+
+**복구 절차 (코디네이터 지시 6단계, 18:1x KST)**:
+
+1. `git rebase main` — old HEAD `8578dab` → new HEAD `67445d2` (main `fc3a9cc`, 795 테스트
+   green). 재기동 프로세스에 `ForbiddenEndpoint` 종료 처리·정직한 RANKING 경보(`e512463`)·
+   A7 상태파일 권한·W2 charset 수정이 포함됨.
+2. 재기동은 **Windows 작업 스케줄러 일회성 작업**(`tossmon-collector-oneshot`, schtasks
+   `/SC ONCE` + `/Run`)으로 — 프로세스 트리가 스케줄러 서비스(svchost) 소속이 되어 어떤
+   Orca PTY/잡 오브젝트에도 속하지 않게 함. 기동 후 트리거 즉시 비활성화(Next Run: N/A,
+   이중 기동 방지). supervisor stdout 은 `data\supervisor.stdout.log` 로 리다이렉트.
+3. DB 그대로 재사용(WAL 은 사망 직후 18:07:36 플러시 확인, `symbols` 무손상). 유니버스
+   재빌드 없음, collector 자체 외 추가 라이브 호출 없음. 상태 이어받기 정상:
+   `resumed from data\collector_state.json: watch=1500 tier2+=95` (18:15:36).
+4. 기동 검증 3종 통과: ① 부모 체인 `cmd.exe ← svchost(Schedule) ← services.exe` (Orca 밖),
+   ② `collector.log` 18:15:36 부터 재흐름 + `session closed → pre` 정상 판정,
+   ③ 재기동 후 가짜 `budget: RANKING predicted…` ERROR **0건** (구프로세스에서 13초 간격
+   스팸 → 신코드 가동의 직접 증거).
+5. 신프로세스 트리(Python 3.13 venv 런처가 실제 인터프리터를 자식으로 spawn): supervisor
+   36084→48156, collector 1928→4544.
