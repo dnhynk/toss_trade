@@ -499,13 +499,14 @@ tier0=1678 tier1=1500 former_runners=535 rejected_charset=0 skipped_batches=0 sk
   QLD` 등이 랭킹 진입 즉시 `universe: X rejected at tier0`으로 걸러짐(가격·시총 로그까지 함께
   남아 근거 확인 가능).
 
-## 11. 비계획 정지 #3 — 외부 프로세스 트리 종료, 수집 공백 8분 (18:07:30~18:15:36 KST) — `해결됨` / docs/12 §7-(b) 갭 매니페스트 등재
+## 11. 비계획 정지 #3·#4 — 수집 공백 2건 (18:07 트리 킬 8분 / 20:48 토큰만료×env 102분) — `해결됨` / docs/12 §7-(b) 갭 매니페스트 등재
 
 **공백 구간 (docs/12 §7-(b) 매니페스트 항목)**:
 
 | # | 정지 (KST) | 재개 (KST) | 길이 | 세션 | 영구 손실 | 복구 가능 |
 |---|---|---|---|---|---|---|
 | ③ | 2026-07-31 18:07:30 | 2026-07-31 18:15:36 | 8분 06초 | pre | 랭킹 스냅샷·테이프 | 1분봉(백필) |
+| ④ | 2026-07-31 20:48:20 | 2026-07-31 22:30:59 | 1시간 42분 39초 | pre + regular 개장 첫 1분 | 랭킹 스냅샷·테이프 (**22:30:00~22:30:59 정규장 개장 순간 포함**) | 1분봉(백필) |
 
 - 처리 규칙은 docs/12 §7-(b) 그대로: 랭킹 의존 지표(Q2·쏠림도)에서 이벤트의
   [T0−120분, T0+120분]이 이 구간과 겹치면 Q2 표본 제외 + 제외 수 보고.
@@ -540,3 +541,39 @@ tier0=1678 tier1=1500 former_runners=535 rejected_charset=0 skipped_batches=0 sk
    스팸 → 신코드 가동의 직접 증거).
 5. 신프로세스 트리(Python 3.13 venv 런처가 실제 인터프리터를 자식으로 spawn): supervisor
    36084→48156, collector 1928→4544.
+
+### 11-1. 정지 #4 — 토큰 만료 × 스케줄러 env에 `TOSS_BASE_URL` 부재 (20:48:20~22:30:59) — `해결됨`
+
+**증상이 특이했다: 프로세스는 살아서 로그를 쓰는데 API 만 전면 사망.** 20:48:20 부터
+`unexpected RuntimeError: TOSS_BASE_URL is not set (계약 C-9: 기본값 없음)` WARNING 이
+35,000건+ 누적됐고, 텔레메트리는 계속 찍히되 budget 전 그룹 0.00 / `precision_parsed`·
+`promotions` 등 카운터 완전 동결. **`api_errors` 는 끝까지 0** — RuntimeError 가 호출별
+WARNING 으로 삼켜져 api_errors 카운터에도, 로그 신선도 기반 감시(모니터)에도 안 걸렸다.
+22:25 개장 준비 체크포인트에서 연속 두 텔레메트리가 완전 동일한 것을 보고 발견.
+
+- **원인 사슬**: 어제 20:49 발급 토큰이 오늘 20:48 만료(TTL 24h) → 재발급 경로
+  `tossmon/api/tokens.py:371` 은 계약 C-9 에 따라 **기본값 없이 env `TOSS_BASE_URL` 만**
+  읽음 → 18:15 스케줄러 재기동(§11 복구 2단계)의 cmd 환경에는 그 env 가 없었음(14:25 원
+  프로세스는 원 셸에서 상속받아 정상) → 재발급 실패가 모든 호출로 전파. 기동 시
+  `base_url` 은 config.yaml 에서 와서 **토큰이 살아 있는 동안(18:15~20:48)은 정상 수집** —
+  잠복했다가 만료 순간 발병한 구조.
+- **env 전수 감사(코디네이터 지시)**: tokens.py 가 읽는 env 는 `TOSS_BASE_URL`(필수·기본값
+  없음), `TOSSMON_LEASE_DIR`(선택 재정의 — 미설정 시 LOCALAPPDATA 폴백, 기존 리스 위치
+  유지를 위해 **의도적으로 미설정**), `LOCALAPPDATA`/`USERNAME`/`USERDOMAIN`(스케줄러
+  사용자 세션에 존재 — 18:15~20:48 라이브 수집으로 실증). 추가 설정 필요분은
+  `TOSS_BASE_URL` 하나로 확정.
+- **복구(코디네이터 승인 RESTART-NOW-WITH-ENV, 22:29)**: ① 트리 kill(22:28:44, taskkill /T)
+  ② 런처를 `.cmd` 파일로 교체 — `set "TOSS_BASE_URL=https://openapi.tossinvest.com"` 후
+  supervisor 기동(값은 비밀 아님 — 기동 로그에 상시 노출되는 값) ③ 1차 재기동은 기동
+  10초 만에 트리거 /DISABLE 을 호출했더니 인스턴스가 0xC000013A(STATUS_CONTROL_C_EXIT)로
+  동반 종료되는 함정 발견 — **교훈: 일회성 작업 비활성화는 기동 안정화(수 분) 후에** ④ 2차
+  재기동 22:30:59 성공.
+- **검증**: 22:31:00 `collector start base_url=… live=True` → **22:31:01 collector 스스로
+  토큰 재발급**(token_state.json 갱신 — 수동 발급 없음, 리스 보존) → 22:31:02
+  `session closed → regular` 정상 판정 → 재기동 후 `TOSS_BASE_URL` 오류 0건, 상태 이어받기
+  `watch=1500 tier2+=247`. 재기동 직후 tape gap WARNING 다수는 실명 구간(20:48~22:30)의
+  테이프 불연속을 수집기가 올바르게 탐지·등록한 것(오류 아님).
+- **후속 과제(수집 코드 소유자 앞, 관측만 기록)**: (i) 토큰 재발급 연속 실패는 지금처럼
+  per-call WARNING 으로 삼키지 말고 `api_errors` 집계 또는 fail-fast 로 승격해야 감시가
+  잡는다 — "api_errors=0 인데 API 전멸" 은 텔레메트리 사각. (ii) 기동 환경 재현성을 위해
+  ops_config `collector_cmd` 에 필수 env 를 명시하는 방안 검토.
