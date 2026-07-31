@@ -246,7 +246,24 @@ class TokenManager:
         data: dict[str, str] = {}
         stripped = raw.strip()
         if stripped.startswith("{"):
-            data = {str(k).upper(): str(v) for k, v in json.loads(stripped).items()}
+            # json.JSONDecodeError 는 `str(e)` 에는 위치만 담지만 **`e.doc` 에 파일 전문**을
+            # 들고 다닌다 (감사 U-4 실측 확인). 예외 객체를 깊게 찍는 로거·리포터가 있으면
+            # 그대로 시크릿이 샌다. 우리 문구로 갈아끼우고 `from None` 으로 원본을 끊는다.
+            # `from None` 만으로는 부족하다 — 그건 traceback **표시**만 억제하고
+            # `__context__` 에 원본 예외(=`.doc` 에 파일 전문)가 그대로 매달려 있다.
+            # except 블록 **밖**에서 raise 해야 __context__ 가 아예 None 이 된다.
+            parsed = None
+            bad_json = False
+            try:
+                parsed = json.loads(stripped)
+            except ValueError:
+                bad_json = True
+            if bad_json:
+                raise RuntimeError(
+                    f"{self.keys_path} is not valid JSON "
+                    "(내용은 시크릿이라 표시하지 않는다 — 감사 U-4)")
+            # 진입 조건이 `startswith("{")` 이므로 파싱에 성공했다면 반드시 dict 다.
+            data = {str(k).upper(): str(v) for k, v in parsed.items()}
         else:
             for line in raw.splitlines():
                 line = line.strip()
