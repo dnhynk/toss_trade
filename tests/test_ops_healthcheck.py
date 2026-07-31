@@ -70,16 +70,31 @@ def test_scan_logs_counts_429_and_requests(tmp_path):
     log_dir.mkdir()
     p = log_dir / "collector.log"
     p.write_text(
-        "2026-07-30 request ok\n"
-        "2026-07-30 429 Too Many Requests\n"
-        "2026-07-30 another request\n",
+        "2026-07-30 22:00:00,000 INFO    request ok\n"
+        "2026-07-30 22:00:01,001 WARNING budget: 429 on MARKET_DATA (count=1) — forcing tier shrink\n"
+        "2026-07-30 22:00:02,002 INFO    another request\n",
         encoding="utf-8",
     )
     stats = hc.scan_logs(log_dir, window_s=300, now=time.time())
     assert stats.count_429 == 1
-    # "Requests"(429 메시지 안)도 request 어휘로 잡힌다 — 최선노력 스캔이라 과집계 방향으로 안전.
-    assert stats.request_lines == 3
+    assert stats.request_lines == 2
     assert stats.files_scanned == 1
+
+
+def test_scan_logs_does_not_count_429_inside_timestamps_or_epoch_ms(tmp_path):
+    """회귀 테스트: 라이브 리허설에서 실제로 발견한 오탐 — 밀리초 타임스탬프(,429)나 epoch ms
+    (t0_ms=...429...)에 우연히 등장하는 "429" 숫자를 실제 rate-limit 429 로 잘못 셌었다."""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    p = log_dir / "collector.log"
+    p.write_text(
+        "2026-07-30 22:13:16,429 INFO    tier ↑ VOO: 1→2 reason=price_activity score=1.000\n"
+        "2026-07-30 22:17:12,463 WARNING tape gap PN: prev_max=1785417427000 "
+        "< this_min=1785417429000 (n=50) — 표본 사이 체결 누락\n",
+        encoding="utf-8",
+    )
+    stats = hc.scan_logs(log_dir, window_s=300, now=time.time())
+    assert stats.count_429 == 0
 
 
 def test_scan_logs_ignores_stale_files(tmp_path):

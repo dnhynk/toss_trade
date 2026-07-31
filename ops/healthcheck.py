@@ -7,9 +7,10 @@
 디스크 사용량만 읽는다 — 리스 없는 워커가 실행해도 안전하고, 리스 보유 중에도
 수집 프로세스와 경합하지 않는다 (Store 계약 C-6: 분석/리포트는 read-only URI만 사용).
 
-429 카운트·초당 호출수는 collector(W4)가 로그 파일에 남긴 내용을 최선노력으로
-스캔한 것이다. W4의 로그 포맷이 아직 확정되지 않았다면(현재 notifier.py는 스텁)
-해당 필드는 "unavailable"로 표시된다 — 오류가 아니라 정상적인 저하 동작이다.
+429 카운트·요청 관련 로그 라인 수는 collector(W4)의 `collector.log`를 스캔한 것이다
+(형식은 `tossmon/collector/budget.py`의 `"budget: 429 on <group>"` — 계약 A4/텔레메트리,
+main 6b6fb4a). 로그 파일이 아직 없으면(수집 미시작 등) "unavailable"로 표시된다 —
+오류가 아니라 정상적인 저하 동작이다.
 """
 from __future__ import annotations
 
@@ -45,8 +46,13 @@ TABLES_TS: dict[str, str] = {
 # CRIT 가 뜬다(라이브 리허설에서 실제로 발견 — docs/11 §5).
 POLLING_TABLES = {"candles_1m", "trades_snap", "rankings_snap", "orderbook_snap"}
 
-# collector 로그에서 429/요청 수를 세는 최선노력 패턴. W4 로그 포맷 확정 전까지의 잠정 규약.
-RE_429 = re.compile(r"\b429\b|RateLimited|rate.?limit.?exceeded", re.IGNORECASE)
+# collector 로그에서 429/요청 수를 세는 패턴. W4 로그 포맷 확정(계약, main 6b6fb4a):
+# BudgetGuard.on_429() 가 429를 만나면 정확히 "budget: 429 on <group>" 로 남긴다
+# (tossmon/collector/budget.py). 예전에는 `\b429\b` 단독 매칭이었는데, 라이브 리허설에서
+# 실제로 오탐이 났다 — 밀리초 타임스탬프(`22:13:16,429`)나 epoch ms(`t0_ms=...429...`)에
+# 우연히 "429"가 들어간 숫자를 전부 429 이벤트로 셌다. "budget: 429 on" 처럼 실제로 이
+# 문맥에서만 나오는 문자열로 좁힌다.
+RE_429 = re.compile(r"budget: 429 on\b|RateLimited|rate.?limit.?exceeded", re.IGNORECASE)
 RE_REQUEST = re.compile(r"\brequest(ed|s)?\b", re.IGNORECASE)
 
 STATUS_OK, STATUS_WARN, STATUS_CRIT = "OK", "WARN", "CRIT"
