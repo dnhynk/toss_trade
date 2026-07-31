@@ -118,6 +118,12 @@ orca orchestration check --wait --types worker_done,escalation,question,status -
 ④ W3 blocker 수정(F-1 date-단위 소속·F-2 (마지막관측,관측] 보수 등록 + fixture 실규약화
 + F-3/F-4/F-5/F-8 — 감사 repro 로 자체 검증, `split_scan_report` 에 n_r_uncomputable·
 n_widened 노출).
+**추가 (01:10)**: **E2E 리허설 디스패치** — `task_2c12d19559dc`/`ctx_3822bbb36eaa`/W3.
+백필(mock)→Reader→분할스캔→검출→prereg 베이스라인→필터→run_all→리포트 전 순서 총연습.
+오늘 밤 머지 조각들의 조합 실행이 0회라는 공백을 메운다. 산출: 내일 재사용할 실행
+스크립트 + Phase 1-C 절차 초안. 메일함 감시는 하니스 Monitor(`bg852623o`, peek 폴링)로
+전환(PTY 백그라운드 대기 반복 즉살 우회).
+
 **아침 절차 (사용자 지시 반영)**: ① W5-b 최종 검증·worker_done(~09:00) 수령·머지
 ② **감사 요약 보고를 사용자에게 먼저** ③ blocker 잔여 없음 확인 후 백필 승인 —
 1단계 screen-only(15~45분) → 2단계 --estimate(호출 0) → go/no-go → 본실행.
