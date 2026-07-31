@@ -38,7 +38,8 @@ orca orchestration check --wait --types worker_done,escalation,question,status -
 |---|---|
 | **W5 라이브 재수집** | **진행 중** (분리 프로세스). 15:32 기준 watch=1500, tier2=58, tier3=1, promotions=369, `watch_outside_universe=0`, `api_errors=0`. 데이마켓 → 프리(17:00) → **정규장(22:30)** → 애프터(~08:50) |
 | **§3-(B) 정리 3건** | **전부 머지 완료** — W2 U-4(`0dc427f`, 실유출 1건 수정: `UnicodeDecodeError.args` 바이트 원문), W7 사전등록 개정(`a492810`, A6/A7 충돌 없음 판정), W3 사전등록 정합(`2961e7a`, P0 3+P1+P2 2, 신규 22테스트). **통합 773 passed·1 skipped 실측** |
-| **W7 후속 개정** | **진행 중** — W3가 넘긴 문언 공백 3건(§7-e 분할 탐지 확정·§2.2 일봉 as-of 앵커·§2.7 시총 ±10% 밴드). `task_7863c397722e`/`ctx_1237dd54df78`/term_fc910286. 스펙: `coordination/specs/w7_prereg_followup.md`. 완료 후 → **W3 구현 후속** 디스패치 예정 |
+| **W7 후속 개정** | **머지 완료** — §7-e 분할 탐지 문언 확정(r=1d수정/1m원주가 비율, 경계 급변 ≥1.5배, `split_dates` 인자, `split_excluded` 카운트, 미전달 시 주 분석 금지)·§2.2 일봉 as-of 앵커 의무·§2.7 시총 ±10% 밴드 |
+| **W3 구현 후속** | **진행 중** — 확정 문언 집행(분할 파이프라인·`compute_daily_baseline` 앵커·밴드 카운트). `task_8c43bb8f0bbc`/`ctx_9cb3a1e0148f`/term_2c49ee20. 스펙: `coordination/specs/w3_split_asof.md`. **이게 머지되면 분석 착수 전 코드 작업 끝** |
 | 라이브 리스 | **W5 단독 보유.** 다른 워커·코디네이터는 라이브 호출 금지 |
 
 > 참고: w7-prereg 워크트리의 저수준 `terminal create`는 "Timed out waiting for terminal
