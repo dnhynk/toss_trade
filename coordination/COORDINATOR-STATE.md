@@ -36,7 +36,8 @@ orca orchestration check --wait --types worker_done,escalation,question,status -
 
 | 대상 | 상태 |
 |---|---|
-| **W5 라이브 재수집** | **진행 중** (분리 프로세스). 15:32 기준 watch=1500, tier2=58, tier3=1, promotions=369, `watch_outside_universe=0`, `api_errors=0`. 데이마켓 → 프리(17:00) → **정규장(22:30)** → 애프터(~08:50) |
+| **W5 라이브 재수집** | **진행 중** (분리 프로세스 PID 29236·29704, 14:25 기동). 15:32 기준 watch=1500, tier2=58, tier3=1, promotions=369, `watch_outside_universe=0`, `api_errors=0`. 데이마켓 → 프리(17:00) → **정규장(22:30)** → 애프터(~08:50) |
+| **W5-b 관찰 교대** | **17:15 기동** — 원 W5 에이전트 PTY 가 런타임 문제로 유실돼(출력 0줄, 구 dispatch 조회 불가) 관찰 임무만 새 에이전트로 교대. `task_999bd2c75b52`/term_9727154b. 수집기 접촉 금지 명시. 원 태스크 `task_04201cf60649` 는 dispatched 로 남음 — W5-b 완료 시 코디네이터가 수동 정리 |
 | **§3-(B) 정리 3건** | **전부 머지 완료** — W2 U-4(`0dc427f`, 실유출 1건 수정: `UnicodeDecodeError.args` 바이트 원문), W7 사전등록 개정(`a492810`, A6/A7 충돌 없음 판정), W3 사전등록 정합(`2961e7a`, P0 3+P1+P2 2, 신규 22테스트). **통합 773 passed·1 skipped 실측** |
 | **W7 후속 개정** | **머지 완료** — §7-e 분할 탐지 문언 확정(r=1d수정/1m원주가 비율, 경계 급변 ≥1.5배, `split_dates` 인자, `split_excluded` 카운트, 미전달 시 주 분석 금지)·§2.2 일봉 as-of 앵커 의무·§2.7 시총 ±10% 밴드 |
 | **W3 구현 후속** | **머지 완료** (`fa6b45a` 머지, **795 passed·1 skipped 실측**) — 분할 파이프라인·일봉 as-of 앵커·시총 밴드. 분석 착수 전 코드 작업 끝 |
