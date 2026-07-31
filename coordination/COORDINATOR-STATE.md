@@ -1,119 +1,122 @@
-# 코디네이터 상태 스냅샷 (오케스트레이션 리셋 대비)
+# 코디네이터 상태 — 새 세션 인수인계용
 
-작성: 2026-07-31 12:5x KST · main = `4869293` · **694 tests green**
+갱신: 2026-07-31 15:32 KST · main = `1082c76` · **739 tests green**
 
-> Orca 런타임 재시작으로 코디네이터 세션이 `legacy_read_only` 가 됐다
-> (task-create·dispatch·check·reply 전부 거부, `terminal send`·읽기는 동작).
-> `orca orchestration reset --all` 로 복구 예정 — **task/dispatch/message/gate 는 전부 소실**된다.
-> 코드·git·워크트리·터미널은 보존된다. 이 문서가 재개의 유일한 기준점이다.
+> **새 세션에서 이 프로젝트의 코디네이터를 이어받는 경우 이 문서부터 읽어라.**
+> 배경·전략·아키텍처는 `docs/00_HANDOFF.md`, 계약 정본은 `docs/04_contracts.md`.
 
 ---
 
-## 1. 리셋 시점의 태스크 목록
+## 0. 인수 절차 (3분)
 
-`task-list` 가 막혀 대화 컨텍스트로 재구성했다. **ID 는 리셋 후 무효**가 되며, 재개 시
-`coordination/specs/` 의 원문으로 새 태스크를 만들면 된다.
+```bash
+# 1) 내 터미널 핸들 확인 (루트 워크트리에서 실행 중인 에이전트 터미널)
+orca terminal list --worktree "id:12e59c9d-6eff-4602-8e62-802907e489b4::C:/Users/dongh/toss_trade" --json
 
-| 태스크 ID | 워커 | 내용 | 상태 | 스펙 원문 |
-|---|---|---|---|---|
-| `task_8d1d6e2a6dd1` | W1 | API 코어 + 라이브 실측 + 픽스처/목서버 | 완료·머지 | `specs/w1_spec.md` |
-| `task_83dfb38ecc1a` | W1 | A4 정밀도 반올림 | 완료·머지 | `specs/w1_a4.md` |
-| `task_774e5908debd` | W1 | **감사 수정** (토큰 리스·rate limit·가드레일) | 완료·머지 `d787c41` | `specs/fix_w1.md` |
-| `task_7d38d9ffba93` | W2 | 유니버스 빌더 + 스토리지 | 완료·머지 | `specs/w2_spec.md` |
-| `task_efd430977bd7` | W2 | A3 `imbalance_signed` 개명 | 완료·머지 | `specs/w2_followup.md` |
-| `task_f78c45ac82b3` | W2 | events 중복 방지(UNIQUE+UPSERT+마이그레이션) | 완료·머지 | `specs/w2_dedup.md` |
-| `task_9d07db149b14` | W2 | **`build_universe` 진입점** | 완료·머지 `15022a2` | `specs/fix_w2.md` |
-| `task_823a5fc90a8c` | W3 | analyzer(baselines/labeling/features/evaluate)+synth | 완료·머지 | `specs/w3_spec.md` |
-| `task_2b2108cd8b6c` | W4 | 티어드 수집 루프 + 검출기 | 완료·머지 | `specs/w4_spec.md` |
-| `task_8766fea31a7d` | W4 | A5 반영 + 정밀도 텔레메트리 | 완료·머지 | `specs/w4_a5.md` |
-| `task_4d406f11280e` | W4 | 이벤트 재검출 억제 + 알림 등급 | 완료·머지 | `specs/w4_dedup.md` |
-| `task_0bcb54607ee9` | W4 | 리플레이 불변식 수정(통합 실패) | 완료·머지 | (대화 내 지시) |
-| `task_59b9b6e505d3` | W4 | **감사 blocker A/B** | 완료·머지 `cebf32b` | `specs/fix_w4.md` |
-| `task_4b3c32767a89` | W5 | ops·런북·시크릿 위생·dryrun | 완료·머지 | `specs/w5_spec.md` |
-| `task_4c8c49285757` | W5 | **라이브 리허설** | 수집 완주, **최종 리포트 진행 중** | `specs/w5_rehearsal.md` |
-| `task_88a85411d02f` | W6 | 적대적 감사 (fable) | 완료·머지 | `specs/w6_audit.md` |
-| `task_ebd95d1bd930` | W6b | 적대적 감사 (opus, 독립) | 완료·머지 | `specs/w6b_audit.md` |
-| `task_6b169dfd7810` | W7 | 사전등록 문서 | 완료·머지 `2088982` | `specs/w7_prereg.md` |
+# 2) 기존 Run 에 바인딩 — 이것만 하면 워커·수집은 그대로 이어진다
+orca orchestration run-use --id run_92948a1f80a5 --from <내_핸들> --json
 
-## 2. 워커 배치 (워크트리·브랜치·모델)
+# 3) 이제 표준 대기가 동작한다 (내용까지 담아 깨워준다)
+orca orchestration check --wait --types worker_done,escalation,question,status --timeout-ms 570000 --json
+```
 
-| 워커 | 워크트리 | 브랜치 | 모델/effort |
-|---|---|---|---|
-| W1 | `w1-core-api` | `feat/core-api` | claude opus / xhigh |
-| W2 | `w2-universe-store` | `w2-universe-store` | claude sonnet / high (codex 한도 소진으로 교체) |
-| W3 | `w3-analyzer` | `feat/analyzer` | claude opus / high |
-| W4 | `w4-collector` | `w4-collector` | opus/xhigh + **fable/xhigh**(수정 태스크) |
-| W5 | `w5-ops` | `w5-ops` | claude sonnet / high |
-| W6 | `w6-audit` | `w6-audit` | **claude fable / xhigh** |
-| W6b | `w6b-audit-opus` | `w6b-audit-opus` | claude opus / xhigh |
-| W7 | `w7-prereg` | `w7-prereg` | **claude fable / xhigh** |
+**주의**
+- `orchestration check` 는 `--from` 을 **안 받는다**. 다른 명령(`task-create`/`dispatch`/`reply`/`send`)은
+  이 환경에서 `--from <핸들>` 을 **반드시 명시**해야 한다(자동 해석이 안 됨).
+- `consumer_fenced` 가 나오면 바인딩이 풀린 것이다 → `run-use` 로 재바인딩.
+- **감시 스크립트를 새로 만들지 마라.** 세션 초반에 `check --wait` 가 죽어서 우회 감시기를 만들었는데,
+  런타임 재시작 이후에는 `run-use` 한 번으로 표준 방식이 정상 동작한다.
+  우회 감시기는 "브랜치가 움직였다"만 알려줘 rebase 를 완료로 오인하게 만든다.
 
-터미널 핸들은 **재시작마다 바뀐다** — 재개 시
-`orca terminal list --worktree id:<repo>::<path> --json` 으로 항상 재확인할 것.
+---
+
+## 1. 지금 돌아가고 있는 것
+
+| 대상 | 상태 |
+|---|---|
+| **W5 라이브 재수집** | **진행 중** (분리 프로세스). 15:32 기준 watch=1500, tier2=58, tier3=1, promotions=369, `watch_outside_universe=0`, `api_errors=0`. 데이마켓 → 프리(17:00) → **정규장(22:30)** → 애프터(~08:50) |
+| **W1 A7 작업** | 진행 중 — KR 엔드포인트 제거 + 상태파일 권한 하드닝 |
+| 라이브 리스 | **W5 단독 보유.** 다른 워커·코디네이터는 라이브 호출 금지 |
+
+**정규장 개장(22:30) 이 오늘의 본 시험이다.** 확인할 것:
+- **tier3 점유** (데이마켓 1/20 → 정규장에서 얼마나 차는지)
+- 승격 사유 분포를 어제와 대조 — 특히 `evicted` 가 계속 0인지(어제 6,653),
+  스코어 기반(`precursor`/`confirm`) 비중이 오르는지
+- **개장 15분(22:30~22:45)** 이 가장 값진 구간 (LULD 밴드 2배, HOD 46.6% 형성)
+
+검증 스크립트: `C:/Users/dongh/.claude/jobs/236dc45f/tmp/verify_recollect.py`
+(단, `PYTHONIOENCODING=utf-8` 없이 실행하면 cp949 로 죽는다 — 콘솔 비ASCII 출력 문제)
+
+---
+
+## 2. 오늘(7/31) 완료된 것
+
+- **오케스트레이션 리셋 후 복구** — `run_92948a1f80a5` 신설, 문법 변경(`run-create` → `task-create` → `dispatch`)
+- **감사 blocker 3건 해소**: 토큰 리스 자격증명 단위(A6), 유니버스 필터 수집경로 연결, 룩어헤드/중복
+- **유니버스 필터 실작동 검증**: `symbols` 1,678개, 대형주 5종목(NOK·AMD·ASML·META·GS) **전부 차단**,
+  `$` 우선주 387개 거부, `watch_outside_universe=0` 유지
+- **W1 감사 잔여 22항목 전수 판정** (해소 16 / 수정 2 / 미수정 4) + **새 시크릿 유출 U-4 발견·수정**
+- **W3 M-3(겨울 매매일 분할)·M-4(반일장 곡선 오염)** — 감사는 "나중"으로 분류했으나
+  백필 분석을 지금 오염시키므로 코디네이터가 blocker 로 격상
+- 계약 개정 **A6**(토큰 리스·ForbiddenEndpoint·CAS·limiter) **A7**(KR 제거·상태파일 권한)
+
+---
+
+## 3. 다음에 할 일 (우선순위)
+
+### (A) W1 A7 완료 시 → 머지 게이트 5종
+① pytest 재실행 ② **merge-base 기준** 소유권 diff ③ 계약 준수 ④ 금지사항 스캔
+⑤ **머지 후 통합 스모크** (브랜치 단독 통과가 조합 통과를 보장하지 않는다 — 실제로 걸린 적 있다)
+
+### (B) 분석 착수 전 정리 3건 (아직 미착수)
+1. **사전등록 반영** — W3 가 넘긴 오염목록 해소 2건 + §2.2 문장 + §2.7 제외사유.
+   `docs/12_preregistration.md` 는 **W7 소유**라 W7 에 디스패치할 것.
+2. **HANDOFF-W3 §3 의 사전등록 미정합 3건** (곡선 20일 창 미구현 등).
+3. **U-4 패턴 점검** — `raise X from None` 은 `__context__` 를 지우지 않는다.
+   **W2 의 유니버스 시드 파일 로더**가 같은 유출을 가질 수 있다(W1 지적, 소유 밖이라 미수정).
+   판정법: 예외 체인을 깊이 순회해 원문이 남는지 확인.
+
+### (C) Phase 1-C 분석
+**`docs/12_preregistration.md` 를 먼저 읽고 그대로 따를 것.**
+`docs/13_trial_registry.md` 는 **첫 시행 전에** 생성해야 한다(형식은 사전등록에 규정).
+분석 대상은 오늘 재수집분 + 백필. **어제(7/30) DB(`tossmon_20260730_polluted.db`)는
+표적 모집단이 아니므로 분석에 쓰지 마라** — 파이프라인 검증 증거로만 보존.
+
+---
+
+## 4. 워커 배치 (워크트리·브랜치·모델)
+
 repo id = `12e59c9d-6eff-4602-8e62-802907e489b4`,
-워크트리 경로 = `C:/Users/dongh/orca/workspaces/toss_trade/<name>`.
+워크트리 = `C:/Users/dongh/orca/workspaces/toss_trade/<name>`
 
-## 3. 리셋 시점에 대기 중이던 것
+| 워커 | 워크트리 | 브랜치 | 모델 |
+|---|---|---|---|
+| W1 | `w1-core-api` | `feat/core-api` | opus/xhigh |
+| W2 | `w2-universe-store` | `w2-universe-store` | sonnet/high |
+| W3 | `w3-analyzer` | `feat/analyzer` | opus/high |
+| W4 | `w4-collector` | `w4-collector` | opus/xhigh + fable/xhigh |
+| W5 | `w5-ops` | `w5-ops` | sonnet/high |
+| W6 / W6b / W7 | `w6-audit` / `w6b-audit-opus` / `w7-prereg` | 동명 | fable / opus / fable |
 
-1. **W5 최종 리포트** — 야간 리허설 결과. 요구 항목:
-   세션별 커버리지, 세션 전환 4회, **그룹별 예산 실측 vs 계산치**, 429·결측·재시작 이력,
-   **승격 사유별 정밀도**(promotions 17,144건의 reason 별 분해 + 평균 체류시간),
-   **events 216건의 `rvol_gated` 별 분리**, tape_gaps 세션별 발생률,
-   그리고 **"이 데이터는 표적 모집단이 아니다"** 는 한계 명시.
-2. 전 워커 `coordination/HANDOFF-<ID>.md` 작성 (리셋 직전 지시).
+**터미널 핸들은 재시작마다 바뀐다.** 항상 `terminal list --worktree ... --json` 으로 재확인하고,
+워크트리당 핸들이 여러 개면 **에이전트가 아닌 셸에 디스패치하면 `no recognized agent detected`** 가 난다
+— 순서대로 시도해 성공하는 것을 쓰면 된다.
 
-## 4. 리셋 후 즉시 디스패치할 예정이던 것
+스펙 원문: `coordination/specs/` (17+개). 워커별 재개 지점: `coordination/HANDOFF-*.md`.
 
-### (A) W4 — 감사 후속 2건 [최우선]
-1. **`ForbiddenEndpoint` 미처리 예외** — A6 로 `TossApiError` 상속을 끊었더니
-   `loops.py` 의 `except (TossApiError, OSError)` 에 안 잡혀 **수집 루프가 죽는다.**
-   `except ForbiddenEndpoint: ctx.shutdown() + 경보` 를 명시적으로 넣어야 한다. (W1 이 넘긴 건)
-2. **가짜 ERROR 로그** — `budget: RANKING predicted 0.33 req/s > target 3.50 —
-   랭킹은 축소 대상이 아니다`. **0.33 은 3.50 보다 크지 않다.** 비교/메시지 로직 버그.
-   무인 운영에서 가짜 경보는 경보 무시 습관을 만든다.
+---
 
-### (B) 감사 잔여 항목 (두 감사 합쳐 20여 건)
-`docs/10_audit.md` §5, `docs/10_audit_b.md` 말미의 "Phase 2 착수 전 해소" 목록.
-blocker 3건은 해소됐고, **강력권고 다수가 미처리**다. 특히:
-- H-9 재시작 구멍 탐지(W4 가 처리했다고 보고 — 검증 필요)
-- **미확인 1번: `X-RateLimit-Limit` 단위 실측** — 다음 라이브 리스에서 헤더 한 줄 찍으면 확정.
-  가장 싼 미확인 해소.
-- **M-3 겨울 UTC 날짜 분할 — 2026-11-01 부터 발현**. 그 전에 끝내야 한다.
+## 5. 이 세션에서 비싸게 배운 운영 규율
 
-### (C) 분석 단계 (Phase 1-C)
-`docs/12_preregistration.md` 를 **먼저 읽고** 그대로 따를 것.
-`docs/13_trial_registry.md` 는 **첫 시행 전에** 생성해야 한다(형식은 사전등록 문서에 규정).
-분석 착수 전 필수 선행: **유니버스 필터가 적용된 상태로 재수집** (야간 데이터는 표적 모집단이 아님).
-
-## 5. 라이브 리스 상태
-
-**아무도 보유하지 않음.** W5 구코드 collector 정상 종료 + `token_state.json.lock` 해제 확인 완료.
-
-⚠️ **전환 규칙 (계약 A6)**: 리스 위치가 `{state_path}.lock`(CWD 종속) →
-`sha256(client_id)` 기반 리포 밖 고정 위치(`TOSSMON_LEASE_DIR` 또는 LOCALAPPDATA)로 바뀌었다.
-**구코드 프로세스의 락은 신코드에게 보이지 않는다.** 구코드 라이브 프로세스를 완전히 종료하고
-락 해제를 확인한 뒤에만 신코드 라이브 프로세스를 띄울 것.
-
-## 6. 운영 규율 (재개하는 코디네이터가 반드시 지킬 것)
-
-- **백그라운드 `check --wait` 에 의존하지 마라.** 이 환경에서 반복적으로 죽는다
-  (내가 이것 때문에 완료 보고 4건과 워커 질문 1건을 놓쳤다).
-  **매 턴 `orca orchestration inbox --limit N --json` 을 직접 확인**하라.
-- **워커 주장을 믿지 말고 게이트를 직접 재실행**하라: ① pytest 재실행 ② **merge-base 기준**
-  소유권 diff(`git diff main..branch` 는 main 이 앞서면 오탐) ③ 계약 시그니처 ④ 금지사항 스캔
-  ⑤ **머지 후 통합 스모크**(브랜치 단독 통과가 조합 통과를 보장하지 않는다 — 실제로 걸린 적 있다).
-- **터미널 핸들은 재시작마다 바뀐다.** 항상 `terminal list` 로 재확인.
-- **idle 워커는 오케스트레이션 메시지를 안 읽는다.** 긴급 지시는 `terminal send`.
+- **워커 주장을 믿지 말고 게이트를 직접 재실행하라.** "전체 통과"라는 보고가 실제로는
+  환경 문제로 일부 미실행이었던 적이 있다.
+- **소유권 검증은 `git diff main..branch` 가 아니라 merge-base 기준.** main 이 앞서면 오탐이 난다.
+- **idle 워커는 오케스트레이션 메시지를 안 읽는다.** 긴급 지시는 `orca terminal send`.
+- **`git checkout <ref> -- <path>` 는 인덱스에 스테이징까지 한다** — 워커에게 안내할 때
+  `git reset` 으로 언스테이지하라고 함께 알릴 것.
+- **콘솔 출력에 비ASCII 금지** — Windows cp949 에서 `UnicodeEncodeError` 로 죽는다.
+  실제로 supervisor 가 이것 때문에 STOP 직후 죽어 collector 가 고아 프로세스로 남을 뻔했다.
+- **무인 프로세스를 에이전트 세션의 자식으로 띄우지 마라** — 세션 정리 때 함께 죽는다.
+  `Start-Process` 분리 또는 작업 스케줄러.
+- **환경이 바뀌면 우회 수단을 굳히지 말고 원래 방식을 재시험하라** (§0 의 `check --wait` 사례).
 - codex 워커가 지출 한도에 걸리면 **증액 요청하지 말고 claude 로 교체**.
-- `git checkout <ref> -- <path>` 는 **인덱스에 스테이징까지** 한다 — 워커에게 안내할 때
-  반드시 `git reset` 으로 언스테이지하라고 함께 알릴 것(소유권 위반 오탐의 원인).
-
-## 7. 문서 지도
-
-- **`docs/00_HANDOFF.md`** — Phase 2 착수자용 종합 인수인계 (여기부터 읽을 것)
-- `docs/04_contracts.md` — **정본 계약** (개정 A1~A6)
-- `docs/10_audit.md` / `docs/10_audit_b.md` — 적대적 감사 2건 (fable / opus 독립)
-- `docs/12_preregistration.md` — 분석 사전등록 (분석 착수 전 필독)
-- `docs/06_live_facts.md`, `docs/11_live_rehearsal.md` — 라이브 실측
-- `coordination/specs/` — **워커 스펙 원문** (리셋 후 태스크 재생성용)
-- `coordination/HANDOFF-*.md` — 워커별 재개 지점
