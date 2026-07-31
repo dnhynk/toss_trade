@@ -108,13 +108,16 @@ def test_curve_is_mean_per_minute_position() -> None:
             rows.append((base + m * MIN_MS, 100, 100, 100, 100, (m + 1) * 10 * mult))
     cal = [_one_session_day("2026-06-01", d0, 3), _one_session_day("2026-06-02", d1, 3)]
     curve = B.minute_of_session_volume_curve(_candles(rows), cal)
-    assert list(curve.index) == [("regular", 0), ("regular", 1), ("regular", 2)]
-    assert curve.loc[("regular", 0)] == pytest.approx((10 + 20) / 2)
-    assert curve.loc[("regular", 1)] == pytest.approx((20 + 40) / 2)
-    assert curve.loc[("regular", 2)] == pytest.approx((30 + 60) / 2)
+    # 색인은 (세션, 세션길이분, 분위치) — 길이가 키에 들어간다 (감사 M-4)
+    assert list(curve.index) == [("regular", 3, 0), ("regular", 3, 1), ("regular", 3, 2)]
+    assert curve.index.names == ["session", "session_len_min", "minute"]
+    assert curve.loc[("regular", 3, 0)] == pytest.approx((10 + 20) / 2)
+    assert curve.loc[("regular", 3, 1)] == pytest.approx((20 + 40) / 2)
+    assert curve.loc[("regular", 3, 2)] == pytest.approx((30 + 60) / 2)
     cum = curve.attrs[B.CURVE_CUM_KEY]
-    assert cum.loc[("regular", 2)] == pytest.approx(((10 + 20 + 30) + (20 + 40 + 60)) / 2)
-    assert curve.attrs[B.CURVE_DAYS_KEY][("regular", 0)] == 2
+    assert cum.loc[("regular", 3, 2)] == pytest.approx(
+        ((10 + 20 + 30) + (20 + 40 + 60)) / 2)
+    assert curve.attrs[B.CURVE_DAYS_KEY][("regular", 3, 0)] == 2
 
 
 def test_curve_counts_missing_minutes_as_zero() -> None:
@@ -124,8 +127,8 @@ def test_curve_counts_missing_minutes_as_zero() -> None:
             (d1 + 0 * MIN_MS, 1, 1, 1, 1, 100)]      # 2일차 1분째 봉 없음
     cal = [_one_session_day("2026-06-01", d0, 2), _one_session_day("2026-06-02", d1, 2)]
     curve = B.minute_of_session_volume_curve(_candles(rows), cal)
-    assert curve.loc[("regular", 1)] == pytest.approx(50.0)     # (100 + 0)/2
-    assert curve.attrs[B.CURVE_DAYS_KEY][("regular", 1)] == 2
+    assert curve.loc[("regular", 2, 1)] == pytest.approx(50.0)     # (100 + 0)/2
+    assert curve.attrs[B.CURVE_DAYS_KEY][("regular", 2, 1)] == 2
 
 
 def test_curve_skips_fully_empty_sessions() -> None:
@@ -134,8 +137,8 @@ def test_curve_skips_fully_empty_sessions() -> None:
     rows = [(d0 + m * MIN_MS, 1, 1, 1, 1, 100) for m in range(2)]
     cal = [_one_session_day("2026-06-01", d0, 2), _one_session_day("2026-06-02", d1, 2)]
     curve = B.minute_of_session_volume_curve(_candles(rows), cal)
-    assert curve.loc[("regular", 0)] == pytest.approx(100.0)
-    assert curve.attrs[B.CURVE_DAYS_KEY][("regular", 0)] == 1
+    assert curve.loc[("regular", 2, 0)] == pytest.approx(100.0)
+    assert curve.attrs[B.CURVE_DAYS_KEY][("regular", 2, 0)] == 1
     starts = [s for s, _e, _n, _d in curve.attrs[B.CURVE_SESSION_KEY]]
     assert d1 in starts, "빈 세션도 위치 판정용으로는 등록돼야 한다"
 
@@ -147,7 +150,7 @@ def test_curve_exclude_dates_keeps_windows_but_drops_average() -> None:
     cal = [_one_session_day("2026-06-01", d0, 2), _one_session_day("2026-06-02", d1, 2)]
     curve = B.minute_of_session_volume_curve(_candles(rows), cal,
                                             exclude_dates=["2026-06-02"])
-    assert curve.loc[("regular", 0)] == pytest.approx(100.0), "제외일은 분모에 못 들어간다"
+    assert curve.loc[("regular", 2, 0)] == pytest.approx(100.0), "제외일은 분모에 못 들어간다"
     assert B.curve_locate(curve, d1) == ("regular", 0, d1, d1 + 2 * MIN_MS)
 
 
@@ -162,15 +165,23 @@ def test_curve_handles_holiday_all_none_sessions() -> None:
     assert B.session_windows(holiday) == []
 
 
-def test_curve_is_reusable_across_days_of_different_length() -> None:
-    """조기폐장: 분 위치 키가 날짜와 무관하므로 짧은 날도 그대로 적용된다."""
+def test_curve_separates_days_of_different_session_length() -> None:
+    """세션 길이가 다르면 **버킷이 갈린다** (감사 M-4).
+
+    이 테스트는 이전 구현의 의도를 뒤집은 것이다 — 예전에는 길이가 달라도 같은
+    `(session, minute)` 버킷을 공유했고, 그것이 바로 반일장 오염의 원인이었다.
+    """
     d0, d1 = 0, 86_400_000
     rows = ([(d0 + m * MIN_MS, 1, 1, 1, 1, 100) for m in range(5)]
             + [(d1 + m * MIN_MS, 1, 1, 1, 1, 100) for m in range(2)])
     cal = [_one_session_day("2026-06-01", d0, 5), _one_session_day("2026-06-02", d1, 2)]
     curve = B.minute_of_session_volume_curve(_candles(rows), cal)
-    assert curve.attrs[B.CURVE_DAYS_KEY][("regular", 0)] == 2
-    assert curve.attrs[B.CURVE_DAYS_KEY][("regular", 4)] == 1, "짧은 날은 뒤 분에 기여 못함"
+    cnt = curve.attrs[B.CURVE_DAYS_KEY]
+    assert cnt[("regular", 5, 0)] == 1, "긴 날과 짧은 날이 같은 버킷을 쓰면 안 된다"
+    assert cnt[("regular", 2, 0)] == 1
+    assert ("regular", 5, 4) in cnt
+    assert ("regular", 2, 4) not in cnt, "짧은 날에는 minute 4 가 존재하지 않는다"
+    assert curve.attrs[B.CURVE_LENGTHS_KEY]["regular"] == {5: 1, 2: 1}
 
 
 # --------------------------------------------------------------------------- #

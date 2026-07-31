@@ -158,26 +158,48 @@ def daily_volume_z(baseline: dict, vol_qu: int, log: bool = True) -> float:
 CURVE_SESSION_KEY = "sessions"
 CURVE_CUM_KEY = "cum_curve"
 CURVE_DAYS_KEY = "n_days_by_key"
+CURVE_LENGTHS_KEY = "session_lengths"
+CURVE_DROPPED_KEY = "dropped_below_min_days"
+
+
+def session_len_min(win: SessionWindow) -> int:
+    """세션 길이(분). 조기폐장일은 정상일보다 짧다."""
+    return int((win.end_ms - win.start_ms) // MIN_MS)
 
 
 def minute_of_session_volume_curve(df_1m: pd.DataFrame,
                                    calendar: list[UsMarketDay], *,
-                                   exclude_dates: list[str] | tuple[str, ...] | None = None
-                                   ) -> pd.Series:
+                                   exclude_dates: list[str] | tuple[str, ...] | None = None,
+                                   min_days: int = 1) -> pd.Series:
     """세션 내 분 위치별 **평균 봉거래량** 곡선 (시간대 보정 RVOL 의 분모).
 
-    index: MultiIndex (session, minute_of_session), value: 평균 vol_qu (float).
-    index 는 날짜와 무관하므로 **다른 날에 그대로 재사용**할 수 있다.
+    index: MultiIndex **(session, session_len_min, minute_of_session)**,
+    value: 평균 vol_qu (float). index 는 날짜와 무관하므로 같은 길이의 다른 날에 그대로
+    재사용할 수 있다.
+
+    **세션 길이가 키에 들어간다 (감사 M-4 수정).** 조기폐장(반일장, 정규장 210분)과
+    정상일(390분)은 같은 `minute` 값이 시장에서 전혀 다른 국면을 뜻한다 — 반일장의
+    minute 209 는 **종가 경매**이고 정상일의 minute 209 는 한산한 장중이다. 길이를 키에서
+    빼면 종가 스파이크가 정상일 분모를 20~100배로 부풀려 그 분의 `rvol_bar` 를 0.04 로
+    죽이고, 반대로 반일장 종가를 허위 버스트로 만든다 (docs/07 §2.4a).
 
     계약 C-7 의 `rvol()` 시그니처가 calendar 를 받지 않으므로, 세션 판정에 필요한 정보는
     curve 가 `Series.attrs` 로 운반한다:
         attrs["sessions"]      [(start_ms, end_ms, session, date)] 시간순
         attrs["cum_curve"]     같은 index 의 **누적** 평균거래량 (세션 시작~해당 분)
-        attrs["n_days_by_key"] 각 (session, minute) 에 기여한 세션 수
+        attrs["n_days_by_key"] 각 (session, len, minute) 에 기여한 세션 수
+        attrs["session_lengths"]        {session: {길이분: 관측 세션 수}} — 반일장이
+                                        분리됐다는 사실과 그 건수를 드러낸다
+        attrs["dropped_below_min_days"] min_days 미달로 버려진 (session, len) 목록
 
     `exclude_dates` (A1 §2 확장): 그 날짜들은 **평균 계산에서 제외**하되 세션 윈도우는
     attrs 에 그대로 등록한다. 급등 당일을 분모에 넣으면 RVOL 이 1 쪽으로 축소되는
     자기오염이 생기므로, 평가 대상 날짜는 반드시 제외해야 한다 (docs/07 §2.4).
+
+    `min_days`: 관측 세션 수가 이 값 미만인 (session, len) 버킷은 **통째로 버린다**(NaN).
+    기본 1 은 기존 동작 유지값이고, **사전등록 §2.2 의 주 분석은 10 을 요구한다**.
+    반일장처럼 드문 길이는 여기서 걸러져 RVOL 미가용 → `rvol_gated=False` 로 흘러간다
+    (docs/07 §2.4a).
 
     결측 규칙: 봉이 없는 분은 거래량 0. 단 (날짜, 세션) 전체가 비면 그 세션은 제외.
     """
@@ -188,31 +210,39 @@ def minute_of_session_volume_curve(df_1m: pd.DataFrame,
         by_ts = {int(t): int(v)
                  for t, v in zip(df_1m["ts_ms"].tolist(), df_1m["vol_qu"].tolist())}
 
-    bar_sum: dict[tuple[str, int], int] = {}
-    cum_sum: dict[tuple[str, int], int] = {}
-    day_cnt: dict[tuple[str, int], int] = {}
+    bar_sum: dict[tuple[str, int, int], int] = {}
+    cum_sum: dict[tuple[str, int, int], int] = {}
+    day_cnt: dict[tuple[str, int, int], int] = {}
     sessions: list[tuple[int, int, str, str]] = []
+    lengths: dict[str, dict[int, int]] = {}
 
     for md in calendar:
         for name, win in session_windows(md):
             sessions.append((win.start_ms, win.end_ms, name, md.date))
             if md.date in skip:
                 continue                      # 세션 윈도우만 등록, 평균에서는 제외
-            n = int((win.end_ms - win.start_ms) // MIN_MS)
+            n = session_len_min(win)
             minute_vols = [by_ts.get(win.start_ms + m * MIN_MS, 0) for m in range(n)]
             if not any(minute_vols):
                 continue                      # 수집 중단 세션은 평균에서 제외
+            lengths.setdefault(name, {})
+            lengths[name][n] = lengths[name].get(n, 0) + 1
             running = 0
             for m, v in enumerate(minute_vols):
                 running += v
-                key = (name, m)
+                key = (name, n, m)
                 bar_sum[key] = bar_sum.get(key, 0) + v
                 cum_sum[key] = cum_sum.get(key, 0) + running
                 day_cnt[key] = day_cnt.get(key, 0) + 1
 
+    # 관측이 부족한 (세션, 길이) 버킷은 통째로 버린다 — 반일장처럼 드문 길이가
+    # 자기 자신만으로 분모가 되어 RVOL≡1 이 되는 것을 막는다.
+    dropped = sorted({(s, ln) for (s, ln, _m), c in day_cnt.items() if c < min_days})
+    keys = sorted(k for k, c in day_cnt.items() if c >= min_days)
+
     sessions.sort()
-    keys = sorted(day_cnt)
-    idx = pd.MultiIndex.from_tuples(keys or [(None, None)], names=["session", "minute"])
+    idx = pd.MultiIndex.from_tuples(keys or [(None, None, None)],
+                                    names=["session", "session_len_min", "minute"])
     if not keys:
         idx = idx[:0]
     curve = pd.Series([bar_sum[k] / day_cnt[k] for k in keys], index=idx,
@@ -222,6 +252,8 @@ def minute_of_session_volume_curve(df_1m: pd.DataFrame,
     curve.attrs[CURVE_SESSION_KEY] = sessions
     curve.attrs[CURVE_CUM_KEY] = cum
     curve.attrs[CURVE_DAYS_KEY] = day_cnt
+    curve.attrs[CURVE_LENGTHS_KEY] = lengths
+    curve.attrs[CURVE_DROPPED_KEY] = dropped
     return curve
 
 
@@ -248,6 +280,21 @@ def curve_locate(curve: pd.Series, ts_ms: int, *,
     return None
 
 
+def curve_key(curve: pd.Series, ts_ms: int, *,
+              calendar: list[UsMarketDay] | None = None
+              ) -> tuple[str, int, int] | None:
+    """`ts_ms` → 곡선 색인 키 `(session, session_len_min, minute)` (M-4 이후).
+
+    세션 길이가 키에 포함되므로 조기폐장일은 정상일 곡선을 **참조하지 않는다**.
+    해당 길이의 버킷이 곡선에 없으면(관측 부족 등) 호출자는 NaN 을 받는다.
+    """
+    loc = curve_locate(curve, ts_ms, calendar=calendar)
+    if loc is None:
+        return None
+    name, minute, start_ms, end_ms = loc
+    return (name, int((end_ms - start_ms) // MIN_MS), minute)
+
+
 # --------------------------------------------------------------------------- #
 # C-7: rvol
 # --------------------------------------------------------------------------- #
@@ -266,11 +313,12 @@ def rvol(df_1m: pd.DataFrame, curve: pd.Series, ts_ms: int, *,
     loc = curve_locate(curve, ts_ms, calendar=calendar)
     if loc is None:
         return float("nan")
-    name, minute, start_ms, _end = loc
+    _name, _minute, start_ms, _end = loc
+    key = curve_key(curve, ts_ms, calendar=calendar)
     cum: pd.Series | None = curve.attrs.get(CURVE_CUM_KEY)
-    if cum is None or (name, minute) not in cum.index:
+    if cum is None or key is None or key not in cum.index:
         return float("nan")
-    expected = float(cum.loc[(name, minute)])
+    expected = float(cum.loc[key])
     if not expected > 0:
         return float("nan")
     sub = df_1m[(df_1m["ts_ms"] >= start_ms) & (df_1m["ts_ms"] <= ts_ms)]
@@ -281,13 +329,10 @@ def rvol(df_1m: pd.DataFrame, curve: pd.Series, ts_ms: int, *,
 def rvol_bar(df_1m: pd.DataFrame, curve: pd.Series, ts_ms: int, *,
              calendar: list[UsMarketDay] | None = None) -> float:
     """단일 분봉 기준 시간대 보정 상대거래량 (봉이 없으면 거래량 0 → 0.0)."""
-    loc = curve_locate(curve, ts_ms, calendar=calendar)
-    if loc is None:
+    key = curve_key(curve, ts_ms, calendar=calendar)
+    if key is None or key not in curve.index:
         return float("nan")
-    name, minute, _start, _end = loc
-    if (name, minute) not in curve.index:
-        return float("nan")
-    expected = float(curve.loc[(name, minute)])
+    expected = float(curve.loc[key])
     if not expected > 0:
         return float("nan")
     row = df_1m[df_1m["ts_ms"] == ts_ms]
@@ -307,7 +352,7 @@ def rvol_series(df_1m: pd.DataFrame, curve: pd.Series, *,
     if df_1m is None or df_1m.empty:
         return empty
     cum: pd.Series | None = curve.attrs.get(CURVE_CUM_KEY)
-    cum_map = ({(str(s), int(m)): float(v) for (s, m), v in cum.items()}
+    cum_map = ({(str(s), int(ln), int(m)): float(v) for (s, ln, m), v in cum.items()}
                if cum is not None else {})
     sessions = _session_table(curve, calendar)
     df = df_1m.sort_values("ts_ms")
@@ -329,7 +374,9 @@ def rvol_series(df_1m: pd.DataFrame, curve: pd.Series, *,
             out.append(float("nan"))
             continue
         running += v
-        exp = cum_map.get((cur[2], int((t - cur[0]) // MIN_MS)), 0.0)
+        # 키에 세션 길이를 포함한다 — 조기폐장일이 정상일 분모를 쓰지 않도록 (M-4)
+        exp = cum_map.get((cur[2], int((cur[1] - cur[0]) // MIN_MS),
+                           int((t - cur[0]) // MIN_MS)), 0.0)
         out.append(running / exp if exp > 0 else float("nan"))
     return pd.Series(out, index=pd.Index(ts_list, dtype="int64", name="ts_ms"),
                      dtype="float64", name="rvol")
