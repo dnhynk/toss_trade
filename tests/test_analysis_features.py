@@ -23,6 +23,7 @@ def coil() -> tuple[pd.DataFrame, dict, pd.Series, dict]:
 
 
 def _extract(df, truth, curve, base, t0, **kw):
+    kw.setdefault("prev_close_u", truth["prev_close_u"])   # 원주가 1분봉 종가 (§2.3)
     return F.extract_precursor_features(
         df, truth["rankings"], t0, curve=curve, calendar=truth["calendar"],
         baseline=base, shares_outstanding_qu=truth["shares_outstanding_qu"],

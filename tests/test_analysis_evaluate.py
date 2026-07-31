@@ -64,8 +64,12 @@ def test_every_result_declares_gate_policy(pipe) -> None:
     res = E.run_all(events, feats, bundle.rankings, bundle.df_1m)
     assert set(res) == {"q1_volume_leadtime", "q2_ranking_lead_lag",
                         "q3_daymarket_persistence", "q4_dump_speed", "q5_expectancy",
-                        "q6_time_of_day", "base_rates"}
+                        "q6_time_of_day", "base_rates", "sample_filter"}
     for name, df in res.items():
+        if name == "sample_filter":
+            # 표본 필터는 게이트 **이전** 단계라 gate_policy 를 달지 않는다
+            assert {"reason", "n", "n_total", "n_kept"} <= set(df.columns)
+            continue
         assert "gate_policy" in df.columns, name
         assert "n_ungated_excluded" in df.columns, name
         assert (df["gate_policy"] == "exclude").all(), name

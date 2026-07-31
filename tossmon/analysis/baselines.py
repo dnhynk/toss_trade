@@ -167,10 +167,34 @@ def session_len_min(win: SessionWindow) -> int:
     return int((win.end_ms - win.start_ms) // MIN_MS)
 
 
+def _window_dates(calendar: list[UsMarketDay], window_days: int,
+                  as_of_date: str | None, skip: set[str]) -> set[str]:
+    """분모에 넣을 매매일 date 집합 (사전등록 §2.2).
+
+    `as_of_date` 가 주어지면 **그 날짜보다 엄격히 이전**만 후보가 되고, 그중 최근
+    `window_days` 개를 쓴다. 휴장일(세션 없음)과 `exclude_dates` 는 후보에서 빠진다.
+    """
+    dates = sorted({md.date for md in calendar
+                    if session_windows(md) and md.date not in skip})
+    if as_of_date is not None:
+        dates = [d for d in dates if d < as_of_date]
+    if window_days is not None and window_days > 0:
+        dates = dates[-window_days:]
+    return set(dates)
+
+
+#: 사전등록 §2.2 가 얼린 곡선 파라미터. 주 분석은 반드시 이 값으로 부른다
+#: (`prereg_volume_curve()` 가 둘을 한 번에 적용한다).
+PREREG_WINDOW_DAYS = 20
+PREREG_MIN_DAYS = 10
+
+
 def minute_of_session_volume_curve(df_1m: pd.DataFrame,
                                    calendar: list[UsMarketDay], *,
                                    exclude_dates: list[str] | tuple[str, ...] | None = None,
-                                   min_days: int = 1) -> pd.Series:
+                                   min_days: int = 1,
+                                   window_days: int = PREREG_WINDOW_DAYS,
+                                   as_of_date: str | None = None) -> pd.Series:
     """세션 내 분 위치별 **평균 봉거래량** 곡선 (시간대 보정 RVOL 의 분모).
 
     index: MultiIndex **(session, session_len_min, minute_of_session)**,
@@ -201,10 +225,18 @@ def minute_of_session_volume_curve(df_1m: pd.DataFrame,
     반일장처럼 드문 길이는 여기서 걸러져 RVOL 미가용 → `rvol_gated=False` 로 흘러간다
     (docs/07 §2.4a).
 
+    `window_days` / `as_of_date` (사전등록 §2.2): 평가일 D(`as_of_date`)에 대해
+    **엄격히 과거** 최근 `window_days` 매매일만 분모에 넣는다. 자기오염 금지를 옵션이 아니라
+    **기간 분리로 구조적으로 강제**하는 장치다 (docs/07 §2.4b).
+    `as_of_date=None` 이면 캘린더의 마지막 `window_days` 매매일을 쓴다(앵커 없음).
+    세션 윈도우 등록(attrs["sessions"])은 창 밖 날짜도 유지하므로, 창 밖 날의 봉도
+    위치 판정은 되고 분모만 창 안에서 온다.
+
     결측 규칙: 봉이 없는 분은 거래량 0. 단 (날짜, 세션) 전체가 비면 그 세션은 제외.
     """
     _require_single_symbol(df_1m)
     skip = set(exclude_dates or ())
+    in_window = _window_dates(calendar, window_days, as_of_date, skip)
     by_ts: dict[int, int] = {}
     if df_1m is not None and not df_1m.empty:
         by_ts = {int(t): int(v)
@@ -219,7 +251,7 @@ def minute_of_session_volume_curve(df_1m: pd.DataFrame,
     for md in calendar:
         for name, win in session_windows(md):
             sessions.append((win.start_ms, win.end_ms, name, md.date))
-            if md.date in skip:
+            if md.date not in in_window:
                 continue                      # 세션 윈도우만 등록, 평균에서는 제외
             n = session_len_min(win)
             minute_vols = [by_ts.get(win.start_ms + m * MIN_MS, 0) for m in range(n)]
@@ -268,6 +300,18 @@ def _session_table(curve: pd.Series,
         return sorted((w.start_ms, w.end_ms, n, md.date)
                       for md in calendar for n, w in session_windows(md))
     return curve.attrs.get(CURVE_SESSION_KEY, [])
+
+
+def prereg_volume_curve(df_1m: pd.DataFrame, calendar: list[UsMarketDay],
+                        as_of_date: str) -> pd.Series:
+    """사전등록 §2.2 를 **한 번에** 적용한 곡선 — 주 분석은 이것만 쓴다.
+
+    평가일 `as_of_date` 기준 엄격히 과거 20 매매일, (세션, 길이) 버킷당 관측 10일 이상.
+    두 값을 호출자가 따로 넘기다 잊는 사고를 막으려고 하나로 묶었다.
+    """
+    return minute_of_session_volume_curve(
+        df_1m, calendar, window_days=PREREG_WINDOW_DAYS, min_days=PREREG_MIN_DAYS,
+        as_of_date=as_of_date)
 
 
 def curve_locate(curve: pd.Series, ts_ms: int, *,

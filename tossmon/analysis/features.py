@@ -188,6 +188,7 @@ def extract_precursor_features(df_1m: pd.DataFrame, rankings: pd.DataFrame,
                                baseline: dict | None = None,
                                shares_outstanding_qu: int | None = None,
                                prior_events: pd.DataFrame | None = None,
+                               prev_close_u: int | None = None,
                                toss_type: str = TOSS_RANK_TYPE,
                                market_type: str = MARKET_RANK_TYPE) -> dict[str, float]:
     """T0 이전 구간만으로 전조 피처를 만든다. 반환 키는 `feature_names()` 와 동일.
@@ -200,6 +201,9 @@ def extract_precursor_features(df_1m: pd.DataFrame, rankings: pd.DataFrame,
         baseline               `compute_daily_baseline()` — 일봉 z·ATR% 참조
         shares_outstanding_qu  진행분 플로트 로테이션 분모
         prior_events           이력 이벤트(t0_ms 컬럼). 없으면 df_1m 이전 날들로 프록시 계산
+        prev_close_u           직전 매매일 **정규장 마지막 1분봉 종가(원주가)**.
+                               `gap_from_prev_close` 전용이며 없으면 그 피처는 NaN —
+                               일봉(수정주가) 대체는 금지다 (사전등록 §2.3)
         toss_type/market_type  토스 쏠림도에 쓸 랭킹 type 2종
     """
     pre = cut_frame(df_1m, t0_ms, include_t0=include_t0).sort_values("ts_ms")
@@ -225,7 +229,8 @@ def extract_precursor_features(df_1m: pd.DataFrame, rankings: pd.DataFrame,
 
     _volume_features(feats, pre, cutoff, windows_min, curve, calendar, baseline,
                      sess_start)
-    _price_features(feats, pre, cutoff, close_cut, windows_min, baseline, sess_start)
+    _price_features(feats, pre, cutoff, close_cut, windows_min, baseline, sess_start,
+                    prev_close_u)
     _print_activity_features(feats, pre, cutoff, windows_min, sess_start)
     _toss_concentration_features(feats, rk, symbol, cutoff, toss_type, market_type)
     _history_features(feats, pre, cutoff, prior_events, shares_outstanding_qu,
@@ -365,7 +370,8 @@ def _atr_pct(sub: pd.DataFrame, ref_u: int) -> float:
 
 def _price_features(feats: dict, pre: pd.DataFrame, cutoff: int, close_cut: int,
                     windows_min: tuple[int, ...], baseline,
-                    sess_start: int | None) -> None:
+                    sess_start: int | None,
+                    prev_close_u: int | None = None) -> None:
     for w in windows_min:
         sub = pre[pre["ts_ms"] > cutoff - w * MIN_MS]
         if sub.empty:
@@ -411,10 +417,11 @@ def _price_features(feats: dict, pre: pd.DataFrame, cutoff: int, close_cut: int,
                 cnt += 1
     feats["new_high_count_30"] = float(cnt)
 
-    if baseline and baseline.get("close_last_u"):
-        prev_close = int(baseline["close_last_u"])
-        if prev_close > 0:
-            feats["gap_from_prev_close"] = close_cut / prev_close - 1.0
+    # 사전등록 §2.3: 1분봉(원주가)과 일봉(수정주가)의 **가격 수준 직접 비교 금지**.
+    # 전일 종가는 반드시 직전 매매일 정규장 마지막 1분봉 종가(원주가)를 명시로 받는다.
+    # baseline["close_last_u"] 는 수정주가라 여기에 쓰면 분할 종목에서 가짜 갭이 만들어진다.
+    if prev_close_u is not None and int(prev_close_u) > 0:
+        feats["gap_from_prev_close"] = close_cut / int(prev_close_u) - 1.0
 
 
 # --------------------------------------------------------------------------- #
