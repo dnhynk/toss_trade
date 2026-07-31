@@ -45,6 +45,13 @@ orca orchestration check --wait --types worker_done,escalation,question,status -
   스코어 기반(`precursor`/`confirm`) 비중이 오르는지
 - **개장 15분(22:30~22:45)** 이 가장 값진 구간 (LULD 밴드 2배, HOD 46.6% 형성)
 
+**주의 — 돌고 있는 collector 는 기동 시점 코드다.** 15:43 현재도 로그에
+`budget: RANKING predicted 0.33 req/s > target 3.50` 이라는 **가짜 ERROR** 가 찍히는데,
+이건 W4 가 이미 고쳐 머지한 것(`e512463`)이고 **실행 중 프로세스에는 반영되지 않았을 뿐**이다.
+수정이 실패한 것으로 오해하지 마라. 다음 재기동 때 사라진다.
+같은 이유로 `ForbiddenEndpoint` 명시 처리도 이 프로세스에는 없다 — 프로세스가 조용히
+사라지면 그것부터 의심하라.
+
 검증 스크립트: `C:/Users/dongh/.claude/jobs/236dc45f/tmp/verify_recollect.py`
 (단, `PYTHONIOENCODING=utf-8` 없이 실행하면 cp949 로 죽는다 — 콘솔 비ASCII 출력 문제)
 
