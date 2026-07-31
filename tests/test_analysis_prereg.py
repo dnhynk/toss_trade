@@ -259,8 +259,10 @@ def test_window_condition_still_works_without_prev_close() -> None:
 def test_explicit_prev_close_wins_over_chain() -> None:
     df, cal = _two_day_frame(prev_regular_close=100, prev_after_close=100,
                              day_open=100, day_close=131)
-    ev = L.detect_events(df, L.EventParams(), calendar=cal, prev_close_u=1_000)
-    assert ev.empty, "명시 인자가 사슬보다 우선해야 한다 (1000 기준이면 -87%)"
+    # 다일 프레임이므로 (symbol, date) 매핑으로 준다 (3차 감사 F-4)
+    ev = L.detect_events(df, L.EventParams(), calendar=cal,
+                         prev_close_u={("S", cal[1].date): 1_000})
+    assert _on_day(ev, cal[1]).empty, "명시 인자가 사슬보다 우선해야 한다 (1000 기준이면 -87%)"
 
 
 # =========================================================================== #

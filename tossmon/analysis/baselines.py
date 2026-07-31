@@ -42,6 +42,51 @@ def locate_session(md: UsMarketDay, ts_ms: int) -> tuple[str, SessionWindow] | N
     return None
 
 
+#: 각 세션 시작이 **그 매매일의 00:00 ET** 로부터 떨어진 분수 (docs/01 §5 세션 규약).
+#: day 세션만 전일 20:00 ET 시작이라 음수다. 조기폐장은 종료만 당겨지므로 시작 오프셋은
+#: 반일장에서도 그대로다.
+_ET_MIDNIGHT_OFFSET_MIN = {"day": -240, "pre": 240, "regular": 570, "after": 960}
+DAY_MS = 86_400_000
+
+
+def et_midnight_ms(md: UsMarketDay) -> int | None:
+    """그 매매일 date 의 **00:00 ET** (= 일봉 ts 규약, docs/06 §2-2).
+
+    캘린더가 준 세션 시작에서 역산한다 — ET 오프셋을 코드에 박지 않기 위함이며(계약 C-1),
+    서머타임 전환도 캘린더가 이미 반영한 값이라 자동으로 따라온다.
+    세션이 하나도 없는 날(휴장)은 None.
+    """
+    for name in ("regular", "pre", "after", "day"):
+        w = getattr(md, name)
+        if w is not None:
+            return int(w.start_ms - _ET_MIDNIGHT_OFFSET_MIN[name] * MIN_MS)
+    return None
+
+
+def daily_bar_date_table(calendar: list[UsMarketDay]) -> list[tuple[int, str]]:
+    """[(00:00 ET ms, 매매일 date)] 오름차순 — 일봉 ts → 매매일 date 매핑용."""
+    out = [(m, md.date) for md, m in ((md, et_midnight_ms(md)) for md in (calendar or []))
+           if m is not None]
+    return sorted(out)
+
+
+def daily_bar_date(ts_ms: int, table: list[tuple[int, str]]) -> str | None:
+    """일봉 ts 가 속한 **매매일 date**. 매핑 불가면 None.
+
+    **ms 스팬(세션 구간)으로 버킷팅하면 안 된다** — 일봉 ts 는 00:00 ET 라 day 세션이
+    없는 매매일에서는 어느 세션 스팬에도 들어가지 않아 조용히 버려진다
+    (3차 감사 F-1/F-2(b)). 날짜 단위로 매핑하는 것이 유일하게 옳다.
+    """
+    if not table:
+        return None
+    starts = [t[0] for t in table]
+    j = bisect_right(starts, int(ts_ms)) - 1
+    if j < 0:
+        return None
+    start, date = table[j]
+    return date if int(ts_ms) - start < DAY_MS else None
+
+
 def _require_single_symbol(df: pd.DataFrame) -> None:
     if "symbol" in df.columns and not df.empty and df["symbol"].nunique(dropna=True) > 1:
         raise ValueError("단일 심볼 DataFrame 만 허용 (심볼별로 나눠 호출)")
@@ -103,34 +148,47 @@ def compute_daily_baseline(df_1d: pd.DataFrame,
     반환 dict 의 `as_of_applied=False` 가 그 사실을 드러낸다. **주 분석은
     `prereg_daily_baseline()` 로 부른다.**
     """
+    table = daily_bar_date_table(calendar or [])
+    # 앵커 모드: date(안전) > ms(구식·불안전) > 없음
+    if as_of_date is None and as_of_ms is not None and table:
+        # raw ms 를 받았어도 캘린더가 있으면 date 로 승격한다 (3차 감사 F-1 권고)
+        for start_ms, _end_ms, date in _market_day_spans(calendar or []):
+            if start_ms <= int(as_of_ms) < _end_ms:
+                as_of_date = date
+                break
+    if as_of_date is not None and table:
+        mode = "date"
+    elif as_of_ms is not None:
+        mode = "ms_unanchored_by_date"
+    else:
+        mode = None
     empty = {"n_days": 0, "window_days": window_days, "adv20_qu": None, "atr20_u": None,
              "atr20_pct": float("nan"), "close_last_u": None,
              "vol_mean_qu": float("nan"), "vol_std_qu": float("nan"),
              "logvol_mean": float("nan"), "logvol_std": float("nan"),
-             "ret_std": float("nan"), "as_of_ms": None, "as_of_applied": False}
-    if as_of_ms is None and as_of_date is not None:
-        for start_ms, _end_ms, date in _market_day_spans(calendar or []):
-            if date == as_of_date:
-                as_of_ms = int(start_ms)
-                break
-    empty["as_of_ms"] = as_of_ms
-    empty["as_of_applied"] = as_of_ms is not None
+             "ret_std": float("nan"), "as_of_ms": as_of_ms, "as_of_date": as_of_date,
+             "as_of_mode": mode,
+             "as_of_applied": (as_of_date is not None or as_of_ms is not None)}
     if df_1d is None or df_1d.empty:
         return empty
     _require_single_symbol(df_1d)
 
     df = df_1d.sort_values("ts_ms")
-    if as_of_ms is not None:
-        df = df[df["ts_ms"] < int(as_of_ms)]      # 엄격히 과거만
-        if df.empty:
-            return empty
+    if mode == "date":
+        # **매매일 date 단위**로 거른다 (3차 감사 F-1). ms 부등호는 day 세션이 없는
+        # 매매일에서 평가일 자기 일봉(명백한 미래)을 통과시킨다.
+        bar_dates = [daily_bar_date(int(t), table) for t in df["ts_ms"].tolist()]
+        keep = [(d is not None and d < as_of_date) for d in bar_dates]
+        df = df[pd.Series(keep, index=df.index)]
+    elif as_of_ms is not None:
+        df = df[df["ts_ms"] < int(as_of_ms)]      # 캘린더 없음 → 구식 ms 비교(불안전)
+    if df.empty:
+        return empty
     tail = df.iloc[-window_days:]
     vols = [int(v) for v in tail["vol_qu"].tolist() if int(v) > 0]
     closes = [int(c) for c in df["close_u"].tolist()]
 
     out = dict(empty)
-    out["as_of_ms"] = as_of_ms
-    out["as_of_applied"] = as_of_ms is not None
     out["n_days"] = int(len(tail))
     out["close_last_u"] = closes[-1]
 
@@ -377,10 +435,13 @@ def split_ratio_series(df_1m: pd.DataFrame, df_1d: pd.DataFrame,
         if prev is None or int(ts) > prev[0]:
             last_1m[d] = (int(ts), int(close))
 
-    # 매매일별 일봉(수정주가) 종가
+    # 매매일별 일봉(수정주가) 종가 — **날짜 단위로 매핑**한다.
+    # 일봉 ts 는 00:00 ET 라 세션 ms 스팬으로 버킷팅하면 day 세션 없는 매매일에서
+    # 조용히 버려진다 (3차 감사 F-2 트리거 (b)).
+    date_table = daily_bar_date_table(calendar)
     daily: dict[str, tuple[int, int]] = {}
     for ts, close in zip(df_1d["ts_ms"].tolist(), df_1d["close_u"].tolist()):
-        d = _bucket(int(ts))
+        d = daily_bar_date(int(ts), date_table)
         if d is None:
             continue
         prev = daily.get(d)
@@ -409,19 +470,57 @@ def detect_split_dates(df_1m: pd.DataFrame, df_1d: pd.DataFrame,
         놓치지 않기 위함이다.
       * 새 수집은 필요 없다 — 이미 보유한 1분봉(원주가)·일봉(수정주가)만 쓴다.
     """
+    return split_scan_report(df_1m, df_1d, calendar,
+                             threshold=threshold)["split_dates"]
+
+
+def split_scan_report(df_1m: pd.DataFrame, df_1d: pd.DataFrame,
+                      calendar: list[UsMarketDay], *,
+                      threshold: float = SPLIT_RATIO_THRESHOLD) -> dict:
+    """분할 스캔 결과 + §7-e 보고 의무 항목.
+
+    반환 키
+        split_dates          분할 매매일 date 집합
+        n_r_uncomputable     r 을 계산할 수 없었던 매매일 수 (§7-e 보고 의무)
+        r_uncomputable_dates 그 날짜 목록 (정렬)
+        n_widened            결측 구간을 넘어 관측돼 **보수적으로 확대 등록**된 날 수
+        n_observed_days      r 이 계산된 매매일 수
+
+    **보수적 확대 등록 (3차 감사 F-2)**: 점프가 결측 구간을 넘어 관측되면
+    `(마지막 관측 매매일, 관측 매매일]` 구간의 **모든 매매일**을 분할일로 등록한다.
+    구간 내 어느 날이 진짜 분할 유효일인지는 원리상 알 수 없고, 관측일만 등록하면
+    **정작 보호가 필요한 날(진짜 분할일)이 무방비로 남아** 가짜 ±N00% 갭 이벤트가
+    카탈로그에 그대로 들어간다. 놓치는 것보다 넓게 잡는 쪽이 안전하다 —
+    넓힌 날은 `split_excluded`(scope=`symbol_day`) 카운트로 크기가 드러난다.
+    """
     r = split_ratio_series(df_1m, df_1d, calendar)
+    observed = [str(d) for d in r.index]
+    all_days = [md.date for md in (calendar or []) if session_windows(md)]
+    uncomputable = sorted(set(all_days) - set(observed))
+
+    order = {d: i for i, d in enumerate(sorted(all_days))}
     out: set[str] = set()
-    prev: float | None = None
+    widened = 0
+    prev_date: str | None = None
+    prev_val: float | None = None
     lo = 1.0 / threshold
     for d, v in r.items():
+        d = str(d)
         if not (v == v and v > 0):
             continue
-        if prev is not None:
-            jump = v / prev
+        if prev_val is not None:
+            jump = v / prev_val
             if jump >= threshold or jump <= lo:
-                out.add(str(d))
-        prev = v
-    return out
+                # (마지막 관측일, 관측일] 의 모든 매매일 — 결측이 없으면 관측일 1개뿐이다
+                i0 = order.get(prev_date, -1)
+                i1 = order.get(d, -1)
+                span = [x for x in sorted(all_days) if i0 < order[x] <= i1] or [d]
+                out.update(span)
+                widened += max(0, len(span) - 1)
+        prev_date, prev_val = d, v
+    return {"split_dates": out, "n_r_uncomputable": len(uncomputable),
+            "r_uncomputable_dates": uncomputable, "n_widened": widened,
+            "n_observed_days": len(observed)}
 
 
 def detect_split_dates_by_symbol(df_1m: pd.DataFrame, df_1d: pd.DataFrame,
@@ -439,12 +538,19 @@ def detect_split_dates_by_symbol(df_1m: pd.DataFrame, df_1d: pd.DataFrame,
     return out
 
 
-def prereg_daily_baseline(df_1d: pd.DataFrame, as_of_ms: int) -> dict:
-    """사전등록 2.2 일봉 베이스라인 — 주 분석 진입점.
+def prereg_daily_baseline(df_1d: pd.DataFrame, as_of_date: str,
+                          calendar: list[UsMarketDay]) -> dict:
+    """사전등록 §2.2 일봉 베이스라인 — 주 분석 진입점.
 
-    평가일 as_of_ms 기준 엄격히 과거 20 매매일만 쓴다. 앵커를 잊을 수 없게 필수 인자다.
+    평가일 `as_of_date` 기준 **엄격히 과거 20 매매일**만 쓴다. 서명이 (date, calendar) 인
+    이유는 3차 감사 F-1 권고다 — raw ms 를 받으면 호출자가 `t0_ms` 를 넘기는 실수를 막을
+    수 없고, 그러면 **모든 날에서** 평가일 자기 일봉이 통과한다.
     """
-    return compute_daily_baseline(df_1d, DEFAULT_WINDOW_DAYS, as_of_ms=as_of_ms)
+    if not calendar:
+        raise ValueError("prereg_daily_baseline 은 calendar 가 필요하다 "
+                         "(일봉 ts 를 매매일 date 로 매핑해야 한다 — 3차 감사 F-1)")
+    return compute_daily_baseline(df_1d, DEFAULT_WINDOW_DAYS,
+                                  as_of_date=as_of_date, calendar=calendar)
 
 
 def prereg_volume_curve(df_1m: pd.DataFrame, calendar: list[UsMarketDay],

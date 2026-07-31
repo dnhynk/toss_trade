@@ -592,7 +592,8 @@ def apply_sample_filter(events: pd.DataFrame, meta: pd.DataFrame, *,
                         mcap_min_u: int = SAMPLE_MCAP_MIN_U,
                         mcap_max_u: int = SAMPLE_MCAP_MAX_U,
                         split_excluded: int | None = None,
-                        split_dates_applied: bool | None = None
+                        split_dates_applied: bool | None = None,
+                        r_uncomputable: int | None = None
                         ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """사전등록 §2.7 표본 필터. 반환 `(kept, reasons_df)`.
 
@@ -698,8 +699,26 @@ def apply_sample_filter(events: pd.DataFrame, meta: pd.DataFrame, *,
         if hi_band[0] <= mc <= hi_band[1]:
             band["mcap_band_high_kept" if keep else "mcap_band_high_excluded"] += 1
 
-    rows = [{"reason": r, "n": counts[r], "share": counts[r] / n_total,
-             "scope": "event"} for r in EXCLUSION_REASONS]
+    # 3차 감사 F-5: 곡선이 없으면 반일장 검사를 **하지 않은 것**이지 0건이 아니다.
+    half_day_checked = curve is not None
+    rows = []
+    for r in EXCLUSION_REASONS:
+        if r == "half_day_length_sample" and not half_day_checked:
+            rows.append({"reason": r, "n": _NAN, "share": _NAN, "scope": "event",
+                         "note": "curve 미제공 — 검사하지 않음(0건 아님)"})
+        else:
+            rows.append({"reason": r, "n": counts[r], "share": counts[r] / n_total,
+                         "scope": "event"})
+    if not half_day_checked:
+        rows.append({"reason": "(half_day_check_not_run)", "n": _NAN, "share": _NAN,
+                     "scope": "provenance",
+                     "note": "curve 를 넘기지 않아 반일장(세션 길이 표본 부족) 사유를"
+                             " 판정하지 못했다 (3차 감사 F-5)"})
+    if r_uncomputable is not None:
+        rows.append({"reason": "r_uncomputable", "n": int(r_uncomputable),
+                     "share": _NAN, "scope": "symbol_day",
+                     "note": "분할 신호 r 을 계산할 수 없었던 (심볼, 매매일) 수"
+                             " (사전등록 §7-e 보고 의무)"})
     rows += [{"reason": r, "n": band[r], "share": band[r] / n_total,
               "scope": "mcap_band_sensitivity"} for r in MCAP_BAND_ROWS]
     # 사전등록 §7-e: 분할일 당일조건 제외 건수는 **(심볼,매매일) 단위**라 이벤트 제외와
@@ -722,7 +741,8 @@ def run_all(events: pd.DataFrame, feats: pd.DataFrame, rankings: pd.DataFrame,
             df_1m: pd.DataFrame, *, gate: str = "exclude",
             cost_roundtrip: float = 0.01,
             meta: pd.DataFrame | None = None,
-            curve=None, calendar=None) -> dict[str, pd.DataFrame]:
+            curve=None, calendar=None,
+            r_uncomputable: int | None = None) -> dict[str, pd.DataFrame]:
     """검증 질문 6개 + 기저율 대조를 한 번에. 리포트 입력.
 
     `meta`(W2 `Reader.symbols()`)를 주면 사전등록 §2.7 표본 필터를 적용하고 q1~q6 를
@@ -738,7 +758,8 @@ def run_all(events: pd.DataFrame, feats: pd.DataFrame, rankings: pd.DataFrame,
         events, reasons = apply_sample_filter(events, meta, df_1m=df_1m, curve=curve,
                                               calendar=calendar,
                                               split_excluded=split_n,
-                                              split_dates_applied=split_applied)
+                                              split_dates_applied=split_applied,
+                                              r_uncomputable=r_uncomputable)
     else:
         reasons = pd.DataFrame([{
             "reason": "(filter_not_applied)", "n": _NAN, "share": _NAN,
