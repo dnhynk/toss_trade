@@ -695,3 +695,180 @@ async def test_client_counts_every_http_attempt_not_logical_calls(mock_server, t
             "논리 호출 1건의 HTTP 시도 수(1+재시도3)가 노출되지 않는다 — B-3 재발 위험"
     finally:
         await c.aclose()
+
+
+# ================================ 계약 A7 §1 — ALLOWLIST 축소 (감사 G-4)
+
+
+def test_kr_market_calendar_is_no_longer_allowlisted():
+    """미국 전용 프로젝트라 KR 캘린더는 허용 목록에서 빠졌다 (계약 A7 §1).
+
+    감사 G-4 는 미사용 항목 5개를 지목했으나, 실제로 어떤 코드도 쓰지 않는 것은
+    이것 하나뿐이었다(나머지 4개는 live_probe 가 _request 로 사용 중).
+    """
+    with pytest.raises(ForbiddenEndpoint):
+        endpoints.check_allowed("GET", "/api/v1/market-calendar/KR")
+    assert ("GET", "/api/v1/market-calendar/KR") not in endpoints.ALLOWLIST
+    assert "/api/v1/market-calendar/KR" not in endpoints.GROUP_OF
+
+
+def test_us_market_calendar_still_works():
+    """축소가 US 경로를 건드리면 안 된다 (회귀)."""
+    assert endpoints.check_allowed("GET", "/api/v1/market-calendar/US") == \
+        "/api/v1/market-calendar/US"
+    assert endpoints.group_of("/api/v1/market-calendar/US") == "MARKET_INFO"
+
+
+async def test_kr_calendar_is_blocked_at_both_layers(mock_server, tmp_path):  # noqa: F811
+    """1층(_request 관문)과 2층(전송 레벨) 모두에서 막혀야 한다."""
+    c = make_client(mock_server.url, tmp_path)
+    try:
+        with pytest.raises(ForbiddenEndpoint):
+            await c._request("GET", "/api/v1/market-calendar/KR")
+        assert c.counters["requests"] == 0
+        with pytest.raises(ForbiddenEndpoint):
+            await c._http.get("/api/v1/market-calendar/KR")
+    finally:
+        await c.aclose()
+
+
+async def test_us_calendar_end_to_end_after_removal(mock_server, tmp_path):  # noqa: F811
+    c = make_client(mock_server.url, tmp_path)
+    try:
+        cal = await c.get_us_calendar()
+        assert set(cal) == {"previous", "today", "next"}
+        assert cal["today"].regular is not None
+    finally:
+        await c.aclose()
+
+
+def test_allowlist_and_group_table_stay_in_sync():
+    """허용 목록에서 뺐는데 GROUP_OF 에 남으면 다음에 되살릴 때 헷갈린다."""
+    allow = {p for _m, p in endpoints.ALLOWLIST}
+    assert set(endpoints.GROUP_OF) == allow, (
+        f"불일치: only_in_GROUP_OF={set(endpoints.GROUP_OF) - allow} "
+        f"only_in_ALLOWLIST={allow - set(endpoints.GROUP_OF)}")
+
+
+# ========================= 계약 A7 §2 — 상태파일 소유자 전용 권한 (감사 E-2)
+
+
+def _acl_principals(path) -> list[str]:
+    """Windows ACL 에 등장하는 주체 목록 (icacls 파싱)."""
+    import re
+    import subprocess
+    out = subprocess.run(["icacls", str(path)], capture_output=True, text=True,
+                         errors="replace").stdout
+    return re.findall(r"([A-Za-z0-9_\-\ ]+):\([A-Z)(,A-Z]+\)$", out, re.M)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX 모드 검사")
+def test_state_file_is_0600_on_posix(tmp_path):
+    tm = TokenManager(tmp_path / "k", tmp_path / "state.json", live=True)
+    tm._write_state("DUMMY-NOT-REAL", 1)
+    assert (tmp_path / "state.json").stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL 검사")
+def test_state_file_acl_drops_inheritance_on_windows(tmp_path):
+    """상속 ACL 은 코드의 보장이 아니다 (감사 E-2) — 명시적으로 소유자/SYSTEM 만 남긴다."""
+    tm = TokenManager(tmp_path / "k", tmp_path / "state.json", live=True)
+    tm._write_state("DUMMY-NOT-REAL", 1)
+    principals = _acl_principals(tmp_path / "state.json")
+    assert principals, "icacls 출력을 파싱하지 못했다"
+    lowered = " ".join(principals).lower()
+    assert "system" in lowered, f"SYSTEM 이 없다: {principals}"
+    # 상속으로 딸려오던 Administrators / Users / Everyone 이 남아 있으면 안 된다
+    for unwanted in ("everyone", "users", "authenticated"):
+        assert unwanted not in lowered, f"{unwanted} 가 ACL 에 남아 있다: {principals}"
+
+
+def test_permissions_are_applied_before_the_atomic_replace(tmp_path, monkeypatch):
+    """노출 창이 없어야 한다 — 임시 파일 단계에서 이미 제한돼 있어야 한다.
+
+    `os.replace` 는 원본(임시 파일)의 권한을 그대로 가져가므로, 순서가 뒤바뀌면
+    토큰이 넓은 권한으로 디스크에 존재하는 순간이 생긴다.
+    """
+    from tossmon.api import tokens as tok
+
+    order: list[str] = []
+    real_restrict = tok.restrict_to_owner
+    real_replace = tok.os.replace
+
+    def spy_restrict(path):
+        order.append(f"restrict:{Path(path).suffix}")
+        return real_restrict(path)
+
+    def spy_replace(src, dst):
+        order.append("replace")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(tok, "restrict_to_owner", spy_restrict)
+    monkeypatch.setattr(tok.os, "replace", spy_replace)
+
+    tm = TokenManager(tmp_path / "k", tmp_path / "state.json", live=True)
+    tm._write_state("DUMMY-NOT-REAL", 1)
+
+    assert order[0] == "restrict:.tmp", f"임시 파일을 먼저 제한하지 않았다: {order}"
+    assert order[1] == "replace", f"제한 직후 교체가 아니다: {order}"
+
+
+def test_permission_failure_does_not_break_state_writing(tmp_path, monkeypatch):
+    """★ 보안 강화가 가용성을 무너뜨리면 안 된다 (계약 A7 §2).
+
+    ACL/chmod 조작은 도메인 계정·정책·이상한 파일시스템에서 깨질 수 있다.
+    깨지더라도 토큰 상태 저장은 성공해야 한다.
+    """
+    from tossmon.api import tokens as tok
+
+    def boom(*a, **kw):
+        raise OSError("injected permission failure")
+
+    monkeypatch.setattr(tok.os, "chmod", boom)          # POSIX 경로
+    monkeypatch.setattr(tok.subprocess, "run", boom)    # Windows 경로
+    tok.PERMISSION_STATS.update(applied=0, failed=0, last_error=None)
+
+    tm = TokenManager(tmp_path / "k", tmp_path / "state.json", live=True)
+    tm._write_state("DUMMY-NOT-REAL", 12345)            # 예외가 나면 안 된다
+
+    saved = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert saved["token"] == "DUMMY-NOT-REAL"
+    assert saved["expires_at_ms"] == 12345
+    assert tok.PERMISSION_STATS["failed"] >= 1, "실패가 조용히 넘어갔다 — 관측 불가"
+    assert tok.PERMISSION_STATS["last_error"]
+
+
+async def test_token_issuance_survives_permission_failure(
+        mock_server, tmp_path, monkeypatch):  # noqa: F811
+    """전 경로 확인 — 권한 조작이 깨져도 발급→저장→반환이 끝까지 성공해야 한다."""
+    from tossmon.api import tokens as tok
+
+    def boom(*a, **kw):
+        raise OSError("injected permission failure")
+
+    monkeypatch.setattr(tok.os, "chmod", boom)
+    monkeypatch.setattr(tok.subprocess, "run", boom)
+    monkeypatch.setenv("TOSS_BASE_URL", mock_server.url)
+
+    tm = TokenManager(_keys(tmp_path), tmp_path / "state.json", live=True)
+    try:
+        assert await tm.get() == "mock-access-token"
+    finally:
+        tm.release()
+
+
+def test_restrict_to_owner_never_raises(tmp_path, monkeypatch):
+    """어떤 예외가 나도 밖으로 새지 않아야 한다 (BaseException 계열 제외)."""
+    from tossmon.api import tokens as tok
+
+    target = tmp_path / "f.json"
+    target.write_text("{}", encoding="utf-8")
+    for exc in (OSError("x"), ValueError("y"), RuntimeError("z")):
+        def boom(*a, _e=exc, **kw):
+            raise _e
+        monkeypatch.setattr(tok.os, "chmod", boom)
+        monkeypatch.setattr(tok.subprocess, "run", boom)
+        assert tok.restrict_to_owner(target) is False
+
+    # 존재하지 않는 경로도 조용히 False
+    assert tok.restrict_to_owner(tmp_path / "nope.json") is False

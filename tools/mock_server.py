@@ -67,6 +67,9 @@ GROUP_OF: dict[str, str] = {
     "/api/v1/rankings": "RANKING",
     "/api/v1/stocks": "STOCK",
     "/api/v1/stocks/{symbol}/warnings": "STOCK",
+    # 실서버는 KR 캘린더를 제공하므로 mock 도 그대로 흉내낸다. 우리 클라이언트가 이걸 못
+    # 부르는 것은 **client 측 allowlist**(계약 A7)로 막기 때문이지 서버가 없어서가 아니다.
+    # 여기서 지우면 mock 이 실서버와 달라진다 — 차단은 endpoints.ALLOWLIST 의 책임이다.
     "/api/v1/market-calendar/KR": "MARKET_INFO",
     "/api/v1/market-calendar/US": "MARKET_INFO",
     "/api/v1/exchange-rate": "MARKET_INFO",

@@ -19,7 +19,9 @@ ALLOWLIST: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/api/v1/rankings"),
     ("GET", "/api/v1/stocks"),
     ("GET", "/api/v1/stocks/{symbol}/warnings"),
-    ("GET", "/api/v1/market-calendar/KR"),
+    # `/api/v1/market-calendar/KR` 는 계약 개정 A7 로 제거됐다 — 이 프로젝트는 미국 주식
+    # 전용이라 어떤 코드도 쓰지 않았고, 쓰이지 않는 허용 항목은 공격 표면일 뿐이다.
+    # 필요해지면 계약 개정으로 다시 넣는다. (다시 넣기 전에 GROUP_OF 도 함께 복원할 것.)
     ("GET", "/api/v1/market-calendar/US"),
     ("GET", "/api/v1/exchange-rate"),
     ("GET", "/api/v1/accounts"),
@@ -37,7 +39,6 @@ GROUP_OF: dict[str, str] = {
     "/api/v1/rankings": "RANKING",
     "/api/v1/stocks": "STOCK",
     "/api/v1/stocks/{symbol}/warnings": "STOCK",
-    "/api/v1/market-calendar/KR": "MARKET_INFO",
     "/api/v1/market-calendar/US": "MARKET_INFO",
     "/api/v1/exchange-rate": "MARKET_INFO",
     "/api/v1/accounts": "ACCOUNT",
