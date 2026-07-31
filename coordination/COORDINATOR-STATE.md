@@ -37,7 +37,8 @@ orca orchestration check --wait --types worker_done,escalation,question,status -
 | 대상 | 상태 |
 |---|---|
 | **W5 라이브 재수집** | **진행 중** (분리 프로세스). 15:32 기준 watch=1500, tier2=58, tier3=1, promotions=369, `watch_outside_universe=0`, `api_errors=0`. 데이마켓 → 프리(17:00) → **정규장(22:30)** → 애프터(~08:50) |
-| **§3-(B) 정리 3건** | **16:00 디스패치됨** — W7 사전등록 갱신(`task_9ac0a2b9a6e8`/`ctx_15a492f00122`/term_fc910286, worker-start로 신규 기동), W3 사전등록 정합(`task_5f310cd4496f`/`ctx_f460397e000e`/term_2c49ee20), W2 U-4 점검(`task_cdce9f5b2e59`/`ctx_0997615b06fa`/term_143a90de). 스펙: `coordination/specs/w7_prereg_update.md`, `w3_prereg_align.md`, `w2_u4_check.md` |
+| **§3-(B) 정리 3건** | **전부 머지 완료** — W2 U-4(`0dc427f`, 실유출 1건 수정: `UnicodeDecodeError.args` 바이트 원문), W7 사전등록 개정(`a492810`, A6/A7 충돌 없음 판정), W3 사전등록 정합(`2961e7a`, P0 3+P1+P2 2, 신규 22테스트). **통합 773 passed·1 skipped 실측** |
+| **W7 후속 개정** | **진행 중** — W3가 넘긴 문언 공백 3건(§7-e 분할 탐지 확정·§2.2 일봉 as-of 앵커·§2.7 시총 ±10% 밴드). `task_7863c397722e`/`ctx_1237dd54df78`/term_fc910286. 스펙: `coordination/specs/w7_prereg_followup.md`. 완료 후 → **W3 구현 후속** 디스패치 예정 |
 | 라이브 리스 | **W5 단독 보유.** 다른 워커·코디네이터는 라이브 호출 금지 |
 
 > 참고: w7-prereg 워크트리의 저수준 `terminal create`는 "Timed out waiting for terminal
