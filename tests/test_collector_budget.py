@@ -171,24 +171,65 @@ def test_shrink_has_a_cooldown_to_avoid_flapping():
     assert g.should_shrink()
 
 
+class Rec:
+    """경보 문구까지 검증하기 위한 기록형 notifier."""
+
+    def __init__(self):
+        self.alerts: list[str] = []
+        self.warns: list[str] = []
+
+    def alert(self, msg):
+        self.alerts.append(msg)
+
+    def warn(self, msg):
+        self.warns.append(msg)
+
+
 def test_ranking_is_never_shrunk_only_alerted():
     """랭킹은 과거 조회가 불가능한 유일한 데이터 — 축소 대상이 아니다."""
-    class Rec:
-        def __init__(self):
-            self.alerts = []
-
-        def alert(self, msg):
-            self.alerts.append(msg)
-
-        def warn(self, msg):
-            pass
-
     rec = Rec()
     g = BudgetGuard(LIMITS, 0.7, clock=FrozenClock(0), notifier=rec)
     g.set_plan(plan().__class__(**{**plan().__dict__, "ranking_snap_s": 0.5}))
     orders = g.should_shrink()
     assert orders is None or GROUP_RANKING not in orders
     assert rec.alerts and "RANKING" in rec.alerts[0]
+    assert "predicted" in rec.alerts[0]                       # 진짜 초과 → 초과 문구가 맞다
+
+
+def test_ranking_within_budget_never_raises_a_false_alert():
+    """라이브 관측 회귀: "RANKING predicted 0.33 > target 3.50" 은 거짓 ERROR 였다.
+
+    무인 운영에서 가짜 경보는 경보 무시 습관을 만들어 진짜 경보를 묻는다
+    (W5 healthcheck 오탐과 같은 지적). 예산 이내면 어떤 경보도 나면 안 된다.
+    """
+    rec = Rec()
+    g = BudgetGuard(LIMITS, 0.7, clock=FrozenClock(0), notifier=rec)
+    g.set_plan(plan())                                        # RANKING 0.33 vs target 3.50
+    assert g.planned_rate(GROUP_RANKING) < g.target(GROUP_RANKING)
+    assert g.should_shrink() is None
+    assert rec.alerts == []
+
+
+def test_429_on_ranking_alerts_the_429_once_not_a_false_overrun():
+    """429 로 진입한 경보는 429 라고 말해야 한다 — "predicted > target" 은 거짓이 된다.
+
+    그리고 forced 플래그는 1회 경보 후 소거된다 — 예전에는 소거되지 않아
+    같은 거짓 ERROR 가 매 사이클 반복됐다.
+    """
+    rec = Rec()
+    g = BudgetGuard(LIMITS, 0.7, clock=FrozenClock(0), notifier=rec)
+    g.set_plan(plan())                                        # 예산 이내 (0.33 < 3.50)
+    g.on_429(GROUP_RANKING)
+
+    assert g.should_shrink() is None                          # 랭킹 축소 지시는 없다
+    assert len(rec.alerts) == 1
+    assert "429" in rec.alerts[0]
+    assert "> target" not in rec.alerts[0]                    # 거짓 초과 문구 금지
+    assert g.rate_limited[GROUP_RANKING] == 1                 # 사고 자체는 기록된다
+
+    for _ in range(3):                                        # 반복 호출에도 도배하지 않는다
+        assert g.should_shrink() is None
+    assert len(rec.alerts) == 1
 
 
 def test_snapshot_reports_target_and_usage():
