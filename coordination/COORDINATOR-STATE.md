@@ -36,8 +36,8 @@ orca orchestration check --wait --types worker_done,escalation,question,status -
 
 | 대상 | 상태 |
 |---|---|
-| **W5 라이브 재수집** | **진행 중** (분리 프로세스 PID 29236·29704, 14:25 기동). 15:32 기준 watch=1500, tier2=58, tier3=1, promotions=369, `watch_outside_universe=0`, `api_errors=0`. 데이마켓 → 프리(17:00) → **정규장(22:30)** → 애프터(~08:50) |
-| **W5-b 관찰 교대** | **17:15 기동** — 원 W5 에이전트 PTY 가 런타임 문제로 유실돼(출력 0줄, 구 dispatch 조회 불가) 관찰 임무만 새 에이전트로 교대. `task_999bd2c75b52`/term_9727154b. 수집기 접촉 금지 명시. 원 태스크 `task_04201cf60649` 는 dispatched 로 남음 — W5-b 완료 시 코디네이터가 수동 정리 |
+| **W5 라이브 재수집** | **진행 중 — 18:15:36 재기동본** (작업 스케줄러 하, 부모=svchost(Schedule), Orca 트리 밖). **수집기가 18:07:30 Orca PTY 정리에 살해당해 8분 06초 공백**(프리 세션, 랭킹·테이프 영구 유실, 1분봉은 백필 가능 — docs/11 §11 공백 매니페스트, w5-ops `f1e8325`). 재기동본은 **최신 main(fc3a9cc) 코드** — 가짜 RANKING ERROR 소멸·ForbiddenEndpoint 처리 탑재 확인. 상태파일 이어받기 정상(watch=1500, 카운터 연속). **정규장(22:30)** → 애프터(~08:50) |
+| **W5-b 관찰 교대** | 진행 중 — `task_999bd2c75b52`/term_9727154b. 체크포인트: 22:25 개장준비 → 22:30~22:50 본 시험 보고 → 심야 status → 내일 ~09:00 검증·worker_done. 원 태스크 `task_04201cf60649` 는 dispatched 로 남음 — W5-b 완료 시 코디네이터가 수동 정리 |
 | **§3-(B) 정리 3건** | **전부 머지 완료** — W2 U-4(`0dc427f`, 실유출 1건 수정: `UnicodeDecodeError.args` 바이트 원문), W7 사전등록 개정(`a492810`, A6/A7 충돌 없음 판정), W3 사전등록 정합(`2961e7a`, P0 3+P1+P2 2, 신규 22테스트). **통합 773 passed·1 skipped 실측** |
 | **W7 후속 개정** | **머지 완료** — §7-e 분할 탐지 문언 확정(r=1d수정/1m원주가 비율, 경계 급변 ≥1.5배, `split_dates` 인자, `split_excluded` 카운트, 미전달 시 주 분석 금지)·§2.2 일봉 as-of 앵커 의무·§2.7 시총 ±10% 밴드 |
 | **W3 구현 후속** | **머지 완료** (`fa6b45a` 머지, **795 passed·1 skipped 실측**) — 분할 파이프라인·일봉 as-of 앵커·시총 밴드. 분석 착수 전 코드 작업 끝 |
@@ -145,6 +145,11 @@ repo id = `12e59c9d-6eff-4602-8e62-802907e489b4`,
 - **콘솔 출력에 비ASCII 금지** — Windows cp949 에서 `UnicodeEncodeError` 로 죽는다.
   실제로 supervisor 가 이것 때문에 STOP 직후 죽어 collector 가 고아 프로세스로 남을 뻔했다.
 - **무인 프로세스를 에이전트 세션의 자식으로 띄우지 마라** — 세션 정리 때 함께 죽는다.
-  `Start-Process` 분리 또는 작업 스케줄러.
+  **`Start-Process` 분리로는 부족하다는 것이  7/31 18:07 실증됐다** (Orca PTY job object 가
+  트리째 죽임 — 수집기 8분 공백 사고). **반드시 작업 스케줄러(schtasks)로 띄워
+  부모가 svchost(Schedule) 이 되게 하라.** `ops/register_task_scheduler.ps1` 참조.
+- **에이전트 턴이 Monitor 대기로 열려 있으면 `terminal send` 프롬프트가 큐에 갇힌다** —
+  ESC 를 보내면 턴이 끊기며 큐가 소비되지만 **큐된 긴 텍스트가 잘릴 수 있다**(실제로 잘렸다).
+  ESC 후에는 상대가 받은 내용을 확인하고 전문을 재전송하라 (orchestration `reply` 가 안전).
 - **환경이 바뀌면 우회 수단을 굳히지 말고 원래 방식을 재시험하라** (§0 의 `check --wait` 사례).
 - codex 워커가 지출 한도에 걸리면 **증액 요청하지 말고 claude 로 교체**.
