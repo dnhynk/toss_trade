@@ -146,6 +146,13 @@ class TokenManager:
         if self._flock is not None:
             self._flock.release(force=True)
             self._flock = None
+            # 보유자 지문도 함께 지운다. 남겨두면 다음 충돌 때 **이미 죽은 프로세스**를
+            # 보유자로 보고해 장애 진단을 오도한다.
+            if self._lock_path is not None:
+                try:
+                    self._holder_path(self._lock_path).unlink()
+                except (FileNotFoundError, NotADirectoryError, OSError):
+                    pass
 
     # ---- lease / state --------------------------------------------------
 

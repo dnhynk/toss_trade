@@ -179,6 +179,16 @@ def test_holder_fingerprint_is_written(tmp_path):
         tm.release()
 
 
+def test_holder_fingerprint_is_removed_on_release(tmp_path):
+    """release() 후 지문이 남으면 다음 충돌 때 죽은 프로세스를 보유자로 보고한다."""
+    tm = TokenManager(_keys(tmp_path), tmp_path / "s.json", live=True)
+    tm._acquire_lease()
+    holder = tm._holder_path(tm.lock_path())
+    assert holder.exists()
+    tm.release()
+    assert not holder.exists(), "stale holder 지문이 남아 진단을 오도한다"
+
+
 def test_mock_mode_still_takes_no_lease(tmp_path):
     """리스 없는 워커 여럿이 동시에 mock 을 쓰는 것은 정상 동작이어야 한다."""
     managers = [TokenManager(tmp_path / "nokeys", tmp_path / "s.json", live=False)

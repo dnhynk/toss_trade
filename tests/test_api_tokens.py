@@ -13,6 +13,20 @@ from test_api_support import mock_server  # noqa: F401
 from tossmon.api.tokens import MOCK_TOKEN, REFRESH_MARGIN_MS, TokenManager
 
 
+@pytest.fixture(autouse=True)
+def _isolated_lease_dir(tmp_path, monkeypatch):
+    """리스를 tmp_path 에 가둔다.
+
+    리스가 자격증명(client_id) 유도 경로로 바뀐 뒤(감사 A-1 수정), 이 파일의 테스트들은
+    전부 같은 더미 client_id 를 쓰므로 **하나의 머신 전역 리스 파일**을 공유하게 됐다.
+    그 결과 (1) 테스트끼리 리스를 두고 경합해 전체 실행에서만 실패하고
+    (2) 실제 운영 리스 디렉터리(%LOCALAPPDATA%/tossmon)를 오염시킨다.
+    테스트는 절대 머신 전역 상태를 건드리면 안 된다.
+    """
+    monkeypatch.setenv("TOSSMON_LEASE_DIR", str(tmp_path / "leases"))
+    yield
+
+
 def _keys(tmp_path, body: str = "CLIENT_ID=test-id\nCLIENT_SECRET=test-secret\n"):
     p = tmp_path / "api_keys"
     p.write_text(body, encoding="utf-8")
