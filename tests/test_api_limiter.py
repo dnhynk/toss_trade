@@ -88,13 +88,23 @@ def test_update_from_headers_is_case_insensitive():
     assert lim.snapshot("G")["rate"] == pytest.approx(2.0)
 
 
-def test_update_from_headers_only_lowers_tokens():
+async def test_update_from_headers_only_lowers_tokens():
     """서버 잔량은 상한으로만 쓴다 — 다른 프로세스가 같은 client 를 쓸 수 있으므로."""
     lim = GroupRateLimiter({"G": 10.0}, usage_ratio=1.0)
-    lim.update_from_headers("G", {"X-RateLimit-Limit": "10", "X-RateLimit-Remaining": "2"})
-    assert lim.snapshot("G")["tokens"] == pytest.approx(2.0)
+    # 버킷은 빈 상태로 시작하므로(감사 B-1) 먼저 채워야 "내려가는지"를 볼 수 있다.
+    # 버킷은 lazy 생성이라 sleep 전에 만들어 두어야 경과 시간이 잡힌다.
+    bucket = lim._bucket("G")
+    await asyncio.sleep(0.4)
+    bucket.refill(time.monotonic())
+    filled = lim.snapshot("G")["tokens"]
+    assert filled > 0.5, "테스트 전제: 버킷이 어느 정도 차 있어야 한다"
+
+    lim.update_from_headers("G", {"X-RateLimit-Limit": "10", "X-RateLimit-Remaining": "0.2"})
+    lowered = lim.snapshot("G")["tokens"]
+    assert lowered < filled, "서버 잔량이 우리 추정보다 작은데 내려가지 않았다"
+
     lim.update_from_headers("G", {"X-RateLimit-Limit": "10", "X-RateLimit-Remaining": "9"})
-    assert lim.snapshot("G")["tokens"] <= 2.0 + 1e-6, "헤더로 토큰이 늘어났다"
+    assert lim.snapshot("G")["tokens"] <= lowered + 1e-6, "헤더로 토큰이 늘어났다"
 
 
 async def test_remaining_zero_blocks_until_reset():
@@ -116,11 +126,39 @@ def test_missing_or_garbage_headers_are_ignored():
     assert lim.snapshot("G")["rate"] == pytest.approx(before)
 
 
-def test_successful_responses_recover_backoff():
+def test_backoff_does_not_recover_on_success_count(monkeypatch):
+    """감사 H-4 회귀: 성공 응답 **건수**로는 429 감속이 풀리면 안 된다.
+
+    수정 전에는 성공 5건이면 backoff 2.0 → 1.0 이라, 초당 7콜 하는 그룹에서
+    429 감속의 실효 수명이 약 1초였다. 지수 백오프가 사실상 장식이었다.
+    """
     lim = GroupRateLimiter({"G": 10.0})
     lim.on_429("G", 0.0)
     lim.on_429("G", 0.0)
     assert lim.snapshot("G")["backoff"] == pytest.approx(4.0)
-    for _ in range(20):
+
+    for _ in range(200):
         lim.update_from_headers("G", {"X-RateLimit-Limit": "10", "X-RateLimit-Remaining": "9"})
+    assert lim.snapshot("G")["backoff"] == pytest.approx(4.0), \
+        "성공 응답 건수만으로 감속이 풀렸다 (감사 H-4 재발)"
+
+
+def test_backoff_recovers_on_elapsed_time(monkeypatch):
+    """회복은 경과 시간 기준이어야 한다."""
+    from tossmon.api import limiter as limiter_mod
+
+    lim = GroupRateLimiter({"G": 10.0})
+    lim.on_429("G", 0.0)
+    lim.on_429("G", 0.0)
+    assert lim.snapshot("G")["backoff"] == pytest.approx(4.0)
+
+    b = lim._bucket("G")
+    # 회복 간격 2스텝만큼 시간이 흐른 것으로 만든다.
+    b.last_recover -= limiter_mod.RECOVER_INTERVAL_S * 2 + 1
+    lim.update_from_headers("G", {"X-RateLimit-Limit": "10", "X-RateLimit-Remaining": "9"})
+    assert lim.snapshot("G")["backoff"] == pytest.approx(4.0 * 0.8 * 0.8)
+
+    # 충분히 오래 지나면 1.0 으로 완전 회복
+    b.last_recover -= limiter_mod.RECOVER_INTERVAL_S * 50
+    lim.update_from_headers("G", {"X-RateLimit-Limit": "10", "X-RateLimit-Remaining": "9"})
     assert lim.snapshot("G")["backoff"] == pytest.approx(1.0)
