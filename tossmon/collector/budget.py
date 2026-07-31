@@ -223,13 +223,31 @@ class BudgetGuard:
             predicted = max(planned, measured)
             forced = self._forced.get(group, 0.0)
             # 계획은 한도 자체로, 실측은 여유분(headroom)으로 판정한다.
-            if planned <= target and measured <= target * self.headroom and not forced:
+            over = planned > target or measured > target * self.headroom
+            if not over and not forced:
                 continue
             if group not in SHRINK_TIER:
+                # 축소 불가 그룹(랭킹 — 과거 조회가 불가능한 유일한 데이터)은 자동으로
+                # 할 수 있는 것이 없다. **사람이 개입해야 하는 상황에서만** 경보한다:
+                #   (a) over   — 계획/실측이 실제로 예산을 넘었다 → 주기(ranking_snap_s)나
+                #                한도 설정을 재검토해야 한다
+                #   (b) forced — 서버가 429 를 반환했다 → 예산 이내였는데도 맞았다면
+                #                우리가 아는 한도 인식 자체가 틀렸다는 뜻이다
+                # 예전에는 (b)로 진입해도 (a)의 "predicted > target" 문구로 경보해
+                # "0.33 > 3.50" 같은 **거짓 ERROR** 가 났고, forced 가 소거되지 않아
+                # 같은 경보가 매 사이클 반복됐다 — 가짜 경보는 경보 무시 습관을 만들어
+                # 진짜 경보를 묻는다 (W5 healthcheck 오탐과 같은 지적).
+                self._forced.pop(group, None)          # 1회 경보 후 소거 (반복 방지)
                 if self.notifier is not None:
-                    self.notifier.alert(
-                        f"budget: {group} predicted {predicted:.2f} req/s > target "
-                        f"{target:.2f} — 랭킹은 축소 대상이 아니다. 주기/한도를 재검토하라")
+                    if over:
+                        self.notifier.alert(
+                            f"budget: {group} predicted {predicted:.2f} req/s > target "
+                            f"{target:.2f} — 랭킹은 축소 대상이 아니다. 주기/한도를 재검토하라")
+                    else:
+                        self.notifier.alert(
+                            f"budget: 429 on {group} (usage {predicted:.2f}/{target:.2f} "
+                            f"req/s, 예산 이내) — 랭킹은 축소 대상이 아니며 한도 인식이 "
+                            "틀렸을 수 있다. 주기/한도를 재검토하라")
                 continue
             last = self._last_shrink_s.get(group)
             if last is not None and now - last < SHRINK_COOLDOWN_S:

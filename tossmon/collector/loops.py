@@ -45,7 +45,7 @@ import pandas as pd
 from ..analysis.baselines import compute_daily_baseline
 from ..analysis.labeling import EventParams
 from ..api.client import BATCH_MAX, TossClient
-from ..api.errors import Forbidden, SchemaMismatch, TossApiError
+from ..api.errors import Forbidden, ForbiddenEndpoint, SchemaMismatch, TossApiError
 from ..api.models import Candle, Price, RankingPage, StockMeta, precision_stats
 from ..config import Config
 from ..store.writer import Store
@@ -863,12 +863,22 @@ def _seed_event_suppression(ctx: CollectorContext) -> int:
 # --------------------------------------------------------------------------- #
 async def _guarded(ctx: CollectorContext, name: str, coro,
                    group: str = GROUP_MARKET_DATA) -> bool:
-    """루프 몸통 1회 실행. 치명(Forbidden)만 정지시키고 나머지는 삼킨다."""
+    """루프 몸통 1회 실행. 치명(Forbidden·ForbiddenEndpoint)만 정지시키고 나머지는 삼킨다."""
     try:
         await coro
         return True
     except asyncio.CancelledError:
         raise
+    except ForbiddenEndpoint as exc:
+        # 계약 A6: allowlist 위반은 코드 버그이자 "주문 계열 엔드포인트에 도달했다"는
+        # 신호다 — Phase 2 의 마지막 방어선. A6 이 TossApiError 상속을 끊어 광역
+        # 핸들러에 잡히지 않게 했으므로, 아래 catch-all 이 warn 한 줄로 삼켜 수집이
+        # 계속되는 일이 없도록 **여기서 명시적으로** 잡아 경보와 함께 전체를 세운다.
+        # 조용히 죽지도(미처리 예외), 조용히 돌지도(catch-all) 않는다.
+        ctx.bump("forbidden_endpoint")
+        ctx.shutdown(f"{name}: ForbiddenEndpoint — 비허용(주문 계열) 엔드포인트 도달, "
+                     f"수집 전체 중단 ({exc})")
+        return False
     except Forbidden as exc:
         ctx.shutdown(f"{name}: Forbidden — IP 미등록/권한 문제로 수집 중단 ({exc})")
         return False

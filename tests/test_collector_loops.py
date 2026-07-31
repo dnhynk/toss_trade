@@ -613,6 +613,32 @@ def test_forbidden_stops_every_loop(tmp_path):
     ctx.store.close()
 
 
+def test_forbidden_endpoint_stops_every_loop_with_an_alert(tmp_path):
+    """계약 A6 회귀: allowlist 위반(ForbiddenEndpoint)은 TossApiError 를 상속하지 않는다.
+
+    광역 catch-all 이 warn 한 줄로 삼켜 수집이 계속되지도(조용한 위반),
+    미처리 예외로 루프가 조용히 죽지도 않아야 한다 — 주문 계열 엔드포인트 도달은
+    Phase 2 의 마지막 방어선이므로 **경보와 함께 수집 전체가 선다.**
+    """
+    from tossmon.api.errors import ForbiddenEndpoint
+
+    class Breach(StubClient):
+        async def get_prices(self, symbols):
+            self.counters["requests"] += 1
+            raise ForbiddenEndpoint("GET /api/v1/orders — not in allowlist")
+
+    client = Breach({})
+    ctx, _ = build_ctx(tmp_path, client, symbols=("AAA",))
+    asyncio.run(loops.run_tier1_price_sweep(ctx.client, ctx.store, ctx.cfg, ctx=ctx,
+                                            cycles=5))
+    assert not ctx.running()                              # 계속 돌지 않는다
+    assert ctx.notifier.counters["alert"] >= 1            # 조용히 죽지도 않는다
+    assert ctx.counters.get("forbidden_endpoint") == 1
+    assert ctx.counters.get("loop_errors", 0) == 0        # catch-all 로 삼켜지지 않았다
+    assert client.counters["requests"] == 1               # 위반 후 재호출 없음
+    ctx.store.close()
+
+
 def test_schema_mismatch_skips_without_killing_the_loop(tmp_path):
     from tossmon.api.errors import SchemaMismatch
 
