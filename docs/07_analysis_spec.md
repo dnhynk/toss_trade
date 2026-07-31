@@ -222,6 +222,35 @@ $$tp_u(t)=\left\lfloor \frac{H_t+L_t+C_t}{3}\right\rfloor,\qquad
 
 ---
 
+### 2.6a 캘린더는 어디에도 저장되지 않는다 — 분석 전 반드시 떠 둘 것
+
+분석 계층은 `UsMarketDay` **없이는 사전등록 준수 경로를 아예 돌릴 수 없다.**
+E2E 리허설 실측(캘린더 미제공 시):
+
+```
+prereg_daily_baseline        -> ValueError (raise)
+detect_events(split_dates=)  -> ValueError (raise)
+prereg 곡선 버킷 수          -> 0        (RVOL 전무 -> 전 이벤트 rvol_gated=False)
+features day_grouping        -> 0.0      (UTC 날짜 폴백 = 감사 M-3 겨울 이중계산)
+split_scan 관측 매매일       -> 0        (분할 탐지 불가)
+```
+
+그런데 세션 윈도우는 **스키마에 테이블이 없고**(`schema.sql` 에 calendar 없음) 모든 소비자
+(`collector/scheduler.py`, `tools/backfill.py`, `tools/live_probe.py`)가
+`/market-calendar/US` 를 그때그때 호출한다. 백필 매니페스트의 `calendar` 블록도
+`{days_resolved, exhausted_at, walk_calls}` 메타뿐이라 윈도우를 복원할 수 없다.
+
+**규칙**: 수집·백필처럼 **API 가 살아 있는 시점**에 캘린더를 떠서 JSON 으로 남기고,
+분석은 그 파일에서 복원한다.
+
+```python
+B.save_calendar(calendar, out / "calendar.json")   # 수집/백필 시점
+calendar = B.load_calendar(out / "calendar.json")  # 분석 시점 (오프라인)
+```
+
+`calendar_to_records`/`calendar_from_records` 는 `day=None`(휴장·한국 휴일)과 반일장 길이를
+그대로 보존한다 — 각각 F-1/M-3 와 M-4 판정의 근거라 하나라도 잃으면 안 된다.
+
 ### 2.7 분할일 식별 `detect_split_dates(df_1m, df_1d, calendar)` (사전등록 §7-e)
 
 1분봉은 **원주가**(`adjusted=false`), 일봉은 **수정주가**(`adjusted=true`)다(§2.3/계약 A5).

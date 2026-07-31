@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import json
 import math
 import warnings
 
@@ -22,6 +23,7 @@ import pytest
 from tests import synth
 from tossmon.analysis import baselines as B
 from tossmon.analysis import features as F
+from tossmon.analysis import labeling as L
 from tossmon.api.models import SessionWindow, UsMarketDay
 
 MIN_MS = B.MIN_MS
@@ -278,3 +280,51 @@ def test_synth_winter_scenario_runs_end_to_end() -> None:
                                          symbol=truth["symbol"])
     assert feats["day_grouping_calendar"] == 1.0
     assert feats["hist_days_available"] == float(truth["history_days"]) + 1.0
+
+
+# =========================================================================== #
+# 캘린더 직렬화 — 오프라인 분석의 전제 (E2E 리허설에서 발견)
+# =========================================================================== #
+def test_calendar_json_roundtrip_preserves_sessions(tmp_path) -> None:
+    """세션 윈도우는 **어디에도 저장되지 않는다** — 분석이 오프라인에서 쓰려면 떠야 한다.
+
+    캘린더 없이는 `prereg_daily_baseline`·`detect_events(split_dates=)` 가 raise 하고,
+    곡선은 버킷 0개, 피처는 UTC 폴백(M-3)이 된다. 즉 사전등록 준수 경로가 통째로 불가능하다.
+    """
+    import dataclasses
+
+    cal = synth.make_calendar(4, start="2026-11-24", half_days=["2026-11-27"])
+    cal = [dataclasses.replace(cal[1], day=None)] + [m for m in cal if m is not cal[1]]
+    cal = sorted(cal, key=lambda m: m.date)
+
+    path = tmp_path / "calendar.json"
+    B.save_calendar(cal, path)
+    back = B.load_calendar(path)
+
+    assert back == cal, "왕복이 어긋나면 오프라인 분석이 다른 매매일을 본다"
+    holiday = [m for m in back if m.day is None]
+    assert holiday, "day=None 매매일이 보존돼야 한다 (M-3·F-1 의 근본 케이스)"
+    half = [m for m in back if m.regular
+            and (m.regular.end_ms - m.regular.start_ms) // MIN_MS == 210]
+    assert half, "반일장 길이가 보존돼야 한다 (M-4 버킷 분리의 근거)"
+    assert path.read_text(encoding="utf-8").strip().startswith("[")
+
+
+def test_calendar_records_are_json_safe() -> None:
+    cal = synth.make_calendar(2)
+    recs = B.calendar_to_records(cal)
+    assert json.loads(json.dumps(recs)) == recs
+    assert B.calendar_from_records(recs) == cal
+    assert B.calendar_to_records([]) == []
+    assert B.calendar_from_records([]) == []
+
+
+def test_analysis_path_requires_calendar() -> None:
+    """캘린더가 없으면 사전등록 준수 경로가 성립하지 않는다는 사실을 고정한다."""
+    df, truth = synth.make_scenario("coil_pop", seed=1, history_days=1)
+    with pytest.raises(ValueError):
+        B.prereg_daily_baseline(truth["df_1d"], truth["market_day"].date, [])
+    with pytest.raises(ValueError):
+        L.detect_events(df, L.EventParams(), split_dates={truth["market_day"].date})
+    empty_curve = B.minute_of_session_volume_curve(df, [], as_of_date="2026-06-02")
+    assert len(empty_curve) == 0

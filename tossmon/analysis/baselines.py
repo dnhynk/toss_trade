@@ -14,9 +14,11 @@
 """
 from __future__ import annotations
 
+import json
 import math
 from bisect import bisect_right
 from itertools import accumulate
+from pathlib import Path
 
 import pandas as pd
 
@@ -85,6 +87,56 @@ def daily_bar_date(ts_ms: int, table: list[tuple[int, str]]) -> str | None:
         return None
     start, date = table[j]
     return date if int(ts_ms) - start < DAY_MS else None
+
+
+# --------------------------------------------------------------------------- #
+# 캘린더 직렬화 — 분석 계층이 오프라인에서 매매일을 복원하기 위한 최소 장치
+# --------------------------------------------------------------------------- #
+def calendar_to_records(calendar: list[UsMarketDay]) -> list[dict]:
+    """`UsMarketDay` 목록 → JSON 직렬화 가능한 레코드.
+
+    **왜 필요한가**: 분석 계층은 캘린더 없이는 사전등록 준수 경로를 아예 돌릴 수 없다 —
+    `prereg_daily_baseline`·`detect_events(split_dates=)` 는 raise 하고, 곡선은 버킷 0개,
+    피처는 UTC 날짜 폴백(감사 M-3)으로 떨어진다. 그런데 세션 윈도우는 **어디에도 저장되지
+    않는다**(스키마에 테이블 없음, 모든 소비자가 `/market-calendar/US` 를 그때그때 호출).
+    수집·백필 시점(API 가 살아 있을 때) 캘린더를 떠서 JSON 으로 남겨 두면 분석은 오프라인에서
+    그대로 복원할 수 있다.
+    """
+    out = []
+    for md in (calendar or []):
+        rec: dict = {"date": md.date}
+        for name in SESSION_NAMES:
+            w = getattr(md, name)
+            rec[name] = None if w is None else [int(w.start_ms), int(w.end_ms)]
+        out.append(rec)
+    return out
+
+
+def calendar_from_records(records: list[dict]) -> list[UsMarketDay]:
+    """`calendar_to_records` 의 역변환. 날짜 오름차순으로 돌려준다."""
+    out = []
+    for rec in (records or []):
+        wins = {}
+        for name in SESSION_NAMES:
+            v = rec.get(name)
+            wins[name] = None if not v else SessionWindow(start_ms=int(v[0]),
+                                                          end_ms=int(v[1]))
+        out.append(UsMarketDay(date=str(rec["date"]), day=wins["day"], pre=wins["pre"],
+                               regular=wins["regular"], after=wins["after"]))
+    return sorted(out, key=lambda m: m.date)
+
+
+def save_calendar(calendar: list[UsMarketDay], path) -> None:
+    """캘린더를 JSON 으로 저장 (utf-8)."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(calendar_to_records(calendar), ensure_ascii=False,
+                            indent=1), encoding="utf-8")
+
+
+def load_calendar(path) -> list[UsMarketDay]:
+    """JSON 에서 캘린더 복원 (utf-8)."""
+    return calendar_from_records(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
 def _require_single_symbol(df: pd.DataFrame) -> None:
