@@ -111,15 +111,19 @@ orca orchestration check --wait --types worker_done,escalation,question,status -
 > ③ 사용자에게 감사 요약 보고(턴 마지막 텍스트로) ④ blocker 없으면 그때 백필 승인.
 > blocker 가 있으면 승인 보류하고 수정 먼저.
 
-**밤사이 진행 (08-01 00:50 기준)**: W6 3차 감사 **완료·머지**(docs/14, 치명 F-1 일봉
-as-of 룩어헤드·F-2 분할일 오등록 + 중간 3·낮음 4·테스트 결함 2 — 전부 재현 실측).
-수정 파상 즉시 디스패치: **W3** `task_c55e92f32cb9`/`ctx_04871cd04217`(term_2c49ee20,
-blocker 2 + fixture + 권고 3 + F-8), **W7** `task_c702a5701779`/`ctx_85e6480d960b`
-(**term_4a50ac78** — 핸들 또 재발급됨, §7-e 보수 등록·§2.2 date-단위 문언 추인).
-**W4 백필 러너** 진행 중(`task_e99983f09016`, heartbeat 00:02·00:17 investigating/reviewing).
-아침 잔여: F-1 관련 실캘린더 `dayMarket=None` 라이브 실측 1콜(백필 사전 점검에 포함),
-F-9·loops.py prev_close 수정주가(W4 백로그, 나중), W6 worker_done 본문 인코딩 깨짐
-(내용은 docs/14 로 무손실 — 워커 보고 본문은 ASCII 강제로 스펙에 반영함).
+**밤사이 진행 — 전부 머지 완료 (08-01 01:40 기준, main **821 passed·1 skipped**)**:
+① W6 3차 감사(docs/14 — 치명 F-1·F-2, 전부 재현 실측) ② W4 **대량 백필 러너**
+(`tools/backfill.py`, §2.8 집행, mock E2E, 3단계 실행 절차·호출량 추정은
+`W4_REPORT_task_e99983f09016.md` (e)) ③ W7 문언 추인(§7-e 보수 등록·§2.2 date-단위)
+④ W3 blocker 수정(F-1 date-단위 소속·F-2 (마지막관측,관측] 보수 등록 + fixture 실규약화
++ F-3/F-4/F-5/F-8 — 감사 repro 로 자체 검증, `split_scan_report` 에 n_r_uncomputable·
+n_widened 노출).
+**아침 절차 (사용자 지시 반영)**: ① W5-b 최종 검증·worker_done(~09:00) 수령·머지
+② **감사 요약 보고를 사용자에게 먼저** ③ blocker 잔여 없음 확인 후 백필 승인 —
+1단계 screen-only(15~45분) → 2단계 --estimate(호출 0) → go/no-go → 본실행.
+사전 점검에 `dayMarket=None` 실캘린더 실측 1콜 포함(F-1 전제 확인).
+잔여 리스크(수용): A5 혼입 검사 구조적 순환(§7-e 강등 문언대로 미실행+보고),
+첫 매매일 분할 원리상 미탐지, 보수 등록의 n_widened 은 백필 후 점검.
 **`docs/12_preregistration.md` 를 먼저 읽고 그대로 따를 것** (개정 4건 전부 머지된 최신판).
 `docs/13_trial_registry.md` 는 **첫 시행 전에** 생성해야 한다(형식은 사전등록에 규정).
 분석 대상은 오늘 재수집분 + 백필. **어제(7/30) DB(`tossmon_20260730_polluted.db`)는
