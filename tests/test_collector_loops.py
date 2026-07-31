@@ -671,6 +671,84 @@ def day_closed() -> int:
 
 
 # --------------------------------------------------------------------------- #
+# 핫픽스 2026-08-01 — 애프터 세션 랭킹 int64 오버플로 (110분 전량 유실 사고)
+# --------------------------------------------------------------------------- #
+class RankingClient(StubClient):
+    """rtype 별로 페이지를 돌려주는 랭킹 스텁."""
+
+    def __init__(self, rows_by_any):
+        super().__init__({})
+        self.rows = rows_by_any
+
+    async def get_rankings(self, rtype, duration="realtime", market="US", count=100):
+        self.counters["requests"] += 1
+        return RankingPage(ranking_type=rtype, duration=duration, ranked_at_ms=None,
+                           rows=list(self.rows))
+
+
+def _rrow(rank, symbol, *, amount_u=1_000_000_000, vol_qu=10, last_u=1_000_000):
+    return RankingRow(rank=rank, symbol=symbol, last_u=last_u, base_u=last_u,
+                      change_rate=0.1, vol_qu=vol_qu, amount_u=amount_u)
+
+
+def test_ranking_int64_overflow_is_clamped_per_row_not_fatal(tmp_path):
+    """라이브 사고 재현: 한 행의 amount_u 가 SQLite INTEGER 상한을 넘는다.
+
+    수정 전에는 executemany 단일 트랜잭션이 통째로 죽어 **폴 전체가 0건 저장**됐고
+    (경고는 api_errors=0 인 채 unexpected OverflowError 로만 남았다),
+    수정 후에는 해당 필드만 클램프되고 나머지 행·나머지 페이지가 전부 저장된다.
+    """
+    huge = 2 ** 63 + 7
+    client = RankingClient([_rrow(1, "OVRF", amount_u=huge),
+                            _rrow(2, "OKAY")])
+    ctx, _ = build_ctx(tmp_path, client)
+    warns: list[str] = []
+    original_warn = ctx.notifier.warn
+    ctx.notifier.warn = lambda msg: (warns.append(msg), original_warn(msg))[1]
+    try:
+        asyncio.run(loops.rankings_once(ctx))
+
+        rows = ctx.store._conn.execute(
+            "SELECT symbol, amount_u FROM rankings_snap WHERE "
+            "ranking_type='TOSS_SECURITIES_TRADING_AMOUNT' ORDER BY rank").fetchall()
+        assert [s for s, _a in rows] == ["OVRF", "OKAY"]      # 행 단위 — 배치 생존
+        assert rows[0][1] == loops.SQLITE_INT_MAX             # 클램프 값 자체가 표식
+        assert rows[1][1] == 1_000_000_000                    # 정상 행은 원값 그대로
+        assert ctx.counters["rankings_clamped"] == 4          # 4 rtype × 1 필드
+        assert ctx.counters.get("rankings_write_failures", 0) == 0
+        assert ctx.counters.get("loop_errors", 0) == 0        # 더는 unexpected 로 새지 않는다
+        clamp_warns = [w for w in warns if "clamp" in w]
+        assert clamp_warns and "OVRF" in clamp_warns[0]       # 심볼 명시
+        assert "amount_u" in clamp_warns[0]                   # 필드 명시
+        assert str(huge) in clamp_warns[0]                    # 원값 명시
+        # 텔레메트리로 드러난다 (docs/11 §11-1 사각 봉합)
+        data = ctx.telemetry()
+        assert data["rankings_clamped"] == 4
+        assert data["rankings_write_failures"] == 0
+    finally:
+        ctx.store.close()
+
+
+def test_ranking_store_failure_is_counted_and_does_not_kill_the_poll(tmp_path):
+    """저장 실패는 카운터·경고로 드러나고, 버퍼·트리거 등 폴의 나머지는 계속된다."""
+    client = RankingClient([_rrow(1, "AAA")])
+    ctx, _ = build_ctx(tmp_path, client, symbols=("AAA",))
+
+    def boom(_snap_ms, _page):
+        raise RuntimeError("disk says no")
+
+    ctx.store.insert_rankings = boom
+    try:
+        asyncio.run(loops.rankings_once(ctx))
+        assert ctx.counters["rankings_write_failures"] == len(loops.RANKING_TYPES)
+        assert ctx.counters.get("loop_errors", 0) == 0
+        assert len(ctx.rankings.frame("AAA")) > 0             # 버퍼는 살아 있다
+        assert ctx.telemetry()["rankings_write_failures"] == len(loops.RANKING_TYPES)
+    finally:
+        ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
 # 감사 F-2 — 유니버스 게이트: 랭킹 출현 대형주가 워치리스트에 오르면 안 된다
 # --------------------------------------------------------------------------- #
 from tossmon.api.models import StockMeta  # noqa: E402  (테스트 하단 그룹 전용)
