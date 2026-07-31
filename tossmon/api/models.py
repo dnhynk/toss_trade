@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation, localcontext
 from zoneinfo import ZoneInfo
 
@@ -15,6 +15,10 @@ MICRO = 1_000_000
 
 _KST = ZoneInfo("Asia/Seoul")
 _ET = ZoneInfo("America/New_York")
+
+# 시간 변환을 정수 연산으로만 하기 위한 상수 (감사 M-2).
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_ONE_MICROSECOND = timedelta(microseconds=1)
 
 # dec_to_u 는 tradingAmount(KRW 조 단위) 까지 다루므로 기본 컨텍스트 정밀도(28)로는 부족하다.
 _DEC_PREC = 60
@@ -59,7 +63,24 @@ def iso_to_ms(s: str) -> int:
         raise SchemaMismatch(f"unparseable timestamp {raw!r}: {exc}") from exc
     if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
         raise SchemaMismatch(f"naive timestamp (offset required): {raw!r}")
-    return int(dt.timestamp() * 1000)
+    return _dt_to_ms(dt)
+
+
+def _dt_to_ms(dt: datetime) -> int:
+    """aware datetime → UTC epoch ms, **부동소수점을 전혀 쓰지 않고** (감사 M-2).
+
+    이전 구현은 `int(dt.timestamp() * 1000)` 이었다. `timestamp()` 가 float 이라
+    `...357.9998` 같은 값이 나오고 `int()` 가 357 로 **깎아버린다**.
+    `timedelta` 끼리의 나눗셈은 정수 연산이므로 이 오차 자체가 생기지 않는다
+    (`round()` 로 고치는 것보다 낫다 — 반올림할 오차를 애초에 만들지 않는다).
+
+    밀리초 미만이 실려 오면 가장 가까운 ms 로 반올림한다(경계는 +∞ 방향).
+    토스 API 는 ms 정밀도까지만 주므로 실사용에서는 나머지가 항상 0 이다.
+    """
+    delta = dt - _EPOCH
+    us = delta // _ONE_MICROSECOND      # 정확한 정수 마이크로초
+    ms, rem = divmod(us, 1000)          # rem 은 항상 0..999 (Python floor divmod)
+    return ms + 1 if rem >= 500 else ms
 
 
 def ms_to_iso(ts_ms: int) -> str:

@@ -542,3 +542,156 @@ def test_live_probe_refuses_without_base_url(monkeypatch, capsys):
     rc = lp.main(["--probe", "fx"])
     assert rc == 3
     assert "base-url" in capsys.readouterr().err
+
+
+# ================================================= iso_to_ms 절삭 (감사 M-2)
+#
+# `int(dt.timestamp() * 1000)` 은 float 오차로 `...357.9998` 을 357 로 **깎았다**.
+# 영향 범위는 실측상 시대 의존적이다 — 2004 년대에서는 24%가 어긋났고 우리 운용 구간
+# (2023~2027)에서는 500만 건 연속 스캔에서 0건이었다. 그래도 고친 이유는 (1) 값이
+# 싸고 (2) `trades_snap` PK 가 ts_ms 를 포함해 1ms 오차가 같은 체결을 두 행으로 만들며
+# (3) 정수 연산은 시대 의존성 자체를 없애기 때문이다.
+
+
+def _exact_ms(dt) -> int:
+    """부동소수점을 쓰지 않는 기준값."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    return (dt - _dt(1970, 1, 1, tzinfo=_tz.utc)) // _td(milliseconds=1)
+
+
+@pytest.mark.parametrize("iso,expect_ms", [
+    # 수정 전 int() 가 각각 1ms 씩 깎던 실제 케이스
+    ("2004-02-05T20:22:01.074+09:00", 1075980121074),
+    ("2004-04-15T17:02:52.824+09:00", 1082016172824),
+    ("2004-05-21T15:55:49.274+09:00", 1085122549274),
+    ("2004-10-05T14:31:33.666+09:00", 1096954293666),
+    ("2004-03-10T08:14:08.011+09:00", 1078874048011),
+])
+def test_iso_to_ms_does_not_truncate(iso, expect_ms):
+    from tossmon.api.models import iso_to_ms
+    assert iso_to_ms(iso) == expect_ms
+
+
+def test_iso_to_ms_is_exact_over_a_dense_span_in_the_affected_era():
+    """감사가 200만 건 무작위로 잡은 것을 축소·결정론 버전으로 고정.
+
+    2004-03 구간은 수정 전 **240,000/1,000,000** 이 어긋났다. 0 이어야 한다.
+    """
+    from datetime import datetime, timedelta, timezone
+    from tossmon.api.models import iso_to_ms
+
+    kst = timezone(timedelta(hours=9))
+    base = datetime(2004, 3, 15, 12, 0, 0, tzinfo=timezone.utc).astimezone(kst)
+    bad = 0
+    for i in range(0, 200_000, 7):          # 결정론적 표본
+        dt = base + timedelta(milliseconds=i)
+        if iso_to_ms(dt.isoformat(timespec="milliseconds")) != _exact_ms(dt):
+            bad += 1
+    assert bad == 0, f"{bad}건 절삭 — 감사 M-2 재발"
+
+
+def test_iso_to_ms_is_exact_in_the_operational_era():
+    from datetime import datetime, timedelta, timezone
+    from tossmon.api.models import iso_to_ms
+
+    kst = timezone(timedelta(hours=9))
+    base = datetime(2026, 7, 30, 18, 14, 11, tzinfo=timezone.utc).astimezone(kst)
+    for i in range(0, 50_000, 3):
+        dt = base + timedelta(milliseconds=i)
+        assert iso_to_ms(dt.isoformat(timespec="milliseconds")) == _exact_ms(dt)
+
+
+def test_iso_to_ms_uses_no_float_arithmetic():
+    """구현이 다시 float 경로로 돌아가면 시대 의존 결함이 되살아난다.
+
+    문자열 검색은 docstring 에 `timestamp()` 를 언급하기만 해도 걸리므로 AST 로 본다 —
+    실제 **호출**이 있는지만 판정한다.
+    """
+    import ast
+    import inspect
+    from tossmon.api import models
+
+    tree = ast.parse(inspect.getsource(models._dt_to_ms))
+    called = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert "timestamp" not in called, "float timestamp() 호출 경로로 회귀했다"
+    assert any(isinstance(n, ast.FloorDiv) for n in ast.walk(tree)), \
+        "정수 나눗셈(//)이 사라졌다"
+
+
+def test_ms_to_iso_round_trips_exactly():
+    from tossmon.api.models import iso_to_ms, ms_to_iso
+    for base in (1_075_980_121_074, 1_785_402_855_314):   # 2004, 2026
+        for i in range(0, 20_000, 11):
+            assert iso_to_ms(ms_to_iso(base + i)) == base + i
+
+
+def test_sub_millisecond_input_rounds_to_nearest():
+    """API 는 ms 까지만 주지만, 더 정밀한 값이 와도 깎지 말고 반올림해야 한다."""
+    from tossmon.api.models import iso_to_ms
+    assert iso_to_ms("2026-07-30T00:00:00.000400+00:00") == 1785369600000
+    assert iso_to_ms("2026-07-30T00:00:00.000500+00:00") == 1785369600001
+    assert iso_to_ms("2026-07-30T00:00:00.000600+00:00") == 1785369600001
+
+
+# ============================================ api_keys 파싱 오류 유출 (U-4)
+
+
+def test_malformed_json_api_keys_never_leaks_content(tmp_path):
+    """`json.JSONDecodeError` 는 `str(e)` 에는 위치만 담지만 **`e.doc` 에 파일 전문**을
+    들고 다닌다. 예외 체인 어디에도 시크릿이 남으면 안 된다 (감사 U-4).
+    """
+    import traceback
+
+    secret = "SUPERSECRET_LEAKME"
+    keys = tmp_path / "api_keys"
+    keys.write_text('{"client_id": "abc", "client_secret": "%s" BROKEN}' % secret,
+                    encoding="utf-8")
+    tm = TokenManager(keys, tmp_path / "s.json", live=True)
+
+    with pytest.raises(RuntimeError) as ei:
+        tm._read_keys()
+    exc = ei.value
+
+    assert secret not in str(exc)
+    assert secret not in traceback.format_exc()
+    # `raise ... from None` 은 표시만 억제한다 — __context__ 자체가 끊겨 있어야 한다.
+    assert exc.__context__ is None, "__context__ 에 원본(.doc=파일 전문)이 매달려 있다"
+    assert exc.__cause__ is None
+    for attr in ("doc", "msg", "args"):
+        assert secret not in str(getattr(exc, attr, ""))
+
+
+def test_valid_key_formats_still_parse(tmp_path):
+    keys = tmp_path / "api_keys"
+    keys.write_text('{"client_id":"abc","client_secret":"def"}', encoding="utf-8")
+    assert TokenManager(keys, tmp_path / "s.json", live=True)._read_keys() == ("abc", "def")
+    keys.write_text("CLIENT_ID=abc\nCLIENT_SECRET=def\n", encoding="utf-8")
+    assert TokenManager(keys, tmp_path / "s.json", live=True)._read_keys() == ("abc", "def")
+
+
+
+# ==================================== B-3 통합 계약 (client 측 — W4 가 여기서 청구)
+
+
+async def test_client_counts_every_http_attempt_not_logical_calls(mock_server, tmp_path):  # noqa: F811
+    """W4 의 `after_call` 이 재시도까지 예산에 계상하려면 client 가 **시도 수**를 노출해야 한다.
+
+    감사 B-3 은 재시도가 0회로 계상되던 문제였고 W4 가 `_unaccounted_attempts()` 로 고쳤다.
+    그 구현이 읽는 것이 `counters["requests"]` 이므로, 이 불변식이 깨지면 B-3 이 조용히 재발한다.
+    """
+    from tossmon.api.errors import TransientHTTP
+
+    c = make_client(mock_server.url, tmp_path, timeout_s=3)
+    try:
+        before = c.counters["requests"]
+        with pytest.raises(TransientHTTP):
+            await c._request("GET", "/api/v1/prices", params={"symbols": "AAPL"},
+                             headers={"X-Mock-Inject": "500"})
+        assert c.counters["requests"] - before == 4, \
+            "논리 호출 1건의 HTTP 시도 수(1+재시도3)가 노출되지 않는다 — B-3 재발 위험"
+    finally:
+        await c.aclose()
