@@ -36,9 +36,10 @@ import math
 import os
 import tempfile
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterable, Sequence
+
 
 import pandas as pd
 
@@ -571,6 +572,10 @@ class CollectorContext:
             "promotions": int(self.counters.get("promotions", 0)),
             "tape_gaps": int(self.counters.get("tape_gaps", 0)),
             "api_errors": int(self.counters.get("api_errors", 0)),
+            # 랭킹 저장은 과거 조회 불가 데이터의 유일한 기록 경로 — 유실·클램프가
+            # 조용히 지나가면 안 된다 (2026-08-01 애프터 int64 오버플로 사고).
+            "rankings_write_failures": int(self.counters.get("rankings_write_failures", 0)),
+            "rankings_clamped": int(self.counters.get("rankings_clamped", 0)),
             "precision_rounded": int(getattr(self.client, "counters", {})
                                      .get("precision_rounded", 0)),
             "precision_parsed": parsed,
@@ -927,6 +932,43 @@ async def run_rankings(client: TossClient, store: Store, cfg: Config, *,
     await _loop(ctx, "rankings", period, lambda: rankings_once(ctx), cycles, GROUP_RANKING)
 
 
+#: SQLite INTEGER(int64) 상한. 애프터 세션 랭킹 페이로드의 마이크로 단위 필드가
+#: 이걸 넘는 것이 라이브에서 실측됐다 (2026-08-01 05:00~ 애프터 전환 직후 전 폴 유실).
+SQLITE_INT_MAX = 2 ** 63 - 1
+
+_RANKING_INT_FIELDS = ("last_u", "base_u", "vol_qu", "amount_u")
+
+
+def _clamp_ranking_page(ctx: CollectorContext, page: RankingPage) -> RankingPage:
+    """int64 초과 필드를 **행 단위로** 클램프한 페이지를 돌려준다 (핫픽스 2026-08-01).
+
+    rankings_snap 컬럼은 전부 NOT NULL 이라 NULL 은 불가 — ±(2^63-1) 로 클램프한다.
+    클램프된 행은 값 자체(정확히 9223372036854775807)가 표식이며, 심볼·필드·원값을
+    warn 로그와 `rankings_clamped` 카운터로 남긴다. 저장(executemany 단일 트랜잭션)뿐
+    아니라 RankingBuffer.frame() 의 int64 astype 도 같은 값에 죽으므로 저장·버퍼·트리거
+    **전에** 한 번 지나야 한다.
+    """
+    rows = list(page.rows)
+    dirty = False
+    for i, row in enumerate(rows):
+        over = {name: int(getattr(row, name)) for name in _RANKING_INT_FIELDS
+                if getattr(row, name) is not None
+                and abs(int(getattr(row, name))) > SQLITE_INT_MAX}
+        if not over:
+            continue
+        dirty = True
+        rows[i] = replace(row, **{name: (SQLITE_INT_MAX if v > 0 else -SQLITE_INT_MAX)
+                                  for name, v in over.items()})
+        ctx.bump("rankings_clamped", len(over))
+        detail = ", ".join(f"{name}={v}" for name, v in sorted(over.items()))
+        ctx.notifier.warn(
+            f"rankings clamp {page.ranking_type} rank={row.rank} {row.symbol}: "
+            f"{detail} > int64 max — {SQLITE_INT_MAX} 로 클램프해 저장")
+    if not dirty:
+        return page
+    return replace(page, rows=rows)
+
+
 async def rankings_once(ctx: CollectorContext) -> int:
     """랭킹 4종 스냅샷 → DB + 실시간 버퍼 + 유니버스 판정 + 승격 트리거."""
     stored = 0
@@ -937,7 +979,15 @@ async def rankings_once(ctx: CollectorContext) -> int:
         ctx.after_call(GROUP_RANKING)
         # snap_ms 는 우리 관측 시각. rankedAt 은 12~23초 뒤처지므로 참고값으로만 쓴다.
         snap_ms = ctx.clock.now_ms()
-        stored += ctx.store.insert_rankings(snap_ms, page)
+        page = _clamp_ranking_page(ctx, page)
+        try:
+            stored += ctx.store.insert_rankings(snap_ms, page)
+        except Exception as exc:                # 저장 실패가 이 폴의 나머지를 죽이면 안 된다
+            # 랭킹은 과거 조회가 불가능한 유일한 데이터 — 유실은 카운터로 반드시 드러낸다
+            # (docs/11 §11-1: 이번 사고는 api_errors=0 인 채 110분을 조용히 샜다).
+            ctx.bump("rankings_write_failures")
+            ctx.notifier.warn(f"rankings store failed ({page.ranking_type}): "
+                              f"{type(exc).__name__}: {exc} — 이 폴 분량은 복구 불가 유실")
         ctx.rankings.add(snap_ms, page, keep=watch)
         # 워치리스트 후보(상위권)의 tier0 판정을 트리거 **이전에** 확정한다 (감사 F-2).
         await _resolve_universe(
