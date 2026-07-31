@@ -76,7 +76,10 @@ def atr_u(df: pd.DataFrame, n: int = DEFAULT_WINDOW_DAYS) -> int | None:
 # C-7: compute_daily_baseline
 # --------------------------------------------------------------------------- #
 def compute_daily_baseline(df_1d: pd.DataFrame,
-                           window_days: int = DEFAULT_WINDOW_DAYS) -> dict:
+                           window_days: int = DEFAULT_WINDOW_DAYS, *,
+                           as_of_ms: int | None = None,
+                           as_of_date: str | None = None,
+                           calendar: list[UsMarketDay] | None = None) -> dict:
     """일봉 20일 롤링 베이스라인.
 
     반환 키
@@ -92,22 +95,42 @@ def compute_daily_baseline(df_1d: pd.DataFrame,
 
     거래량 z-score 의 **기본 정의는 로그 공간**(`daily_volume_z`). 원공간 z 는 우편향
     때문에 임계값 3~4 가 사실상 도달 불가/과민해진다 (docs/07 §2.3).
+
+    **as-of 앵커 (사전등록 §2.2, 2026-07-31 보강)**: `as_of_ms`(또는 `as_of_date`+`calendar`)
+    를 주면 **그 시각보다 엄격히 과거의 일봉만** 후보가 된다. 곡선(§2.4b)과 같은 원칙이며,
+    호출자 재량에 맡기지 않고 **함수가 강제**한다. 앵커 없이 부르면 입력 프레임의 마지막
+    20행을 쓰므로 D 이후 일봉이 섞인 프레임에서 조용히 미래를 본다 —
+    반환 dict 의 `as_of_applied=False` 가 그 사실을 드러낸다. **주 분석은
+    `prereg_daily_baseline()` 로 부른다.**
     """
     empty = {"n_days": 0, "window_days": window_days, "adv20_qu": None, "atr20_u": None,
              "atr20_pct": float("nan"), "close_last_u": None,
              "vol_mean_qu": float("nan"), "vol_std_qu": float("nan"),
              "logvol_mean": float("nan"), "logvol_std": float("nan"),
-             "ret_std": float("nan")}
+             "ret_std": float("nan"), "as_of_ms": None, "as_of_applied": False}
+    if as_of_ms is None and as_of_date is not None:
+        for start_ms, _end_ms, date in _market_day_spans(calendar or []):
+            if date == as_of_date:
+                as_of_ms = int(start_ms)
+                break
+    empty["as_of_ms"] = as_of_ms
+    empty["as_of_applied"] = as_of_ms is not None
     if df_1d is None or df_1d.empty:
         return empty
     _require_single_symbol(df_1d)
 
     df = df_1d.sort_values("ts_ms")
+    if as_of_ms is not None:
+        df = df[df["ts_ms"] < int(as_of_ms)]      # 엄격히 과거만
+        if df.empty:
+            return empty
     tail = df.iloc[-window_days:]
     vols = [int(v) for v in tail["vol_qu"].tolist() if int(v) > 0]
     closes = [int(c) for c in df["close_u"].tolist()]
 
     out = dict(empty)
+    out["as_of_ms"] = as_of_ms
+    out["as_of_applied"] = as_of_ms is not None
     out["n_days"] = int(len(tail))
     out["close_last_u"] = closes[-1]
 
@@ -300,6 +323,128 @@ def _session_table(curve: pd.Series,
         return sorted((w.start_ms, w.end_ms, n, md.date)
                       for md in calendar for n, w in session_windows(md))
     return curve.attrs.get(CURVE_SESSION_KEY, [])
+
+
+# --------------------------------------------------------------------------- #
+# 사전등록 §7-e — 분할일 식별 (1분봉 원주가 vs 일봉 수정주가)
+# --------------------------------------------------------------------------- #
+#: 분할 판정 임계 — **얼린 값**(사전등록 §7-e, 2026-07-31 확정). 근거: 최소 실재 분할비
+#: 2:1(점프 2.0배)과 비분할 노이즈(배당 조정 ≲1.1배) 사이의 중간값. 바꾸지 말 것.
+SPLIT_RATIO_THRESHOLD = 1.5
+
+
+def _market_day_spans(calendar: list[UsMarketDay]) -> list[tuple[int, int, str]]:
+    out = [(w[0][1].start_ms, w[-1][1].end_ms, md.date)
+           for md, w in ((md, session_windows(md)) for md in (calendar or [])) if w]
+    return sorted(out)
+
+
+def split_ratio_series(df_1m: pd.DataFrame, df_1d: pd.DataFrame,
+                       calendar: list[UsMarketDay]) -> pd.Series:
+    """매매일별 조정계수 `r` (사전등록 §7-e).
+
+        r(d) = 일봉 **수정** 종가(d) / 같은 매매일 1분봉 **마지막** 종가(원주가)
+
+    분할이 없는 구간에서 r 은 누적 조정계수라 (배당 조정 수준의 미세 변동을 빼면) 상수이고,
+    분할일에 분할비만큼 점프한다.
+
+    index: 매매일 `date`(문자열, 오름차순), value: r (float).
+    두 계열 중 하나라도 그 매매일에 없으면 그 날은 **행이 없다**(계산 불가).
+    """
+    empty = pd.Series([], index=pd.Index([], dtype="object", name="date"),
+                      dtype="float64", name="split_ratio")
+    if df_1m is None or len(df_1m) == 0 or df_1d is None or len(df_1d) == 0:
+        return empty
+    _require_single_symbol(df_1m)
+    _require_single_symbol(df_1d)
+
+    spans = _market_day_spans(calendar)
+    if not spans:
+        return empty
+    starts = [s[0] for s in spans]
+
+    def _bucket(ts: int) -> str | None:
+        j = bisect_right(starts, ts) - 1
+        return spans[j][2] if (j >= 0 and spans[j][0] <= ts < spans[j][1]) else None
+
+    # 매매일별 1분봉 마지막 종가(원주가)
+    last_1m: dict[str, tuple[int, int]] = {}      # date -> (ts, close)
+    for ts, close in zip(df_1m["ts_ms"].tolist(), df_1m["close_u"].tolist()):
+        d = _bucket(int(ts))
+        if d is None:
+            continue
+        prev = last_1m.get(d)
+        if prev is None or int(ts) > prev[0]:
+            last_1m[d] = (int(ts), int(close))
+
+    # 매매일별 일봉(수정주가) 종가
+    daily: dict[str, tuple[int, int]] = {}
+    for ts, close in zip(df_1d["ts_ms"].tolist(), df_1d["close_u"].tolist()):
+        d = _bucket(int(ts))
+        if d is None:
+            continue
+        prev = daily.get(d)
+        if prev is None or int(ts) >= prev[0]:
+            daily[d] = (int(ts), int(close))
+
+    dates = sorted(set(last_1m) & set(daily))
+    vals = [daily[d][1] / last_1m[d][1] for d in dates if last_1m[d][1] > 0]
+    idx = [d for d in dates if last_1m[d][1] > 0]
+    return pd.Series(vals, index=pd.Index(idx, dtype="object", name="date"),
+                     dtype="float64", name="split_ratio")
+
+
+def detect_split_dates(df_1m: pd.DataFrame, df_1d: pd.DataFrame,
+                       calendar: list[UsMarketDay], *,
+                       threshold: float = SPLIT_RATIO_THRESHOLD) -> set[str]:
+    """분할 매매일 집합 (사전등록 §7-e).
+
+    `r` 이 **직전(계산 가능한) 매매일 대비 `threshold` 배 이상 또는 1/`threshold` 이하**로
+    급변한 매매일을 분할일로 등록한다.
+
+    경계조건
+      * **첫 매매일은 분할일이 아니다** — 비교할 직전 매매일이 없어 r 변화를 정의할 수 없다.
+      * r 을 계산할 수 없는 날(1분봉 또는 일봉 결측)은 건너뛰고, 다음 계산 가능한 날은
+        **마지막으로 관측된 r** 과 비교한다. 결측 구간을 사이에 두고 분할이 일어나도
+        놓치지 않기 위함이다.
+      * 새 수집은 필요 없다 — 이미 보유한 1분봉(원주가)·일봉(수정주가)만 쓴다.
+    """
+    r = split_ratio_series(df_1m, df_1d, calendar)
+    out: set[str] = set()
+    prev: float | None = None
+    lo = 1.0 / threshold
+    for d, v in r.items():
+        if not (v == v and v > 0):
+            continue
+        if prev is not None:
+            jump = v / prev
+            if jump >= threshold or jump <= lo:
+                out.add(str(d))
+        prev = v
+    return out
+
+
+def detect_split_dates_by_symbol(df_1m: pd.DataFrame, df_1d: pd.DataFrame,
+                                 calendar: list[UsMarketDay], *,
+                                 threshold: float = SPLIT_RATIO_THRESHOLD
+                                 ) -> dict[str, set[str]]:
+    """다심볼 편의 래퍼 — `{symbol: {분할 매매일 date}}`."""
+    if df_1m is None or len(df_1m) == 0 or "symbol" not in df_1m.columns:
+        return {}
+    out: dict[str, set[str]] = {}
+    daily_has_symbol = df_1d is not None and len(df_1d) and "symbol" in df_1d.columns
+    for sym, g in df_1m.groupby("symbol"):
+        d1 = (df_1d[df_1d["symbol"] == sym] if daily_has_symbol else df_1d)
+        out[str(sym)] = detect_split_dates(g, d1, calendar, threshold=threshold)
+    return out
+
+
+def prereg_daily_baseline(df_1d: pd.DataFrame, as_of_ms: int) -> dict:
+    """사전등록 2.2 일봉 베이스라인 — 주 분석 진입점.
+
+    평가일 as_of_ms 기준 엄격히 과거 20 매매일만 쓴다. 앵커를 잊을 수 없게 필수 인자다.
+    """
+    return compute_daily_baseline(df_1d, DEFAULT_WINDOW_DAYS, as_of_ms=as_of_ms)
 
 
 def prereg_volume_curve(df_1m: pd.DataFrame, calendar: list[UsMarketDay],

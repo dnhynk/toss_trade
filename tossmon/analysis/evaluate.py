@@ -554,6 +554,12 @@ EXCLUSION_REASONS = (
     "half_day_length_sample",  # 반일장 — (세션,길이) 표본 부족으로 RVOL 미가용
 )
 
+#: 시총 경계 ±10% 감도 밴드 (사전등록 §2.7). **판정은 확정 경계로만** 하고 밴드는
+#: 보고 전용이다 — 경계를 움직이는 근거로 쓸 수 없다.
+MCAP_BAND_FRAC = 0.10
+MCAP_BAND_ROWS = ("mcap_band_low_kept", "mcap_band_low_excluded",
+                  "mcap_band_high_kept", "mcap_band_high_excluded")
+
 
 def _t0_close_map(events: pd.DataFrame, df_1m: pd.DataFrame | None) -> dict:
     """(symbol, t0_ms) → T0 봉 종가(원주가). df_1m 이 없으면 빈 맵."""
@@ -584,7 +590,9 @@ def apply_sample_filter(events: pd.DataFrame, meta: pd.DataFrame, *,
                         price_min_u: int = SAMPLE_PRICE_MIN_U,
                         price_max_u: int = SAMPLE_PRICE_MAX_U,
                         mcap_min_u: int = SAMPLE_MCAP_MIN_U,
-                        mcap_max_u: int = SAMPLE_MCAP_MAX_U
+                        mcap_max_u: int = SAMPLE_MCAP_MAX_U,
+                        split_excluded: int | None = None,
+                        split_dates_applied: bool | None = None
                         ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """사전등록 §2.7 표본 필터. 반환 `(kept, reasons_df)`.
 
@@ -606,9 +614,18 @@ def apply_sample_filter(events: pd.DataFrame, meta: pd.DataFrame, *,
     n_total = 0 if events is None else len(events)
     counts = dict.fromkeys(EXCLUSION_REASONS, 0)
     if n_total == 0:
-        reasons = pd.DataFrame({"reason": list(EXCLUSION_REASONS),
-                                "n": [0] * len(EXCLUSION_REASONS),
-                                "share": [_NAN] * len(EXCLUSION_REASONS)})
+        rows = [{"reason": r, "n": 0, "share": _NAN, "scope": "event"}
+                for r in EXCLUSION_REASONS]
+        # 이벤트가 0건이어도 분할 제외 건수·출처 표식은 남아야 한다 (§7-e).
+        if split_excluded is not None:
+            rows.append({"reason": "split_excluded", "n": int(split_excluded),
+                         "share": _NAN, "scope": "symbol_day"})
+        if split_dates_applied is False:
+            rows.append({"reason": "(split_dates_not_applied)", "n": _NAN,
+                         "share": _NAN, "scope": "provenance",
+                         "note": "split_dates 미적용 — 이 검출 결과는 주 분석에 쓸 수 없다"
+                                 " (사전등록 §7-e)"})
+        reasons = pd.DataFrame(rows)
         reasons["n_total"] = 0
         reasons["n_kept"] = 0
         return (events if events is not None else pd.DataFrame()), reasons
@@ -620,7 +637,9 @@ def apply_sample_filter(events: pd.DataFrame, meta: pd.DataFrame, *,
     dropped = _dropped_length_keys(curve)
 
     keep_mask: list[bool] = []
+    mcap_of: list[int | None] = []
     for _i, e in events.iterrows():
+        mcaps: list[int] = []
         sym = str(e.get("symbol")) if pd.notna(e.get("symbol")) else None
         t0 = int(e["t0_ms"])
         reason = None
@@ -650,6 +669,7 @@ def apply_sample_filter(events: pd.DataFrame, meta: pd.DataFrame, *,
                     reason = "meta_missing"
                 else:
                     mcap_u = (close_u * int(shares)) // MICRO
+                    mcaps.append(mcap_u)
                     if not (mcap_min_u <= mcap_u <= mcap_max_u):
                         reason = "mcap_out_of_range"
 
@@ -662,13 +682,37 @@ def apply_sample_filter(events: pd.DataFrame, meta: pd.DataFrame, *,
         if reason is not None:
             counts[reason] += 1
         keep_mask.append(reason is None)
+        mcap_of.append(mcaps[0] if mcaps else None)
 
     kept = events[pd.Series(keep_mask, index=events.index)]
-    reasons = pd.DataFrame({
-        "reason": list(EXCLUSION_REASONS),
-        "n": [counts[r] for r in EXCLUSION_REASONS],
-        "share": [counts[r] / n_total for r in EXCLUSION_REASONS],
-    })
+
+    # 시총 경계 ±10% 밴드 (사전등록 §2.7) — 걸린 쪽/통과한 쪽 **양쪽 모두** 보고.
+    lo_band = (int(mcap_min_u * (1 - MCAP_BAND_FRAC)), int(mcap_min_u * (1 + MCAP_BAND_FRAC)))
+    hi_band = (int(mcap_max_u * (1 - MCAP_BAND_FRAC)), int(mcap_max_u * (1 + MCAP_BAND_FRAC)))
+    band = dict.fromkeys(MCAP_BAND_ROWS, 0)
+    for mc, keep in zip(mcap_of, keep_mask):
+        if mc is None:
+            continue
+        if lo_band[0] <= mc <= lo_band[1]:
+            band["mcap_band_low_kept" if keep else "mcap_band_low_excluded"] += 1
+        if hi_band[0] <= mc <= hi_band[1]:
+            band["mcap_band_high_kept" if keep else "mcap_band_high_excluded"] += 1
+
+    rows = [{"reason": r, "n": counts[r], "share": counts[r] / n_total,
+             "scope": "event"} for r in EXCLUSION_REASONS]
+    rows += [{"reason": r, "n": band[r], "share": band[r] / n_total,
+              "scope": "mcap_band_sensitivity"} for r in MCAP_BAND_ROWS]
+    # 사전등록 §7-e: 분할일 당일조건 제외 건수는 **(심볼,매매일) 단위**라 이벤트 제외와
+    # 합산하면 안 된다 — scope 로 구분한다.
+    if split_excluded is not None:
+        rows.append({"reason": "split_excluded", "n": int(split_excluded),
+                     "share": _NAN, "scope": "symbol_day"})
+    if split_dates_applied is False:
+        rows.append({"reason": "(split_dates_not_applied)", "n": _NAN, "share": _NAN,
+                     "scope": "provenance",
+                     "note": "split_dates 미적용 — 이 검출 결과는 주 분석에 쓸 수 없다"
+                             " (사전등록 §7-e)"})
+    reasons = pd.DataFrame(rows)
     reasons["n_total"] = n_total
     reasons["n_kept"] = int(len(kept))
     return kept, reasons
@@ -686,16 +730,29 @@ def run_all(events: pd.DataFrame, feats: pd.DataFrame, rankings: pd.DataFrame,
     주지 않으면 필터를 적용하지 않고 그 사실을 섹션에 남긴다 — 필터를 안 돌린 것과
     제외가 0건인 것은 리포트에서 반드시 구분돼야 한다.
     """
+    # 사전등록 §7-e: split_dates 적용 여부는 events.attrs 가 운반한다.
+    attrs = getattr(events, "attrs", {}) or {}
+    split_applied = attrs.get("split_dates_applied")
+    split_n = attrs.get("split_excluded")
     if meta is not None:
         events, reasons = apply_sample_filter(events, meta, df_1m=df_1m, curve=curve,
-                                              calendar=calendar)
+                                              calendar=calendar,
+                                              split_excluded=split_n,
+                                              split_dates_applied=split_applied)
     else:
         reasons = pd.DataFrame([{
             "reason": "(filter_not_applied)", "n": _NAN, "share": _NAN,
             "n_total": 0 if events is None else len(events),
             "n_kept": 0 if events is None else len(events),
             "note": "meta 미제공 — 사전등록 §2.7 표본 필터를 적용하지 않았다",
+            "scope": "provenance",
         }])
+        if split_applied is False:
+            reasons = pd.concat([reasons, pd.DataFrame([{
+                "reason": "(split_dates_not_applied)", "n": _NAN, "share": _NAN,
+                "scope": "provenance",
+                "note": "split_dates 미적용 — 이 검출 결과는 주 분석에 쓸 수 없다"
+                        " (사전등록 §7-e)"}])], ignore_index=True)
     out = {
         "q1_volume_leadtime": q1_volume_leadtime(events, feats, gate=gate),
         "q2_ranking_lead_lag": q2_ranking_lead_lag(events, rankings, gate=gate),
