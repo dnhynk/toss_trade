@@ -104,6 +104,12 @@ orca orchestration check --wait --types worker_done,escalation,question,status -
 3. ~~U-4 점검~~ → W2 머지. 실유출 1건 발견·수정(`UnicodeDecodeError.args` 바이트 원문).
 
 ### (C) Phase 1-C 분석 — **다음 작업. 단 백필은 라이브 리스가 필요하다**
+
+> **사용자 지시 (7/31 밤, 구속력 있음): 아침에 백필 라이브 실행을 승인하기 전에
+> W6 3차 감사(`task_bdbca590ecbe`, docs/14) 결과를 사용자에게 먼저 보고할 것.**
+> 순서: ① W6 감사 결과 수령 ② (W4 백필 러너 완성 시 그 코드까지 감사 범위에 추가 검토)
+> ③ 사용자에게 감사 요약 보고(턴 마지막 텍스트로) ④ blocker 없으면 그때 백필 승인.
+> blocker 가 있으면 승인 보류하고 수정 먼저.
 **`docs/12_preregistration.md` 를 먼저 읽고 그대로 따를 것** (개정 4건 전부 머지된 최신판).
 `docs/13_trial_registry.md` 는 **첫 시행 전에** 생성해야 한다(형식은 사전등록에 규정).
 분석 대상은 오늘 재수집분 + 백필. **어제(7/30) DB(`tossmon_20260730_polluted.db`)는
