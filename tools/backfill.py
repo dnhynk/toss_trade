@@ -554,6 +554,13 @@ class Runner:
             sc = self.checkpoint.screen_of(symbol) or {}
             spans: list[tuple[int, int]] = []
             for cand in sc.get("candidates", ()):
+                # 날짜 경계는 창 계획에도 적용한다 — 스크린 결과(§2.8 표본 프레임 기록)는
+                # 그대로 두고 **가져올 창만** 자른다. 1분봉 보관(~320일) 밖의 창은 어차피
+                # 빈 페이지 프로브만 남기므로, 경계는 데이터 손실 없이 호출량을 자른다.
+                if self.date_from is not None and cand["date"] < self.date_from:
+                    continue
+                if self.date_to is not None and cand["date"] > self.date_to:
+                    continue
                 win = self.calendar.window_for(cand["date"])
                 if win is None:
                     self.fail("day_not_in_calendar")
@@ -565,6 +572,14 @@ class Runner:
             for span in merge_spans(spans):
                 self.checkpoint.window_state(symbol, span)      # todo 로 등록
                 planned.append((symbol, span))
+        # 경계가 바뀌어 계획에서 빠진, **손대지 않은**(todo·0봉) 창은 정리한다 —
+        # 진행분이 있는 창은 절대 지우지 않는다 (멱등 재개 보존).
+        planned_keys = {self.checkpoint.window_key(s, sp) for s, sp in planned}
+        for key in list(self.checkpoint.data["windows"]):
+            w = self.checkpoint.data["windows"][key]
+            if key not in planned_keys and w.get("status") == "todo" \
+                    and not w.get("bars"):
+                self.checkpoint.data["windows"].pop(key)
         self.checkpoint.save()
         if screen_only:
             return self.manifest(symbols)

@@ -413,6 +413,31 @@ def test_screen_only_plans_windows_without_any_1m_call(tmp_path):
         store.close()
 
 
+def test_date_bound_prunes_planned_windows_but_keeps_screen_record(tmp_path):
+    """라이브 운영 발견: 일봉 보관이 2001년까지 닿아 무경계 창이 수십만 일이 된다.
+
+    --from 은 **창 계획**에만 적용된다 — 스크린 결과(§2.8 표본 프레임)는 그대로 남고,
+    캐시된 스크린 위에 재실행해도 경계 밖 창은 계획·호출에서 빠지며, 이미 등록된
+    미착수(todo) 창은 정리된다.
+    """
+    runner, client, store = _build_run(tmp_path)
+    try:
+        asyncio.run(runner.run(["SPKY"], screen_only=True))     # 무경계 창 등록 (todo)
+        assert len(runner.checkpoint.data["windows"]) == 1
+
+        runner2, client2, store2 = _build_run(tmp_path)
+        store2.close()
+        runner2.store = None
+        runner2.date_from = "2026-03-01"                        # SPIKE_D(02-20) 를 배제
+        manifest = asyncio.run(runner2.run(["SPKY"]))
+        assert client2.calls["1m"] == 0                         # 경계 밖 — 호출 없음
+        assert runner2.checkpoint.data["windows"] == {}         # 미착수 창 정리됨
+        cands = manifest["symbols"]["SPKY"]["candidate_days"]
+        assert [c["date"] for c in cands] == [SPIKE_D]          # 스크린 기록은 보존
+    finally:
+        store.close()
+
+
 def test_estimate_uses_checkpoint_and_needs_no_client(tmp_path):
     runner, client, store = _build_run(tmp_path)
     try:
