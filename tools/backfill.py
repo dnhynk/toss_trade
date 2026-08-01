@@ -31,6 +31,13 @@
     - 라이브는 이중 잠금: 설정이 live 라도 --allow-live 플래그 없이는 기동을 거부한다.
       (라이브 실행은 코디네이터 승인 후 — 계약 C-9, A6 전환 규칙.)
 
+우아한 정지 (`--stop-file PATH`)
+    지정 경로에 파일이 나타나면 다음 경계(심볼 스크린 사이·창 사이·1분봉 페이지 사이)에서
+    체크포인트를 저장하고 종료코드 4 로 끝난다. 슈퍼바이저(tools/backfill_supervisor.py)가
+    이 채널로 정상 정지를 전달한다 — 강제 킬과 달리 진행 중 창의 페이지 진행까지 남는다.
+
+종료코드: 0 완료, 2 기동 거부, 3 Forbidden/ForbiddenEndpoint 치명, 4 stop-file 정지, 130 SIGINT.
+
 콘솔 출력은 ASCII 전용이다 (Windows cp949 콘솔 안전). 파일 출력은 UTF-8.
 """
 from __future__ import annotations
@@ -96,6 +103,10 @@ MAX_CALENDAR_WALK = 2100
 
 GROUP_CHART = "MARKET_DATA_CHART"
 GROUP_INFO = "MARKET_INFO"
+
+
+class StopRequested(Exception):
+    """--stop-file 감지 — 정상 정지 요청 (체크포인트 저장 후 종료코드 4)."""
 
 
 def _utc_date(ts_ms: int) -> str:
@@ -388,12 +399,23 @@ class Runner:
     out_dir: Path
     date_from: str | None = None
     date_to: str | None = None
+    stop_file: Path | None = None
     failures: dict[str, int] = field(default_factory=dict)
     totals: dict[str, int] = field(default_factory=lambda: {
         "calls_daily": 0, "calls_1m": 0, "bars_daily": 0, "bars_1m": 0})
 
     def fail(self, reason: str, n: int = 1) -> None:
         self.failures[reason] = self.failures.get(reason, 0) + n
+
+    # ---- 우아한 정지 (--stop-file) --------------------------------------
+    def _stop_requested(self) -> bool:
+        return self.stop_file is not None and self.stop_file.exists()
+
+    def _check_stop(self) -> None:
+        """경계 지점에서 호출 — 정지 요청이면 체크포인트를 남기고 즉시 올린다."""
+        if self._stop_requested():
+            self.checkpoint.save()
+            raise StopRequested(f"stop file present: {self.stop_file}")
 
     # ---- 1단계: 일봉 스크린 ---------------------------------------------
     async def screen_symbol(self, symbol: str) -> dict:
@@ -463,6 +485,7 @@ class Runner:
                   else end_ms)
         pages = 0
         while pages < MAX_PAGES_PER_WINDOW:
+            self._check_stop()                              # 페이지 사이 정지 경계
             page = await self.client.get_candles(symbol, "1m", count=PAGE,
                                                  before_ms=before,
                                                  adjusted=BACKFILL_1M_ADJUSTED)
@@ -513,6 +536,7 @@ class Runner:
                                "the nominal price band analysis.")
         # 1) 스크린
         for i, symbol in enumerate(symbols):
+            self._check_stop()                              # 심볼 사이 정지 경계
             try:
                 await self.screen_symbol(symbol)
             except (Forbidden, ForbiddenEndpoint):
@@ -532,6 +556,7 @@ class Runner:
                 if latest is None or cand["date"] > latest:
                     latest = cand["date"]
         if earliest is not None:
+            self._check_stop()                              # 달력 걷기 전 정지 경계
             def shift(date: str, days: int) -> str:
                 return _utc_date(int(datetime.strptime(date, "%Y-%m-%d")
                                      .replace(tzinfo=timezone.utc).timestamp() * 1000)
@@ -554,6 +579,13 @@ class Runner:
             sc = self.checkpoint.screen_of(symbol) or {}
             spans: list[tuple[int, int]] = []
             for cand in sc.get("candidates", ()):
+                # 날짜 경계는 창 계획에도 적용한다 — 스크린 결과(§2.8 표본 프레임 기록)는
+                # 그대로 두고 **가져올 창만** 자른다. 1분봉 보관(~320일) 밖의 창은 어차피
+                # 빈 페이지 프로브만 남기므로, 경계는 데이터 손실 없이 호출량을 자른다.
+                if self.date_from is not None and cand["date"] < self.date_from:
+                    continue
+                if self.date_to is not None and cand["date"] > self.date_to:
+                    continue
                 win = self.calendar.window_for(cand["date"])
                 if win is None:
                     self.fail("day_not_in_calendar")
@@ -565,11 +597,20 @@ class Runner:
             for span in merge_spans(spans):
                 self.checkpoint.window_state(symbol, span)      # todo 로 등록
                 planned.append((symbol, span))
+        # 경계가 바뀌어 계획에서 빠진, **손대지 않은**(todo·0봉) 창은 정리한다 —
+        # 진행분이 있는 창은 절대 지우지 않는다 (멱등 재개 보존).
+        planned_keys = {self.checkpoint.window_key(s, sp) for s, sp in planned}
+        for key in list(self.checkpoint.data["windows"]):
+            w = self.checkpoint.data["windows"][key]
+            if key not in planned_keys and w.get("status") == "todo" \
+                    and not w.get("bars"):
+                self.checkpoint.data["windows"].pop(key)
         self.checkpoint.save()
         if screen_only:
             return self.manifest(symbols)
         # 4) 백필
         for symbol, span in planned:
+            self._check_stop()                              # 창 사이 정지 경계
             try:
                 await self.backfill_window(symbol, span)
             except (Forbidden, ForbiddenEndpoint):
@@ -816,10 +857,15 @@ async def amain(args: argparse.Namespace) -> int:
     store = Store(db_path)
     runner = Runner(cfg=cfg, client=client, store=store, checkpoint=checkpoint,
                     calendar=calendar, out_dir=out_dir,
-                    date_from=args.date_from, date_to=args.date_to)
+                    date_from=args.date_from, date_to=args.date_to,
+                    stop_file=Path(args.stop_file) if args.stop_file else None)
     started = time.monotonic()
     try:
         manifest = await runner.run(symbols, screen_only=args.screen_only)
+    except StopRequested as exc:
+        print(f"STOPPED: {exc} - checkpoint saved; rerun resumes")
+        checkpoint.save()
+        return 4
     except (Forbidden, ForbiddenEndpoint) as exc:
         print(f"FATAL: {type(exc).__name__}: {exc} - aborting whole run")
         checkpoint.save()
@@ -871,6 +917,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--assume-hit-rate", type=float, default=0.005)
     ap.add_argument("--allow-live", action="store_true",
                     help="required on top of api.live=true (coordinator approval)")
+    ap.add_argument("--stop-file", default=None,
+                    help="graceful stop: exit 4 with checkpoint saved when this "
+                         "file appears (supervisor channel)")
     args = ap.parse_args(argv)
     try:
         return asyncio.run(amain(args))
