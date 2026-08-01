@@ -143,11 +143,13 @@ n_widened 노출).
 - **GO 메뉴** (1분봉 보관 ~320일이라 날짜 경계는 데이터 손실 0):
   [B]=--from 2025-09-01 전심볼 4,002창 17.6~35h (**권고** — 훈련 데이터 전부+§2.8 프레임 정합)
   [A]=2026-01-01 전심볼 2,651창 11.6~22.9h (훈련 구간 포기) [C]/[D]=러너 한정(프레임 이탈)
-- **GO 전달 방법**: `orca terminal send --terminal term_8017b557-2c9f-4f22-bf36-06c919c66d58
-  --text "[coordinator] GO <옵션문자>. Proceed with the full 1m backfill run per your
-  stop-line menu." --enter` (핸들 stale 이면 w4-collector 워크트리에서 재확인).
-  태스크 `task_bf64c4c19022`/`ctx_69b1466adb5b`. 완료 시 worker_done → 머지 게이트
-  (러너 패치 7a4d0a0 포함) → Phase 1-C 분석 디스패치.
+- **GO B 발사됨 (08-01 12:15)** — 분할 실행 계획: 사용자 네트워크 단절이 ~14h 뒤라
+  **13.5h 시점에 코디네이터 STOP 지시**(타이머 Monitor `b8hmoorzc`, 12:15 무장, 만료
+  ~08-02 01:45. 타이머가 죽으면 재무장 — 남은 시간 계산 기준은 이 타임스탬프),
+  W4 자체 failsafe T+13h50m. 정지 후 창 완료/잔여 보고 → **사용자 notify** → 사용자가
+  노트북 재개 후 잔여 GO → 같은 명령 재실행이면 체크포인트가 이어받음.
+  태스크 `task_bf64c4c19022`/`ctx_69b1466adb5b`, W4 핸들 term_8017b557.
+  완료 시 worker_done → 머지 게이트(러너 패치 7a4d0a0 포함) → Phase 1-C 분석 디스패치.
 - 스크린 산출물: data/backfill.db (유니버스+일봉 313,934), data/backfill/calendar_us.json
   (W3 save_calendar 형식, 2,107 매매일), 스크린 캐시(재스크린 불요, 멱등 재시작 안전). 완료 후 Phase 1-C 분석 디스패치
 (스펙은 W3 리허설 보고서의 절차 초안 + 감사 §VII 러너 강제조항 3줄 기반으로 작성할 것).
