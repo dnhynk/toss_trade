@@ -381,3 +381,288 @@ AAPL은 정규장에서 50건이 단 3초 분량이다(프리마켓 10분 대비
 ## 6. 토큰 위생
 
 리허설 종료 후 `data/token_state.json.lock` 잠김 여부를 확인해 이 절에 기록한다(미완).
+
+---
+
+# 재수집 (2026-07-31) — 유니버스 필터 적용
+
+> 어제(§0~6) 15시간 수집은 **파이프라인이 무인으로 도는가**를 검증했지만, 감사 결과 유니버스
+> 필터가 수집 경로에 전혀 적용되지 않아 NOK·AMD·ASML·META·GS 같은 대형주가 워치리스트를
+> 채우고 tier3 진입을 봉쇄했다(§5-1 관측2 참고) — **표적 모집단이 아니었다.** W4가 tier0
+> 게이트를 collector 에 연결했고, 이 절은 그 수정이 반영된 **분석에 쓸 수 있는 첫 데이터**의
+> 수집 기록이다. 어제 DB는 `data/tossmon_20260730_polluted.db` 로 보존(삭제 안 함), 오늘은
+> **새 DB**(`data/tossmon.db`)로 시작한다.
+
+## 7. 블로커 — NASDAQ `$` 우선주 심볼이 `/stocks` 배치를 통째로 400 시킴 — `해결됨`
+
+**증상**: `python -m tossmon.universe --config config/config.yaml` 라이브 실행 시 첫 청크
+(200종목)에서 즉시 `SchemaMismatch: http-400 code=invalid-request` 로 죽음(`build_universe`가
+예외를 잡지 않아 전체가 죽음).
+
+**원인 진단(최소 호출로 확인, ~5콜)**: `tossmon/universe/seed.py`의 `_SYMBOL_RE`가 `$`를
+유효 문자로 허용했다(NASDAQ Trader 는 우선주를 `ABR$D` 형식으로 표기). `/stocks`에 `$`
+포함 심볼을 단 하나라도 섞어 배치 조회하면(청정 심볼과 섞어도) **배치 전체**가 400으로
+거부된다 — 개별 무시가 아니라 요청 자체가 무효화. 참고로 `.` 포함 심볼(단위/워런트, 예
+`AAC.U`)은 문제없음 — 200+빈결과로 조용히 필터됨(기존 미존재 심볼 처리와 동일).
+
+**대응**: 코디네이터에게 즉시 escalate(정확한 원인 위치·1줄 수정안 포함), W2 재engage로
+핫픽스(`$` 제외 + 배치 격리 + `rejected_charset`/`skipped_batches`/`skipped_symbols` 카운터
+추가) → `main c5da76f`. 대기 중 **임시 지정 종목으로 먼저 수집을 시작할지**를 코디네이터와
+논의했으나(한때 (b) 진행하려 했다가 코디네이터가 직접 철회), 최종적으로 **W2 수정을 기다렸다가
+정식 유니버스로 한 번에 시작**하기로 결정했다(사전등록 프로토콜 오염 방지가 결정적 이유,
+docs/12_preregistration.md — W5 소유 아님, 상세는 코디네이터 판단 참고).
+
+## 8. 유니버스 빌드 결과 (2026-07-31T14:15~14:23 KST) — `확인됨`
+
+```
+tier0=1678 tier1=1500 former_runners=535 rejected_charset=0 skipped_batches=0 skipped_symbols=0
+```
+
+- **`rejected_charset=0` 은 정상이다(파싱 단계에서 이미 걸러짐)**: `parse_directory_file`이
+  콘솔에 `"...: 387 symbol(s) rejected — outside Toss API charset..."`를 로그로 남겼다(파싱
+  단계 1차 방어가 387개 전부 처리 → 배치 전송 전 2차 방어(`rejected_charset` 카운터)로 넘어올
+  게 남지 않았다는 뜻 — 코디네이터가 미리 예고한 두 시나리오 중 "0일 수 있다" 쪽으로 확정).
+  ⚠️ **부수 발견**: 이 로그 라인 자체가 Windows 콘솔 cp949 인코딩에서 em-dash(—) 때문에
+  `UnicodeEncodeError`로 실패했다(`--- Logging error ---`, Python `logging` 모듈이 내부적으로
+  잡아 프로세스는 안 죽었지만 그 줄은 유실됨) — 어제 `ops/supervisor.py`에서 고친 것과 **같은
+  부류의 버그**가 `tossmon/universe/seed.py`(W2 소유)에도 있다. 치명적이지 않아 자체 수정하지
+  않고 기록만 남긴다.
+- **tier0=1678 / tier1=1500(정원 상한)**: 시드 7,478종목 중 22.4%가 tier0 통과 — "수십 개"도
+  "수천 개"도 아닌 중간값이다. $0.1~$20 · $10M~$300M 은 미국 상장 마이크로/스몰캡 전반을
+  포괄하는 넓은 대역이라(이 프로젝트가 표적으로 삼는 "동전주" 자체가 원래 개체수가 많은
+  모집단), 이 정도 통과율은 필터가 헐겁다는 신호라기보다 **모집단 자체의 크기**로 해석한다
+  (아래 가격·시총 표본이 이 해석을 뒷받침한다).
+- **오염 사례 재확인 — 5종목 전부 `symbols` 테이블에 없음**:
+
+  | 종목 | 결과 |
+  |---|---|
+  | NOK | NOT IN symbols table |
+  | AMD | NOT IN symbols table |
+  | ASML | NOT IN symbols table |
+  | META | NOT IN symbols table |
+  | GS | NOT IN symbols table |
+
+  어제는 이 5종목이 전부 워치리스트를 채웠다 — 오늘은 유니버스 빌드 단계에서부터 존재하지
+  않는다. 필터 작동의 직접 증거다.
+- **가격·시총 분포 표본(tier1 무작위 15종목)**: 전부 `$0.90~$14.01` / `$24.5M~$275.3M` —
+  설정 경계($0.10~$20, $10M~$300M) 안에 깔끔하게 들어온다. 단위 변환 버그(예: 마이크로달러
+  스케일 오류로 경계를 우회하는 통과)의 흔적 없음.
+
+  | symbol | price(USD) | mcap(USD M) |
+  |---|---:|---:|
+  | ISPR | 1.440 | 82.7 |
+  | HOFT | 14.010 | 150.5 |
+  | CLNN | 5.040 | 64.4 |
+  | MHH | 7.950 | 95.4 |
+  | INLX | 5.455 | 24.5 |
+  | WTF | 2.680 | 129.3 |
+  | TLYS | 3.710 | 113.1 |
+  | OHAC | 9.930 | 224.7 |
+  | GRO | 2.050 | 125.7 |
+  | JABRU | 10.080 | 184.9 |
+  | EXOD | 5.340 | 160.3 |
+  | ZSQR | 5.220 | 275.3 |
+  | KBSX | 0.900 | 40.3 |
+  | BGSF | 5.250 | 56.3 |
+  | VNMEU | 10.300 | 206.0 |
+
+## 9. 수집 시작 (2026-07-31T14:25 KST, day 세션) — `진행 중`
+
+- `Start-Process`로 완전히 분리된 프로세스로 기동(PID 29704 → 자식 collector PID 25444) —
+  어제 배운 교훈(에이전트 세션 백그라운드 잡은 세션 정리 시 함께 죽음) 반영.
+- 시작 로그: `universe: seeded 1500 tier1 symbols from the symbols table (watch=1500)` →
+  `session closed → day` — 유니버스 시드가 정확히 소비됐고 세션도 즉시 올바르게 판정됨.
+- 초기 텔레메트리에 신규 필드 확인: `watch_outside_universe=0 universe_rejected=0`(W4가 노출).
+- 랭킹 진입 즉시 대형주 거부가 실측됨: MU, SNDK, SOXL, SKHY, KORU, EWY, DRAM, SOXS, TQQQ,
+  NVDA, TSLA, QLD 등이 `universe: X rejected at tier0`으로 즉시 걸러짐. 반면 CYCU, MGRX(둘 다
+  소형주, 어제도 tier3까지 올라갔던 종목)는 정상적으로 tier2 승격.
+- 이후 30분 관측·중간 보고는 이 절 아래에 계속 추가한다(미완).
+
+## 10. 30분 중간 점검 (14:25~14:48 KST) — `확인됨`
+
+- **워치리스트 거부 카운터 실측**: 텔레메트리 신규 필드 `universe_rejected`가 0(14:25) →
+  22(14:30) → 23(14:35) → 23(14:40) → 24(14:45)로 계속 증가 — 게이트가 살아서 계속 일하고
+  있다는 직접 증거. `watch_outside_universe`는 시종 0(대형주가 워치리스트에 새는 사고 없음).
+- **tier2/tier3 점유**: tier2 는 43~66 사이에서 유동적(day 세션은 `SESSION_TIER_SCALE`로
+  정원이 300의 40%로 줄어 있어 원래도 좁다 — 정상 범위). **tier3 는 대부분 0이었다가
+  14:46:23 에 `PLYX`가 `confirm` 경로(score=0.682)로 처음 진입** — 어제는 정원 20 중 최대
+  4개였던 게 전부 대형주에 밀려난 자리싸움의 산물이었는데, 오늘은 유니버스가 깨끗해진 뒤
+  **표적 소형주가 실제로 tier3 에 오른 첫 사례**다. 계속 관찰 필요(세션 종료 리포트에 tier3
+  체류 이력을 어제와 나란히 비교할 것).
+- **예산 실측**: `MARKET_DATA 0.15~0.33/7.00`, `MARKET_DATA_CHART 0.55~1.02/3.50`,
+  `RANKING 0.28~0.32/3.50`, 신규 `STOCK 0~0.02/3.50`(tier0 실시간 판정용 `/stocks` 호출 —
+  어제는 없던 그룹, W4가 `_resolve_universe`에서 추가). 전부 여유 큼.
+- **429 실측(정상 처리 확인)**: 14:30:05 `budget: 429 on MARKET_DATA_CHART (count=1) —
+  forcing tier shrink` 1건 발생·정상 대응 로그 확인. `api_errors=0` 유지. `ForbiddenEndpoint`
+  미처리 예외(W4 미머지 항목) 관련 크래시 없음.
+- **대형주 거부 실측 로그**: `MU, SNDK, SOXL, SKHY, KORU, EWY, DRAM, SOXS, TQQQ, NVDA, TSLA,
+  QLD` 등이 랭킹 진입 즉시 `universe: X rejected at tier0`으로 걸러짐(가격·시총 로그까지 함께
+  남아 근거 확인 가능).
+
+## 11. 비계획 정지 #3·#4 — 수집 공백 2건 (18:07 트리 킬 8분 / 20:48 토큰만료×env 102분) — `해결됨` / docs/12 §7-(b) 갭 매니페스트 등재
+
+**공백 구간 (docs/12 §7-(b) 매니페스트 항목)**:
+
+| # | 정지 (KST) | 재개 (KST) | 길이 | 세션 | 영구 손실 | 복구 가능 |
+|---|---|---|---|---|---|---|
+| ③ | 2026-07-31 18:07:30 | 2026-07-31 18:15:36 | 8분 06초 | pre | 랭킹 스냅샷·테이프 | 1분봉(백필) |
+| ④ | 2026-07-31 20:48:20 | 2026-07-31 22:30:59 | 1시간 42분 39초 | pre + regular 개장 첫 1분 | 랭킹 스냅샷·테이프 (**22:30:00~22:30:59 정규장 개장 순간 포함**) | 1분봉(백필) |
+| ⑤ | 2026-07-31 22:31:19 | 2026-07-31 22:39:18 | 7분 59초 | regular 개장 직후 | 랭킹 스냅샷·테이프 (개장 2~9분 구간) | 1분봉(백필) |
+| ⑥ | 2026-08-01 05:00:36 | 2026-08-01 07:14:12 | 2시간 13분 36초 | after | **랭킹 스냅샷만** (int64 오버플로 쓰기 실패 — §11-3; 티어·1분봉·이벤트는 정상 수집) | 1분봉 영향 없음 |
+
+- 처리 규칙은 docs/12 §7-(b) 그대로: 랭킹 의존 지표(Q2·쏠림도)에서 이벤트의
+  [T0−120분, T0+120분]이 이 구간과 겹치면 Q2 표본 제외 + 제외 수 보고.
+
+**사망 정황 (원인: 외부 종료로 판단)**:
+
+- collector PID 29236·supervisor PID 29704 가 **동시에, 흔적 없이** 소멸. 마지막 로그는
+  18:07:30,798 정상 INFO(`tier ↑ SLND: 2→3 confirm`) — traceback 없음, stderr 출력 없음,
+  Windows Application 이벤트 로그(WER/Application Error)에도 항목 없음, supervisor 의
+  재시작 시도 로그도 없음(부모까지 같이 죽었다는 뜻).
+- `ForbiddenEndpoint` 미처리 크래시(교대 인수인계의 1차 용의자)라면 traceback 이 남고
+  supervisor 가 자식을 재시작했어야 한다 — 정황 불일치. **부모+자식 동시·무음 소멸은 외부
+  프로세스 트리 킬**과 일치하며, 같은 날 원 W5 에이전트 PTY 소실(14:2x)·본 교대 요원의
+  분리 백그라운드 모니터 외부 종료(17:41)와 같은 계열(Orca 런타임의 PTY/잡 정리)로 추정.
+  §9 의 `Start-Process` 분리 기동도 이 종료 경로 앞에서는 불충분했다.
+
+**복구 절차 (코디네이터 지시 6단계, 18:1x KST)**:
+
+1. `git rebase main` — old HEAD `8578dab` → new HEAD `67445d2` (main `fc3a9cc`, 795 테스트
+   green). 재기동 프로세스에 `ForbiddenEndpoint` 종료 처리·정직한 RANKING 경보(`e512463`)·
+   A7 상태파일 권한·W2 charset 수정이 포함됨.
+2. 재기동은 **Windows 작업 스케줄러 일회성 작업**(`tossmon-collector-oneshot`, schtasks
+   `/SC ONCE` + `/Run`)으로 — 프로세스 트리가 스케줄러 서비스(svchost) 소속이 되어 어떤
+   Orca PTY/잡 오브젝트에도 속하지 않게 함. 기동 후 트리거 즉시 비활성화(Next Run: N/A,
+   이중 기동 방지). supervisor stdout 은 `data\supervisor.stdout.log` 로 리다이렉트.
+3. DB 그대로 재사용(WAL 은 사망 직후 18:07:36 플러시 확인, `symbols` 무손상). 유니버스
+   재빌드 없음, collector 자체 외 추가 라이브 호출 없음. 상태 이어받기 정상:
+   `resumed from data\collector_state.json: watch=1500 tier2+=95` (18:15:36).
+4. 기동 검증 3종 통과: ① 부모 체인 `cmd.exe ← svchost(Schedule) ← services.exe` (Orca 밖),
+   ② `collector.log` 18:15:36 부터 재흐름 + `session closed → pre` 정상 판정,
+   ③ 재기동 후 가짜 `budget: RANKING predicted…` ERROR **0건** (구프로세스에서 13초 간격
+   스팸 → 신코드 가동의 직접 증거).
+5. 신프로세스 트리(Python 3.13 venv 런처가 실제 인터프리터를 자식으로 spawn): supervisor
+   36084→48156, collector 1928→4544.
+
+### 11-1. 정지 #4 — 토큰 만료 × 스케줄러 env에 `TOSS_BASE_URL` 부재 (20:48:20~22:30:59) — `해결됨`
+
+**증상이 특이했다: 프로세스는 살아서 로그를 쓰는데 API 만 전면 사망.** 20:48:20 부터
+`unexpected RuntimeError: TOSS_BASE_URL is not set (계약 C-9: 기본값 없음)` WARNING 이
+35,000건+ 누적됐고, 텔레메트리는 계속 찍히되 budget 전 그룹 0.00 / `precision_parsed`·
+`promotions` 등 카운터 완전 동결. **`api_errors` 는 끝까지 0** — RuntimeError 가 호출별
+WARNING 으로 삼켜져 api_errors 카운터에도, 로그 신선도 기반 감시(모니터)에도 안 걸렸다.
+22:25 개장 준비 체크포인트에서 연속 두 텔레메트리가 완전 동일한 것을 보고 발견.
+
+- **원인 사슬**: 어제 20:49 발급 토큰이 오늘 20:48 만료(TTL 24h) → 재발급 경로
+  `tossmon/api/tokens.py:371` 은 계약 C-9 에 따라 **기본값 없이 env `TOSS_BASE_URL` 만**
+  읽음 → 18:15 스케줄러 재기동(§11 복구 2단계)의 cmd 환경에는 그 env 가 없었음(14:25 원
+  프로세스는 원 셸에서 상속받아 정상) → 재발급 실패가 모든 호출로 전파. 기동 시
+  `base_url` 은 config.yaml 에서 와서 **토큰이 살아 있는 동안(18:15~20:48)은 정상 수집** —
+  잠복했다가 만료 순간 발병한 구조.
+- **env 전수 감사(코디네이터 지시)**: tokens.py 가 읽는 env 는 `TOSS_BASE_URL`(필수·기본값
+  없음), `TOSSMON_LEASE_DIR`(선택 재정의 — 미설정 시 LOCALAPPDATA 폴백, 기존 리스 위치
+  유지를 위해 **의도적으로 미설정**), `LOCALAPPDATA`/`USERNAME`/`USERDOMAIN`(스케줄러
+  사용자 세션에 존재 — 18:15~20:48 라이브 수집으로 실증). 추가 설정 필요분은
+  `TOSS_BASE_URL` 하나로 확정.
+- **복구(코디네이터 승인 RESTART-NOW-WITH-ENV, 22:29)**: ① 트리 kill(22:28:44, taskkill /T)
+  ② 런처를 `.cmd` 파일로 교체 — `set "TOSS_BASE_URL=https://openapi.tossinvest.com"` 후
+  supervisor 기동(값은 비밀 아님 — 기동 로그에 상시 노출되는 값) ③ 1차 재기동은 기동
+  10초 만에 트리거 /DISABLE 을 호출했더니 인스턴스가 0xC000013A(STATUS_CONTROL_C_EXIT)로
+  동반 종료되는 함정 발견 — **교훈: 일회성 작업 비활성화는 기동 안정화(수 분) 후에** ④ 2차
+  재기동 22:30:59 성공.
+- **검증**: 22:31:00 `collector start base_url=… live=True` → **22:31:01 collector 스스로
+  토큰 재발급**(token_state.json 갱신 — 수동 발급 없음, 리스 보존) → 22:31:02
+  `session closed → regular` 정상 판정 → 재기동 후 `TOSS_BASE_URL` 오류 0건, 상태 이어받기
+  `watch=1500 tier2+=247`. 재기동 직후 tape gap WARNING 다수는 실명 구간(20:48~22:30)의
+  테이프 불연속을 수집기가 올바르게 탐지·등록한 것(오류 아님).
+- **후속 과제(수집 코드 소유자 앞, 관측만 기록)**: (i) 토큰 재발급 연속 실패는 지금처럼
+  per-call WARNING 으로 삼키지 말고 `api_errors` 집계 또는 fail-fast 로 승격해야 감시가
+  잡는다 — "api_errors=0 인데 API 전멸" 은 텔레메트리 사각. (ii) 기동 환경 재현성을 위해
+  ops_config `collector_cmd` 에 필수 env 를 명시하는 방안 검토.
+
+### 11-2. 재기동 불안정 — 1~3차 기동이 10~30초 만에 0xC000013A 동반 사망, 4차 성공 (공백 ⑤)
+
+env 수정 자체는 2차 기동에서 즉시 검증됐으나(22:30:59 기동 → 22:31:01 토큰 자가 재발급 →
+22:31:02 `session=regular`), 1차(22:29:51)·2차(22:30:56)·3차(22:35:10) 기동이 모두 기동
+10~30초 뒤 **STATUS_CONTROL_C_EXIT(0xC000013A)** 로 cmd·supervisor·collector 가 동반
+사망했다(콘솔 단위 Ctrl 이벤트 — supervisor stderr 무출력 = 자식 사망을 인지하기도 전에
+같이 죽음). 배제한 용의자: STOP 파일(없음), supervisor 재시작 예산(메모리 전용이라 새
+프로세스에 미승계), Defender(치료 이벤트 없음), 스케줄러 작업 설정(1~4차 동일), Temp 의
+.cmd 런처(3차는 인라인 /TR 로도 사망). **4차(22:39:12)와의 유일한 재현 가능 차이는
+"schtasks /Run 을 호출한 셸이 즉시 종료됐고, 같은 호출 안에서 sleep·폴링을 하지 않았다"는
+것** — 에이전트 도구 호출(샌드박스)이 활성인 동안 태어난 프로세스 트리가 호출 정리 시
+함께 걷히는 것으로 추정(확증은 못 함 — 스케줄러 운영 로그 비활성). 2초 간격 프로세스 트리
+관찰자를 붙인 4차 기동은 사망 창(30초)의 4배를 넘겨 안정 확인.
+
+**운영 규칙으로 채택: 스케줄러 작업 기동은 fire-and-forget** — `/Run` 만 하고 즉시 셸을
+빠져나온 뒤, 검증은 별도 호출에서 로그·프로세스 카운트로 한다. 트리거 비활성화도 기동
+안정화(5분+) 후 별도의 짧은 호출로만.
+
+### 11-3. 애프터 세션 랭킹 스냅샷 전량 유실 — SQLite int64 OverflowError — `해결됨(W4 핫픽스 + 재기동)` / 공백 ⑥
+
+**05:00:36(애프터 전환 30초 뒤)부터** 랭킹 폴링마다
+`rankings: unexpected OverflowError: Python int too large to convert to SQLite INTEGER`
+WARNING 이 1건씩 발생 — 발생 간격이 애프터 세션 랭킹 폴링 주기(~47초)와 1:1 로 일치, 즉
+**애프터 세션의 `rankings_snap` 기록이 사실상 전량 실패**. 06:55 체크포인트에서 발견하여
+escalation(msg_05a84a75a156). 코디네이터 응답 대기 중 세션이 진행되어, 응답 지연 시
+애프터 마감(09:00)으로 자연 종결되는 구조였다.
+
+- **또 하나의 "api_errors=0 사각"**: DB 쓰기 실패가 per-poll WARNING 으로 삼켜져
+  `api_errors` 에도, 텔레메트리 어디에도 집계되지 않는다 — §11-1 후속 과제 (i)과 동일
+  부류(이번엔 API 가 아니라 DB 쓰기 경로). 감시 규칙에 "동일 WARNING 반복 폭주" 탐지를
+  추가할 근거가 하나 더 생겼다.
+- **원인 가설(미확정 — 심볼이 로그에 안 찍힘, DB 열람은 잠금 경합 회피 원칙상 미실시)**:
+  애프터 세션 랭킹 페이로드의 마이크로 단위 정수 필드가 int64 상한(9.22e18)을 초과.
+  정규장에서 INTC `mcap_u=490377680000000000`(4.9e17)이 실측된 바 있어, 초대형주
+  (mcap ≥ ~$9.2조 상당) 또는 이상치 volume 계열이 유력. 재현 조건이 "애프터 세션
+  랭킹에 해당 종목 등장"이므로 세션 의존적.
+- **영향 범위**: 애프터 세션(05:00~09:00)의 랭킹 의존 지표만 실명. 티어 이동·1분봉·
+  이벤트 파이프라인은 정상 동작(05시 이후에도 EVENT win: LHSW·MODD·BIOT·NRSN(precursor)·
+  SLGB(confirm), day: ELOX). docs/12 §7-(b) 처리 규칙 적용 시 이 구간과 겹치는 Q2
+  표본은 제외 대상.
+- **소유권**: 랭킹 수집 루프는 W4 소유 코드 — W5 는 관측·보고만 수행(불변 규칙 준수).
+- **해결(2026-08-01 07:14)**: escalation → 코디네이터가 W4 를 핫픽스로 dispatch →
+  main `25bd830`(= `cba571e` 머지, 826 테스트 green)에 **행 단위 클램프 + 유실 가시화
+  카운터**(`rankings_clamped`/`rankings_write_failures` 텔레메트리 노출) 반영 → w5-ops
+  rebase(`5ab59ef`→`cbe9eb7`) → 07:13:54 트리 종료, 07:14:12 fire-and-forget 재기동(§11-2
+  규칙 준수). 재기동 검증: `session=after` 정상 판정, 신규 카운터 텔레메트리 노출 확인,
+  재기동 후 OverflowError 0건. 유실 구간은 매니페스트 ⑥(05:00:36~07:14:12, 랭킹만)으로
+  확정 — "api_errors=0 사각" 후속 과제도 이 픽스로 부분 해소(쓰기 실패가 이제 카운터로
+  보인다).
+- **주의(클램프 분기 미검증)**: 재기동 후 마감까지 `rankings_clamped=0` — 문제의 종목이
+  그 사이 애프터 랭킹에서 빠져 클램프 분기 자체는 실전 미발동. 검증된 것은 "쓰기 재개 +
+  카운터 노출"까지다. 오버플로 유발 종목이 다시 랭킹에 들면 `rankings_clamped` 가 처음으로
+  움직일 것 — 다음 세션 관찰 항목.
+
+## 12. 재수집 세션 종료 검증 (2026-08-01 08:50 폐장, verify_recollect.py) — `확인됨`
+
+**세션 경계 4회 전부 정시·정상**: 14:25 기동(day) → 17:00:07 pre → 22:30 regular
+(재기동 22:31:02/22:39:20 telemetry 로 확인) → 05:00:06 after (tier2 301→151 자동 축소) →
+08:50:07 closed (tier caps {tier2:1, tier3:1}, 144종목 `session_change` 강등). 폐장 후
+budget 전 그룹 0.00 은 정상 정적(§11 감시 스크립트의 telemetry-frozen 오탐 1건이 이를
+확인해 줌 — 폐장 상태 예외 처리는 다음 교대분 개선 항목).
+
+**verify_recollect.py 결과 (PYTHONIOENCODING=utf-8, exit 0)** — 오늘 DB vs 어제 오염 DB:
+
+| 항목 | 오늘 tossmon.db (434.9MB) | 어제 polluted (356.9MB) |
+|---|---:|---:|
+| symbols | 1,678 (tier0 178 / tier1 1,500) | 0 (유니버스 도입 전) |
+| 오염 5종목 (NOK·AMD·ASML·META·GS) | **전부 없음** | (어제 워치리스트 점령) |
+| candles_1m / 1d | 784,314 / 308,764 | 210,022 / 12,915 |
+| rankings_snap | 1,715,399 | 1,621,500 |
+| trades / orderbook | 34,415 / 9,504 | 78,097 / 1,820 |
+| events (고유) | 36 (36 — 중복 0) | 49 (49) |
+| 승격사유 ranking_entry | **232** | 4,183 |
+| 승격사유 confirm / precursor | **92 / 20** | 4 / 4 |
+
+- **유니버스 게이트의 하루 종합 실증**: `watch_outside_universe=0` 를 기동부터 폐장까지
+  유지, `universe_rejected` 349 누적(INTC·MIAX 등 대형주 tier0 즉시 거부 로그 확인),
+  DB 승격사유에서 `ranking_entry` 가 어제의 1/18 로 급감하고 표적 경로(confirm/precursor)가
+  23배/5배로 증가 — 어제 "대형주 자리싸움" 병리가 사라진 것이 수치로 확정.
+- DB `promotions` 테이블의 reason 분포는 승격+강등을 합산한 것(evicted 53,177 은 tier2→1
+  캡 축출 강등이다). **로그 기준 tier↑ 방향의 `evicted` 는 하루 종일 0** — 어제 6,653
+  병리의 소멸은 §10·개장 보고에서 로그로 직접 검증했다.
+- `api_errors=0` 종일 유지. 단 §11-1(토큰 재발급 실패)·§11-3(랭킹 쓰기 실패) 두 사각이
+  이 카운터 밖에서 발생했음 — 후자는 W4 픽스로 가시화 완료, 전자는 후속 과제로 남김.
+- 발행주식수 범위 (966,132,000,000 ~ 515,342,392,000,000 마이크로주 = 약 96.6만~5.15억 주)
+  — 소형주 대역으로 정상, 단위 오류 흔적 없음.

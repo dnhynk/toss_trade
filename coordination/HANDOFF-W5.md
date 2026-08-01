@@ -7,7 +7,17 @@
 - **ID**: W5
 - **브랜치**: `w5-ops`
 - **워크트리**: `C:\Users\dongh\orca\workspaces\toss_trade\w5-ops`
-- **현재 HEAD**: `7deb292` — "W5: dryrun_night.py — §1/§3 리포트 출력 캡핑"
+- **현재 HEAD**: `363b7f4` — "W5: 정규장 A-1 프로브 라이브 캡처 갱신"
+  (이전 HANDOFF 커밋 `3f6d73e` 이후 코디네이터 지시로 픽스처 2건 커밋 추가)
+
+## 추가 처리 (코디네이터 지시, HANDOFF 커밋 이후)
+
+- `tests/fixtures/live/live_prices_us.json`, `live_trades_us.json` — 마스킹 확인 후 커밋함
+  (`363b7f4`). A-1 정규장 프로브(23:42 KST)의 정상 산출물.
+- `ops/ops_config.yaml` — **커밋하지 않음**. `git check-ignore -v ops/ops_config.yaml`
+  exit 1(미등록) 확인 — `.gitignore`에 없다. 로컬 운영 설정(db_path/log_dir/collector_cmd
+  절대경로 등 이 워크트리 종속값)이라 커밋 대상이 아니다. 코디네이터가 나중에 `.gitignore`에
+  `ops/ops_config.yaml` 추가 예정(본인 언급).
 - **직전 rebase 기준 main**: `6b6fb4a` (A4+A5+정밀도 텔레메트리) — **주의: 코디네이터 공지에
   따르면 main이 그 뒤로 `4869293`까지 진행됐고(W1 감사수정, W4 blocker A/B, W2 유니버스
   진입점, 감사 2건, 사전등록, 계약 A6) 이 브랜치는 아직 그 지점까지 rebase 안 함.**
@@ -108,11 +118,10 @@
    비교 로직이 뒤집혀 있어 X≤Y인데도 ERROR로 찍힌다. `tools/dryrun_night.py`의
    `count_fake_budget_errors()`가 실제/가짜 건수를 구분해서 리포트 §12에 낸다 —
    W5 소유 코드가 아니므로 건드리지 않았다.
-7. **`tests/fixtures/live/live_prices_us.json`, `live_trades_us.json`이 로컬에서 수정된
-   채 커밋 안 돼 있다**(`git status`로 확인 가능) — 이번 A-1 라이브 프로브(`tools/live_probe.py`,
+7. `tests/fixtures/live/live_prices_us.json`, `live_trades_us.json` 갱신은 **해결됨**
+   (§맨 위 "추가 처리" 참고, `363b7f4`로 커밋 완료) — A-1 라이브 프로브(`tools/live_probe.py`,
    W1 소유 도구를 그대로 실행) 실행의 정상적인 부작용(그 도구가 설계상 픽스처를 자동
-   갱신한다)이다. W1 소유 경로라 이 워커가 커밋하지 않았다 — 그대로 두거나, W1이 검토 후
-   커밋 여부를 판단할 것. 진짜 라이브 응답(정규장 기준)이라 픽스처로서 가치가 있을 수 있다.
+   갱신한다)이었다. 정규장 기준 실제 라이브 응답이라 픽스처로서 가치가 있다.
 8. **`docs/11_live_rehearsal.md`이 이번 리허설의 전체 기록**이다 — A-2/A-3 실측값, CRKN
    정밀도 이슈 진단(P1~P3), A4/A5 계약 개정 배경, 세션 전환, 계획/비계획 재시작 3건 전부,
    healthcheck/supervisor 버그 3건, tape_gaps/tier3/예산 관측 3건이 시간순으로 다 들어있다.

@@ -3,7 +3,7 @@
   "case": "default",
   "status": 200,
   "source": "live",
-  "captured_at_ms": 1785402916934,
+  "captured_at_ms": 1785422585934,
   "note": "라이브 캡처 — mock 의 심볼 카탈로그로도 쓰인다",
   "headers": {
     "content-type": "application/json;charset=UTF-8",
@@ -11,26 +11,26 @@
     "x-ratelimit-limit": "10",
     "x-ratelimit-remaining": "9",
     "x-ratelimit-reset": "1",
-    "date": "Thu, 30 Jul 2026 09:15:16 GMT"
+    "date": "Thu, 30 Jul 2026 14:43:05 GMT"
   },
   "body": {
     "result": [
       {
         "symbol": "AAPL",
-        "timestamp": "2026-07-30T18:14:11.000+09:00",
-        "lastPrice": "338.7488",
+        "timestamp": "2026-07-30T23:42:04.000+09:00",
+        "lastPrice": "331.875",
         "currency": "USD"
       },
       {
         "symbol": "SNTI",
-        "timestamp": null,
-        "lastPrice": "0.347",
+        "timestamp": "2026-07-30T23:38:40.000+09:00",
+        "lastPrice": "0.357",
         "currency": "USD"
       },
       {
         "symbol": "BTAI",
-        "timestamp": "2026-07-30T17:00:16.000+09:00",
-        "lastPrice": "0.8181",
+        "timestamp": "2026-07-30T23:41:43.000+09:00",
+        "lastPrice": "0.7933",
         "currency": "USD"
       },
       {
