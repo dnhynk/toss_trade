@@ -138,8 +138,18 @@ n_widened 노출).
 완료(09:05) ③ 수집기 STOP 파일로 정상 정지·리스 해제(09:15) ④ **W4 백필 실행 중** —
 `task_bf64c4c19022`/`ctx_69b1466adb5b`(term_8017b557). 순서: dayMarket 실측 1콜 →
 유니버스 빌드(backfill.db) → 캘린더 캡처(save_calendar) → screen-only → --estimate →
-**정지선에서 status 보고 → 사용자에게 추정치 보고 → 본실행 GO 는 사용자가 직접 결정**
-(08-01 11:15 사용자 지시 — 코디네이터가 자체 GO 하지 말 것). 완료 후 Phase 1-C 분석 디스패치
+**정지선 도달 (11:27) — 본실행 GO 는 사용자가 직접 결정** (08-01 11:15 사용자 지시.
+11:45 사용자: 노트북 닫았다가 재개 시 옵션+GO 를 함께 준다. 그 전까지 1분봉 호출 0 유지).
+- **GO 메뉴** (1분봉 보관 ~320일이라 날짜 경계는 데이터 손실 0):
+  [B]=--from 2025-09-01 전심볼 4,002창 17.6~35h (**권고** — 훈련 데이터 전부+§2.8 프레임 정합)
+  [A]=2026-01-01 전심볼 2,651창 11.6~22.9h (훈련 구간 포기) [C]/[D]=러너 한정(프레임 이탈)
+- **GO 전달 방법**: `orca terminal send --terminal term_8017b557-2c9f-4f22-bf36-06c919c66d58
+  --text "[coordinator] GO <옵션문자>. Proceed with the full 1m backfill run per your
+  stop-line menu." --enter` (핸들 stale 이면 w4-collector 워크트리에서 재확인).
+  태스크 `task_bf64c4c19022`/`ctx_69b1466adb5b`. 완료 시 worker_done → 머지 게이트
+  (러너 패치 7a4d0a0 포함) → Phase 1-C 분석 디스패치.
+- 스크린 산출물: data/backfill.db (유니버스+일봉 313,934), data/backfill/calendar_us.json
+  (W3 save_calendar 형식, 2,107 매매일), 스크린 캐시(재스크린 불요, 멱등 재시작 안전). 완료 후 Phase 1-C 분석 디스패치
 (스펙은 W3 리허설 보고서의 절차 초안 + 감사 §VII 러너 강제조항 3줄 기반으로 작성할 것).
 잔여 후속(비긴급): 랭킹 클램프 분기 미발화 감시, 토큰 재발급 실패 api_errors 사각,
 모니터 closed 세션 예외, F-6~F-9.
