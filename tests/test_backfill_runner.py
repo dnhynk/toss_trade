@@ -401,16 +401,19 @@ def test_screen_only_plans_windows_without_any_1m_call(tmp_path):
         est = BF.estimate(runner.cfg, runner.checkpoint, runner.calendar, 1)
         assert "checkpoint windows=1" in est["basis"]         # 가정이 아니라 실측 창
 
-        # 이어서 본실행 — 스크린 재호출 없이 창만 채운다
-        runner2, client2, _store2 = _build_run(tmp_path)
-        _store2.close()
-        runner2.store = None
-        manifest2 = asyncio.run(runner2.run(["SPKY"]))
-        assert client2.calls["1d"] == 0
-        assert client2.calls["1m"] >= 1
-        assert manifest2["symbols"]["SPKY"]["windows"][0]["status"] == "done"
-    finally:
+        # 이어서 본실행 — 스크린 재호출 없이 창만 채운다. 백필은 일봉 활동일을 읽어
+        # 앵커를 잡으므로 store 를 열어 둔다 (candles_1d 읽기 + candles_1m 쓰기).
         store.close()
+        runner2, client2, store2 = _build_run(tmp_path)
+        try:
+            manifest2 = asyncio.run(runner2.run(["SPKY"]))
+            assert client2.calls["1d"] == 0
+            assert client2.calls["1m"] >= 1
+            assert manifest2["symbols"]["SPKY"]["windows"][0]["status"] == "done"
+        finally:
+            store2.close()
+    finally:
+        pass
 
 
 def test_date_bound_prunes_planned_windows_but_keeps_screen_record(tmp_path):
@@ -454,3 +457,198 @@ def test_estimate_uses_checkpoint_and_needs_no_client(tmp_path):
         assert est2["screen_calls"] == est["screen_calls"] + 99 * math.ceil(550 / 200)
     finally:
         store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 앵커 결함 회귀 (라이브 진단 A-1): 한정-깊이 API + 무체결 갭 -> 창 중간 결측
+# --------------------------------------------------------------------------- #
+def _bar_date(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%d")
+
+
+class DepthLimitedClient:
+    """실서버 1분봉 API 의 **앵커별 한정 깊이**를 재현한다 (진단 근거).
+
+    `before` 앵커에서 데이터 보유일의 **연속 구간**(무체결 갭 > max_gap 매매일 전에서
+    끊김)만 서빙하고, 그 아래에 더 오래된 데이터가 있어도 next_before_ms=None 을 준다.
+    창 끝에서 한 번만 후진하면 첫 갭에서 멈춘다 — AARD 형 결함. 각 활황일에 재앵커
+    (수정)해야 전부 수집된다. 1일봉은 실서버처럼 전부 서빙한다.
+    """
+
+    def __init__(self, trading_days, daily, minute, max_gap=2):
+        self.trading_days = list(trading_days)
+        self.tindex = {d: i for i, d in enumerate(self.trading_days)}
+        self.daily = {s: sorted(v, key=lambda c: c.ts_ms) for s, v in daily.items()}
+        self.minute = {s: sorted(v, key=lambda c: c.ts_ms) for s, v in minute.items()}
+        self.max_gap = max_gap
+        self.calls = {"1d": 0, "1m": 0, "calendar": 0}
+        self.adjusted_seen = {"1d": set(), "1m": set()}
+
+    async def get_candles(self, symbol, interval, count=200, before_ms=None,
+                          adjusted=True):
+        self.calls[interval] += 1
+        self.adjusted_seen[interval].add(adjusted)
+        if interval == "1d":
+            rows = self.daily.get(symbol, [])
+            if before_ms is not None:
+                rows = [c for c in rows if c.ts_ms <= before_ms]
+            page = rows[-count:]
+            if not page:
+                return CandlePage(candles=[], next_before_ms=None)
+            oldest = page[0].ts_ms
+            return CandlePage(candles=list(page),
+                              next_before_ms=oldest if any(c.ts_ms < oldest for c in rows)
+                              else None)
+        rows = self.minute.get(symbol, [])
+        if before_ms is not None:
+            rows = [c for c in rows if c.ts_ms <= before_ms]
+        if not rows:
+            return CandlePage(candles=[], next_before_ms=None)
+        days_desc = sorted({_bar_date(c.ts_ms) for c in rows}, reverse=True)
+        reach, prev = set(), None
+        for d in days_desc:
+            if prev is None or (self.tindex[prev] - self.tindex[d]) <= self.max_gap:
+                reach.add(d); prev = d
+            else:
+                break                                    # 갭이 크면 API 는 여기서 끊는다
+        block = [c for c in rows if _bar_date(c.ts_ms) in reach]
+        page = block[-count:]
+        oldest = page[0].ts_ms
+        more = any(c.ts_ms < oldest for c in block)
+        return CandlePage(candles=list(page), next_before_ms=oldest if more else None)
+
+    async def get_us_calendar(self, date=None):
+        self.calls["calendar"] += 1
+        ds = self.trading_days
+        anchor = ds[-1] if date is None else max((x for x in ds if x <= date),
+                                                 default=ds[0])
+        i = ds.index(anchor)
+        return {"previous": market_day(ds[max(0, i - 1)]),
+                "today": market_day(anchor),
+                "next": market_day(ds[min(len(ds) - 1, i + 1)])}
+
+
+AARD_DAYS = weekdays("2025-10-01", "2026-03-06")
+AARD_EVENTS = ["2025-12-01", "2025-12-11", "2025-12-23", "2026-01-08",
+               "2026-01-21", "2026-02-03"]              # ~8-9 매매일 간격 -> 창 병합
+
+
+def _aard_daily():
+    prev = 1_000_000
+    out = []
+    for d in AARD_DAYS:
+        if d in AARD_EVENTS:
+            out.append(daily_bar("AARD", d, close=int(prev * 1.30),
+                                  high=int(prev * 1.31), low=int(prev * 1.29),
+                                  open_=int(prev * 1.295)))
+        else:
+            out.append(daily_bar("AARD", d, close=prev))
+    return out
+
+
+def _aard_minute():
+    """1분봉은 활황일(이벤트일)에만 60봉씩, 그 사이는 진짜 무체결(갭)."""
+    rows = []
+    for d in AARD_EVENTS:
+        rows += _minutes("AARD", d, 60, start_min=810)   # 정규장 구간
+    return rows
+
+
+def _aard_run(tmp_path):
+    client = DepthLimitedClient(AARD_DAYS, {"AARD": _aard_daily()},
+                                {"AARD": _aard_minute()}, max_gap=2)
+    cfg = make_config(tmp_path)
+    store = Store(tmp_path / "bf.db")
+    ck = BF.Checkpoint(tmp_path / "out" / "checkpoint.json")
+    runner = BF.Runner(cfg=cfg, client=client, store=store, checkpoint=ck,
+                       calendar=BF.TradingCalendar(), out_dir=tmp_path / "out")
+    return runner, client, store
+
+
+def test_depthlimited_client_reproduces_the_gap_refusal(tmp_path):
+    """대조: 창 끝에서 한 번 후진하면 최신 이벤트일만 오고 next_before=None 이다."""
+    client = DepthLimitedClient(AARD_DAYS, {"AARD": _aard_daily()},
+                                {"AARD": _aard_minute()}, max_gap=2)
+    end = utc_ms("2026-02-05") + 1430 * MIN_MS
+    page = asyncio.run(client.get_candles("AARD", "1m", count=200, before_ms=end))
+    got_days = {_bar_date(c.ts_ms) for c in page.candles}
+    assert got_days == {"2026-02-03"}                    # 최신 이벤트일만
+    assert page.next_before_ms is None                   # 갭 아래는 안 준다(옛 코드가 멈추던 지점)
+
+
+def test_anchor_fix_collects_every_event_day_across_gaps(tmp_path):
+    """수정 회귀: 후보일 앵커 + 갭 넘김으로 병합 창의 **모든** 이벤트일을 수집한다.
+
+    수정 전(창 끝 단일 앵커)에는 최신 이벤트일만 수집되고 88.6% 창이 25% 미만이었다.
+    """
+    runner, client, store = _aard_run(tmp_path)
+    try:
+        manifest = asyncio.run(runner.run(["AARD"]))
+        # 이벤트일이 스크린 후보로 잡혔다
+        cands = [c["date"] for c in manifest["symbols"]["AARD"]["candidate_days"]]
+        assert set(AARD_EVENTS) <= set(cands)
+        # 창이 병합돼 소수의 광역 창이 됐는데도 모든 이벤트일이 DB 에 있다
+        for d in AARD_EVENTS:
+            lo = utc_ms(d); hi = lo + 1430 * MIN_MS
+            n = store._conn.execute(
+                "SELECT COUNT(*) FROM candles_1m WHERE symbol='AARD' "
+                "AND ts_ms>=? AND ts_ms<?", (lo, hi)).fetchone()[0]
+            assert n == 60, f"{d} collected {n}/60 bars (gap-crossing failed)"
+        total = store._conn.execute(
+            "SELECT COUNT(*) FROM candles_1m WHERE symbol='AARD'").fetchone()[0]
+        assert total == 60 * len(AARD_EVENTS)            # 6 이벤트일 x 60 = 360
+        # 효율: 휴면일을 프로브하지 않는다 — 호출은 이벤트일 수 규모 (수십 매매일 아님)
+        assert client.calls["1m"] <= 3 * len(AARD_EVENTS) + 3
+    finally:
+        store.close()
+
+
+def test_anchor_fix_is_idempotent_on_rerun(tmp_path):
+    """재실행이 봉을 중복·유실하지 않는다 (upsert 멱등, 기존 자산 보존).
+
+    AARD 창은 1분봉이 창 시작(D-25)까지 없어 partial(retention) 이므로 재실행이
+    재시도한다 — 정상. 보장하는 것은 **봉 수 불변**이다(중복 저장 없음).
+    """
+    runner, client, store = _aard_run(tmp_path)
+    try:
+        asyncio.run(runner.run(["AARD"]))
+        bars1 = store._conn.execute(
+            "SELECT COUNT(*) FROM candles_1m WHERE symbol='AARD'").fetchone()[0]
+        store.close()
+
+        runner2, client2, store2 = _aard_run(tmp_path)
+        asyncio.run(runner2.run(["AARD"]))
+        bars2 = store2._conn.execute(
+            "SELECT COUNT(*) FROM candles_1m WHERE symbol='AARD'").fetchone()[0]
+        assert bars2 == bars1                            # 봉 수 불변 (중복 없음)
+        store2.close()
+    finally:
+        pass
+
+
+def test_redrive_repages_done_windows_but_stays_idempotent(tmp_path):
+    """--redrive: 옛 코드가 done 으로 남긴 창을 새 앵커 로직으로 다시 받되 봉은 그대로."""
+    runner, client, store = _aard_run(tmp_path)
+    try:
+        asyncio.run(runner.run(["AARD"]))
+        bars1 = store._conn.execute(
+            "SELECT COUNT(*) FROM candles_1m WHERE symbol='AARD'").fetchone()[0]
+    finally:
+        store.close()
+
+    runner2, client2, store2 = _aard_run(tmp_path)
+    runner2.redrive = True
+    try:
+        asyncio.run(runner2.run(["AARD"]))
+        assert client2.calls["1m"] > 0                   # 재구동 -> 다시 페이징
+        bars2 = store2._conn.execute(
+            "SELECT COUNT(*) FROM candles_1m WHERE symbol='AARD'").fetchone()[0]
+        assert bars2 == bars1                            # upsert 멱등 -> 봉 수 불변
+        for d in AARD_EVENTS:                            # 여전히 전 이벤트일 완비
+            lo = utc_ms(d); hi = lo + 1430 * MIN_MS
+            n = store2._conn.execute(
+                "SELECT COUNT(*) FROM candles_1m WHERE symbol='AARD' "
+                "AND ts_ms>=? AND ts_ms<?", (lo, hi)).fetchone()[0]
+            assert n == 60
+    finally:
+        store2.close()

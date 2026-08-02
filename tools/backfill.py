@@ -400,6 +400,7 @@ class Runner:
     date_from: str | None = None
     date_to: str | None = None
     stop_file: Path | None = None
+    redrive: bool = False
     failures: dict[str, int] = field(default_factory=dict)
     totals: dict[str, int] = field(default_factory=lambda: {
         "calls_daily": 0, "calls_1m": 0, "bars_daily": 0, "bars_1m": 0})
@@ -475,16 +476,66 @@ class Runner:
         return result
 
     # ---- 2단계: 1분봉 창 백필 -------------------------------------------
+    def _active_anchors(self, symbol: str, start_ms: int, end_ms: int) -> list[int]:
+        """창 안의 **스크린 후보일**(= 1분봉 데이터가 뭉쳐 있는 곳)의 세션-끝 앵커(내림차순).
+
+        결함 수정의 핵심 (진단 보고서): Toss 1분봉 API 는 각 `before` 앵커에서 한정된
+        깊이만 서빙하고 무체결 갭을 만나면 nextBefore=None 을 준다. 창 끝에서 한 번만
+        후진하면 첫 갭에서 멈춰 창의 88.6% 가 25% 미만만 수집됐다.
+
+        수정: 창 끝(before=end_ms)에서 시작해, 블록이 소진(nextBefore=None)되면 **다음
+        후보일 앵커로 갭을 건너뛰어** 재개한다. 이 소형주들은 1분봉이 활황일(스크린 후보)
+        에만 뭉쳐 있고 그 사이는 진짜로 무체결이므로, 후보일에만 앵커를 두면 휴면일을
+        프로브하지 않고도 데이터 보유일을 전부 수집한다 (갭 폭과 무관하게).
+        """
+        sc = self.checkpoint.screen_of(symbol) or {}
+        anchors: list[int] = []
+        for cand in sc.get("candidates", ()):
+            md = self.calendar.days.get(cand.get("date"))
+            if md is None:
+                continue
+            b = day_bounds(md)
+            if b is None:
+                continue
+            b0, b1 = b
+            if b1 - 1 < start_ms or b0 > end_ms:            # 창과 안 겹치는 후보는 제외
+                continue
+            anchors.append(min(b1 - 1, end_ms))
+        return sorted(set(anchors), reverse=True)
+
     async def backfill_window(self, symbol: str, span: tuple[int, int]) -> dict:
         state = self.checkpoint.window_state(symbol, span)
         if state["status"] == "done":
             return state
         start_ms, end_ms = span
-        # 재개 지점: 이미 받아둔 가장 오래된 봉 아래부터 잇는다 (멱등).
-        before = (int(state["oldest_ms"]) - 1 if state["oldest_ms"] is not None
-                  else end_ms)
+        anchors = self._active_anchors(symbol, start_ms, end_ms)   # 내림차순 (후보일 전부)
+        if not anchors:
+            # 창 안에 후보일이 없다 (병합 창엔 항상 있으나 방어적).
+            state["status"] = "partial" if state["bars"] else "skipped"
+            state["skip_reason"] = state["skip_reason"] or (
+                "retention_exhausted" if state["bars"] else "no_active_days")
+            if state["status"] == "partial":
+                self.fail(state["skip_reason"])
+            self.checkpoint.save()
+            return state
+
+        def next_anchor_below(x: int) -> int | None:
+            for a in anchors:                               # 내림차순 — 첫 a < x
+                if a < x:
+                    return a
+            return None
+
+        # 재개: 이미 받은 가장 오래된 봉 바로 아래부터 잇는다. 앵커 목록은 필터하지 않는다 —
+        # 재개 지점이 후보일 블록 중간이어도 그 블록을 계속 페이징해야 하기 때문 (멱등).
+        resume_oldest = int(state["oldest_ms"]) if state["oldest_ms"] is not None else None
+        before = end_ms if resume_oldest is None else resume_oldest - 1
         pages = 0
-        while pages < MAX_PAGES_PER_WINDOW:
+        reached_start = False
+        page_capped = False
+        while True:
+            if pages >= MAX_PAGES_PER_WINDOW:
+                page_capped = True
+                break
             self._check_stop()                              # 페이지 사이 정지 경계
             page = await self.client.get_candles(symbol, "1m", count=PAGE,
                                                  before_ms=before,
@@ -492,37 +543,48 @@ class Runner:
             pages += 1
             state["calls"] += 1
             self.totals["calls_1m"] += 1
-            if not page.candles:
-                state["status"] = "partial" if state["bars"] else "skipped"
-                state["skip_reason"] = "retention_exhausted"
-                break
-            if self.store is not None:
-                self.store.upsert_candles_1m(page.candles)
-            in_window = [c for c in page.candles if start_ms <= int(c.ts_ms) <= end_ms]
-            new_oldest = int(page.candles[0].ts_ms)
-            new_newest = int(page.candles[-1].ts_ms)
-            prev_oldest = state["oldest_ms"]
-            state["bars"] += len(in_window)
-            self.totals["bars_1m"] += len(in_window)
-            state["oldest_ms"] = (new_oldest if prev_oldest is None
-                                  else min(int(prev_oldest), new_oldest))
-            state["newest_ms"] = (new_newest if state["newest_ms"] is None
-                                  else max(int(state["newest_ms"]), new_newest))
-            if new_oldest <= start_ms:
-                state["status"] = "done"                    # 창 시작까지 닿았다
-                break
-            if prev_oldest is not None and new_oldest >= int(prev_oldest):
-                state["status"] = "partial"                 # 비진행(고정 픽스처) 가드
-                state["skip_reason"] = "no_progress"
-                break
-            if page.next_before_ms is None:
-                state["status"] = "partial"
-                state["skip_reason"] = "retention_exhausted"
-                break
-            before = int(page.next_before_ms) - 1           # docs/06: inclusive 경계
-        else:
+            if page.candles:
+                if self.store is not None:
+                    self.store.upsert_candles_1m(page.candles)
+                in_window = [c for c in page.candles
+                             if start_ms <= int(c.ts_ms) <= end_ms]
+                new_oldest = int(page.candles[0].ts_ms)
+                new_newest = int(page.candles[-1].ts_ms)
+                prev_oldest = state["oldest_ms"]
+                state["bars"] += len(in_window)
+                self.totals["bars_1m"] += len(in_window)
+                state["oldest_ms"] = (new_oldest if prev_oldest is None
+                                      else min(int(prev_oldest), new_oldest))
+                state["newest_ms"] = (new_newest if state["newest_ms"] is None
+                                      else max(int(state["newest_ms"]), new_newest))
+                if new_oldest <= start_ms:
+                    reached_start = True
+                    break
+                nb = page.next_before_ms
+                if nb is not None and int(nb) - 1 < before:
+                    before = int(nb) - 1                    # 같은 블록 계속 (docs/06 inclusive)
+                else:
+                    # 블록 소진 (nextBefore=None) — 갭을 넘어 다음(더 오래된) 후보일로 재앵커
+                    nxt = next_anchor_below(new_oldest)
+                    if nxt is None:
+                        break
+                    before = nxt
+            else:
+                # 이 앵커에 1분봉이 없다 (보관 소멸) — 다음 후보일로 갭 넘김
+                nxt = next_anchor_below(before)
+                if nxt is None:
+                    break
+                before = nxt
+        if reached_start:
+            state["status"] = "done"
+            state["skip_reason"] = None
+        elif page_capped:
             state["status"] = "partial"
             state["skip_reason"] = "page_cap"
+        else:
+            state["status"] = "partial" if state["bars"] else "skipped"
+            if state["skip_reason"] is None:
+                state["skip_reason"] = "retention_exhausted"
         if state["status"] == "partial":
             self.fail(state["skip_reason"] or "partial")
         self.checkpoint.save()
@@ -605,6 +667,18 @@ class Runner:
             if key not in planned_keys and w.get("status") == "todo" \
                     and not w.get("bars"):
                 self.checkpoint.data["windows"].pop(key)
+        if self.redrive:
+            # 앵커 결함 수정 후 재구동: 옛 코드가 done/partial 로 남긴 창은 창 끝
+            # 블록만 받은 것이라, 상태·진행 포인터를 초기화해 새 앵커 로직으로 전 구간을
+            # 다시 받게 한다. DB 의 기존 봉은 upsert 멱등이라 보존된다(중복 저장 없음).
+            reset = 0
+            for s, sp in planned:
+                st = self.checkpoint.window_state(s, sp)
+                if st["status"] != "todo" or st.get("oldest_ms") is not None:
+                    st.update(status="todo", oldest_ms=None, newest_ms=None,
+                              bars=0, calls=0, skip_reason=None)
+                    reset += 1
+            print(f"[redrive] reset {reset} window(s) to re-page with the anchor fix")
         self.checkpoint.save()
         if screen_only:
             return self.manifest(symbols)
@@ -858,7 +932,8 @@ async def amain(args: argparse.Namespace) -> int:
     runner = Runner(cfg=cfg, client=client, store=store, checkpoint=checkpoint,
                     calendar=calendar, out_dir=out_dir,
                     date_from=args.date_from, date_to=args.date_to,
-                    stop_file=Path(args.stop_file) if args.stop_file else None)
+                    stop_file=Path(args.stop_file) if args.stop_file else None,
+                    redrive=args.redrive)
     started = time.monotonic()
     try:
         manifest = await runner.run(symbols, screen_only=args.screen_only)
@@ -920,6 +995,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--stop-file", default=None,
                     help="graceful stop: exit 4 with checkpoint saved when this "
                          "file appears (supervisor channel)")
+    ap.add_argument("--redrive", action="store_true",
+                    help="reset planned windows (done/partial) to re-page fully with "
+                         "the anchor fix; existing DB bars are preserved (idempotent)")
     args = ap.parse_args(argv)
     try:
         return asyncio.run(amain(args))
