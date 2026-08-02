@@ -157,9 +157,13 @@ n_widened 노출).
   슈퍼바이저가 밤새 IP 플랩 2회를 자가 복구하고 무개입 완주 — §4.5 표준의 첫 실증.
   산출물(w4-collector/data/): backfill.db, backfill_manifest.json/csv, checkpoint.json,
   calendar_us.json, supervisor.log. 커버리지 확장은 --from 앞당겨 재실행(체크포인트 멱등).
-  **다음 = Phase 1-C 분석 — 사용자 "분석 시작" 지시 대기** (토큰 관리 중이라 사용자 게이트.
-  스펙 기반: W3 리허설 절차 초안 + docs/14 §VII 러너 강제조항 + docs/12 §8 열람 순서,
-  docs/13 은 분석 워커가 첫 시행 전 생성). 정지 후 창 완료/잔여 보고 → **사용자 notify** → 사용자가
+  **Phase 1-C 분석 진행 중 (08-02 09:20 사용자 승인·디스패치)** —
+  `task_57172ff52ec5`/`ctx_d7ff11768c4c`/W3(term_2c49ee20).
+  스펙: `coordination/specs/w3_phase1c_analysis.md`. 범위 = **train+val 만, 홀드아웃
+  (2026-05-01~07-29) 봉인** — 열람은 별도 태스크·별도 승인. W3 에 docs/13(시행 레지스트리)·
+  docs/15(리포트) 소유권 부여. 입력: w4-collector 백필 DB·매니페스트·캘린더 +
+  w5-ops 재수집 DB(Q2 전용, 읽기 전용). status 1~2h 간격.
+  완료 시: 머지 게이트 → 사용자에게 Q1~Q6 판정 보고 → 홀드아웃 열람 승인 논의. 정지 후 창 완료/잔여 보고 → **사용자 notify** → 사용자가
   노트북 재개 후 잔여 GO → 같은 명령 재실행이면 체크포인트가 이어받음.
   태스크 `task_bf64c4c19022`/`ctx_69b1466adb5b`, W4 핸들 term_8017b557.
   완료 시 worker_done → 머지 게이트(러너 패치 7a4d0a0 포함) → Phase 1-C 분석 디스패치.
