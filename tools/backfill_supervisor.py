@@ -14,6 +14,13 @@
       같은 체크포인트 지문에서 3회 연속    -> 재시도 중단, 로그에 "ESCALATION:" 줄
       크래시                                 (코디네이터 감시가 grep), 오케스트레이션
                                              escalation 도 시도, exit 1.
+      디스크 소진(Errno 28)               -> 환경 문제라 재시도 무의미. 기동 전 preflight
+                                             (`--min-disk-gb`, 기본 2GB)로 아예 안 띄우고,
+                                             가동 중 발생하면 로그 꼬리에서 식별해 **스트라이크
+                                             미소모로 즉시** DISK-FULL 에스컬레이션. STATUS 는
+                                             여유 공간을 항상 싣고 임계 근접 시 DISK-LOW.
+                                             (2026-08-02 사고: 일반 크래시로 오분류해 3회
+                                             무의미 재시도로 스트라이크를 태웠다.)
 
 정직한 텔레메트리: 30분마다 체크포인트 실측 카운트와 **러너 생존 여부**를 함께 찍는다.
 러너가 살아 있으면 `STATUS ... runner=alive pid=N ...`, 죽어 있으면 `RUNNER-DEAD`
@@ -47,6 +54,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -115,6 +123,12 @@ class SupConfig:
     probe_timeout_s: float = 90.0
     max_same_point: int = 3
     escalate_timeout_s: float = 60.0
+    #: 기동 전 여유 공간이 이 미만이면 러너를 띄우지 않고 디스크 사유로 에스컬레이션한다
+    #: (2026-08-02 사고: C: 0GB -> 체크포인트 저장 Errno 28 -> 일반 크래시로 오분류 후
+    #: 3연속 재시도로 스트라이크 소진). 전 백필이 DB ~1GB+ 를 만들었으니 2GB 여유를 요구한다.
+    disk_min_free_gb: float = 2.0
+    #: 이 미만이면 STATUS 를 DISK-LOW 경고로 승격한다 (임계 근접 조기 신호).
+    disk_warn_free_gb: float = 4.0
 
 
 @dataclass
@@ -155,6 +169,35 @@ class Supervisor:
         except OSError:
             return "absent"
 
+    # ---- 디스크 (preflight + 분류 + STATUS) ------------------------------
+    def _disk_free_gb(self) -> float | None:
+        """run_dir 볼륨의 여유 공간(GB). 조회 불가면 None (preflight 를 막지 않는다)."""
+        try:
+            path = self.cfg.run_dir if self.cfg.run_dir.exists() else REPO_ROOT
+            return shutil.disk_usage(str(path)).free / (1024 ** 3)
+        except OSError:
+            return None
+
+    def _disk_preflight_ok(self) -> bool:
+        """기동 전 여유 공간 점검. 임계 미만이면 False (호출측이 에스컬레이션)."""
+        free = self._disk_free_gb()
+        if free is None:
+            return True                                # 조회 실패로 기동을 막지는 않는다
+        if free < self.cfg.disk_min_free_gb:
+            self.log(f"DISK-PREFLIGHT-FAIL free_gb={free:.2f} < "
+                     f"min_gb={self.cfg.disk_min_free_gb:g}")
+            return False
+        self.log(f"DISK-PREFLIGHT-OK free_gb={free:.2f} "
+                 f"min_gb={self.cfg.disk_min_free_gb:g}")
+        return True
+
+    @staticmethod
+    def _is_disk_full(tail: str) -> bool:
+        """러너 로그 꼬리에서 디스크 소진(Errno 28) 계열 신호를 식별한다."""
+        low = tail.lower()
+        return ("errno 28" in low or "no space left on device" in low
+                or "disk full" in low)
+
     def _verify_flush(self) -> None:
         """정지 후 체크포인트가 실제로 파싱되는지 — 플러시 확인을 로그로 증명."""
         try:
@@ -179,10 +222,18 @@ class Supervisor:
             return
         self._next_status = now + self.cfg.status_interval_s
         counts = self._counts()
-        if alive_pid is not None:
-            self.log(f"STATUS runner=alive pid={alive_pid} {counts}")
+        free = self._disk_free_gb()
+        # 여유 공간을 STATUS 에 항상 실어, 임계 근접이면 DISK-LOW 로 승격한다 (조기 신호).
+        if free is None:
+            disk = "disk_free_gb=? "
         else:
-            self.log(f"RUNNER-DEAD reason={reason} next_retry={next_retry} {counts}")
+            low = free < self.cfg.disk_warn_free_gb
+            disk = f"{'DISK-LOW ' if low else ''}disk_free_gb={free:.2f} "
+        if alive_pid is not None:
+            self.log(f"STATUS runner=alive pid={alive_pid} {disk}{counts}")
+        else:
+            self.log(f"RUNNER-DEAD reason={reason} next_retry={next_retry} "
+                     f"{disk}{counts}")
 
     # ---- 자식 러너 -------------------------------------------------------
     def _spawn(self) -> subprocess.Popen:
@@ -268,6 +319,10 @@ class Supervisor:
             if "ForbiddenEndpoint" in tail:
                 return "endpoint-violation"
             return "ip-blocked"
+        # 디스크 소진(Errno 28)은 코드 크래시가 아니라 환경 문제다 — 재시도로 스트라이크를
+        # 태우지 말고 즉시 에스컬레이션한다 (2026-08-02 사고: 3회 무의미 재시도로 소진).
+        if self._is_disk_full(self._log_tail_since_spawn()):
+            return "disk-full"
         return "crash"
 
     # ---- 프로브 (403 대기) ----------------------------------------------
@@ -366,6 +421,11 @@ class Supervisor:
                 self.log(f"STOP source={src} (no runner active) - exiting 0")
                 self._verify_flush()
                 return 0
+            if not self._disk_preflight_ok():
+                # 기동 전 디스크 부족 — 러너를 띄우지 않고 사유를 명확히 보고한다.
+                return self._escalate_and_exit(
+                    f"DISK-FULL preflight: free space below "
+                    f"{self.cfg.disk_min_free_gb:g}GB - free disk then restart")
             kind, val, started = self._run_child_once()
             if kind == "stopped":
                 self._verify_flush()
@@ -384,6 +444,11 @@ class Supervisor:
             if cls in ("refused", "endpoint-violation"):
                 return self._escalate_and_exit(
                     f"non-retryable runner exit class={cls} code={code}")
+            if cls == "disk-full":
+                # 스트라이크를 소모하지 않고 즉시 에스컬레이션 (환경 문제, 자가 복구 불가).
+                return self._escalate_and_exit(
+                    f"DISK-FULL runner hit Errno 28 (code={code}) - free disk then "
+                    "restart; strikes NOT consumed")
             if cls == "ip-blocked":
                 res, extra = self._probe_wait()      # extra: attempts 또는 stop 사유
                 if res == "stopped":
@@ -555,7 +620,8 @@ def build_config(args: argparse.Namespace) -> SupConfig:
         status_interval_s=args.status_interval_s,
         probe_interval_s=args.probe_interval_s, poll_s=args.poll_s,
         backoff_s=backoff or (60.0, 300.0, 900.0), stop_grace_s=args.stop_grace_s,
-        probe_timeout_s=args.probe_timeout_s, max_same_point=args.max_same_point)
+        probe_timeout_s=args.probe_timeout_s, max_same_point=args.max_same_point,
+        disk_min_free_gb=args.min_disk_gb, disk_warn_free_gb=args.warn_disk_gb)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -586,6 +652,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--stop-grace-s", type=float, default=120.0)
     ap.add_argument("--probe-timeout-s", type=float, default=90.0)
     ap.add_argument("--max-same-point", type=int, default=3)
+    ap.add_argument("--min-disk-gb", type=float, default=2.0,
+                    help="refuse to start the runner below this free space (GB); "
+                         "escalate with DISK-FULL reason instead")
+    ap.add_argument("--warn-disk-gb", type=float, default=4.0,
+                    help="promote STATUS to DISK-LOW below this free space (GB)")
     ap.add_argument("--task-name", default=DEFAULT_TASK_NAME)
     ap.add_argument("--register", action="store_true",
                     help="register + start via schtasks (current user) and exit")
