@@ -46,7 +46,8 @@ import pandas as pd
 from ..analysis.baselines import compute_daily_baseline
 from ..analysis.labeling import EventParams
 from ..api.client import BATCH_MAX, TossClient
-from ..api.errors import Forbidden, ForbiddenEndpoint, SchemaMismatch, TossApiError
+from ..api.errors import (AuthExpired, Forbidden, ForbiddenEndpoint, SchemaMismatch,
+                          TossApiError)
 from ..api.models import Candle, Price, RankingPage, StockMeta, precision_stats
 from ..config import Config
 from ..store.writer import Store
@@ -558,6 +559,17 @@ class CollectorContext:
         stats = precision_stats()
         parsed = int(stats.get("parsed", 0) or 0)
         rounded = int(stats.get("rounded", 0) or 0)
+        now = self.clock.now_ms()
+        # 랭킹 스냅 간격 이상 — 랭킹은 과거 조회 불가라 이 루프가 멈추면 영구 손실이다.
+        # 마지막 스냅 이후 경과(초). 한 번도 못 받았으면 -1. 세션 열림인데 이 값이 폴 주기의
+        # 수 배로 커지면 랭킹 루프가 조용히 멈춘 것 — 워치독이 이걸로 잡는다.
+        snap = self.rankings.last_snap_ms
+        ranking_snap_age_s = -1 if snap is None else max(0, (now - int(snap)) // 1000)
+        # tier1 스윕 조회 성공률 — /prices 요청 대비 조용한 누락(함정1) 비율의 역수.
+        seen = int(self.counters.get("prices_seen", 0))
+        miss = int(self.counters.get("prices_missing", 0))
+        req = seen + miss
+        fetch_success_pct = round(100.0 * seen / req, 1) if req else 100.0
         return {
             "session": self.current_session(),
             "watch": len(self.watchlist),
@@ -572,10 +584,19 @@ class CollectorContext:
             "promotions": int(self.counters.get("promotions", 0)),
             "tape_gaps": int(self.counters.get("tape_gaps", 0)),
             "api_errors": int(self.counters.get("api_errors", 0)),
-            # 랭킹 저장은 과거 조회 불가 데이터의 유일한 기록 경로 — 유실·클램프가
-            # 조용히 지나가면 안 된다 (2026-08-01 애프터 int64 오버플로 사고).
+            # ↓ "조용히 죽거나 나빠지는" 사각을 드러내는 최소 집합 (워치독 5분 판독용).
+            # 인증 실패(별도 노출), 광역 catch 로 삼켜지던 것들, 쓰기 실패, 수집 건강도.
+            "auth_failures": int(self.counters.get("auth_failures", 0)),
+            "loop_errors": int(self.counters.get("loop_errors", 0)),
+            "schema_mismatch": int(self.counters.get("schema_mismatch", 0)),
+            "event_write_failures": int(self.counters.get("event_write_failures", 0)),
+            "promotion_write_failures": int(self.counters.get("promotion_write_failures", 0)),
             "rankings_write_failures": int(self.counters.get("rankings_write_failures", 0)),
             "rankings_clamped": int(self.counters.get("rankings_clamped", 0)),
+            "ranking_snap_age_s": ranking_snap_age_s,
+            "prices_missing": miss,
+            "fetch_success_pct": fetch_success_pct,
+            "candles_1m": int(self.counters.get("candles_1m", 0)),
             "precision_rounded": int(getattr(self.client, "counters", {})
                                      .get("precision_rounded", 0)),
             "precision_parsed": parsed,
@@ -626,6 +647,7 @@ class CollectorContext:
             self.store.record_promotion(ch.symbol, ch.ts_ms, ch.from_tier, ch.to_tier,
                                         ch.reason, float(ch.score))
         except Exception as exc:
+            self.bump("promotion_write_failures")      # 삼켜지던 사각 승격
             self.notifier.warn(f"record_promotion failed for {ch.symbol}: "
                                f"{type(exc).__name__}: {exc}")
         self.notifier.promotion(ch.symbol, ch.from_tier, ch.to_tier, ch.reason, ch.score)
@@ -887,6 +909,15 @@ async def _guarded(ctx: CollectorContext, name: str, coro,
     except Forbidden as exc:
         ctx.shutdown(f"{name}: Forbidden — IP 미등록/권한 문제로 수집 중단 ({exc})")
         return False
+    except AuthExpired as exc:
+        # 인증 실패를 **별도 카운터**로 노출한다 (사각 (i), 2026-08-01: 재발급이 env 부재로
+        # 전부 실패했는데 api_errors=0 이라 외부에서 정상으로 보였다). AuthExpired 는
+        # TossApiError 하위라 아래 광역 핸들러에 잡히면 api_errors 로 뭉개진다 — 여기서
+        # 먼저 잡아 `AUTH-FAILURE` 로 로그(워치독 grep 문자열)하고 auth_failures 로 센다.
+        ctx.bump("auth_failures")
+        ctx.notifier.warn(f"{name}: AUTH-FAILURE (token expired/rejected) "
+                          f"{type(exc).__name__}: {exc}")
+        return False
     except SchemaMismatch as exc:
         ctx.bump("schema_mismatch")
         ctx.notifier.warn(f"{name}: schema mismatch (skip): {exc}")
@@ -896,8 +927,17 @@ async def _guarded(ctx: CollectorContext, name: str, coro,
         ctx.notifier.warn(f"{name}: {type(exc).__name__}: {exc}")
         return False
     except Exception as exc:                       # 예상 못 한 예외로 루프가 죽으면 안 된다
-        ctx.bump("loop_errors")
-        ctx.notifier.warn(f"{name}: unexpected {type(exc).__name__}: {exc}")
+        # 토큰 발급/리스 실패는 RuntimeError 로 올라온다 (W1 tokens.py: env 부재·리스 충돌).
+        # 이것도 인증 사각이므로 auth_failures 로 승격한다 — 나머지만 loop_errors.
+        msg = str(exc)
+        if isinstance(exc, RuntimeError) and any(
+                m in msg for m in ("TOSS_BASE_URL", "token", "lease")):
+            ctx.bump("auth_failures")
+            ctx.notifier.warn(f"{name}: AUTH-FAILURE (token issuance/lease) "
+                              f"{type(exc).__name__}: {exc}")
+        else:
+            ctx.bump("loop_errors")
+            ctx.notifier.warn(f"{name}: unexpected {type(exc).__name__}: {exc}")
         return False
     finally:
         # 실패로 끝난 호출의 429 도 예산 가드가 봐야 한다.
@@ -1124,6 +1164,7 @@ async def _sweep_chunk(ctx: CollectorContext, chunk: list[str]) -> int:
     # 함정1: 미존재 심볼은 404 가 아니라 **200 + 조용한 누락**이다.
     # 요청 200개에 응답 180개일 수 있으므로 반드시 대조한다.
     returned = {p.symbol for p in prices}
+    ctx.bump("prices_seen", len(returned))              # 조회 성공률 지표 (데이터 건강도)
     missing = [s for s in chunk if s not in returned]
     if missing:
         ctx.bump("prices_missing", len(missing))
@@ -1235,6 +1276,8 @@ def _detect(ctx: CollectorContext, symbol: str) -> None:
         try:
             ctx.store.record_event(emission.record)
         except Exception as exc:
+            # 삼켜지던 사각 승격 (사고 분류): 이벤트 쓰기 실패도 카운터로 드러낸다.
+            ctx.bump("event_write_failures")
             ctx.notifier.warn(f"record_event failed for {symbol}: "
                               f"{type(exc).__name__}: {exc}")
             continue
@@ -1365,8 +1408,50 @@ async def _backfill_1m(ctx: CollectorContext, symbol: str,
     return total
 
 
+def _raw_prev_close(ctx: CollectorContext, symbol: str, now_ms: int) -> int | None:
+    """전일 **정규장 마지막 1분봉(원주가)** 종가. 없으면 None.
+
+    당일 조건 판정(`close/prev_close - 1 >= day_ret_min`)의 분모다. 당일 1분봉은 원주가
+    (A5)인데, 예전에는 이 분모를 **일봉(수정주가) 종가**로 채워 §2.3 이 금지한 원주가/
+    수정주가 혼합이 라이브에서 일어났다 — 분할이 있었던 종목(RECT 등)에서 전일 대비
+    가짜 갭이 생겨 day 트리거가 오탐한다. 원주가 1분봉끼리 비교하도록 전일 정규장
+    마지막 봉 종가를 쓴다. 버퍼에 전일이 없으면 None 을 반환해 detect_events 의 원주가
+    폴백(labeling.py: 프레임 직전 봉 종가 → 당일 첫 봉 시가)에 맡긴다 — 어느 경로든 원주가다.
+    """
+    buf = ctx.buffers.get(symbol)
+    if buf is None or not len(buf):
+        return None
+    md_today = ctx.scheduler.market_day_at(now_ms) or ctx.scheduler.today()
+    tb = trading_day_of(md_today) if md_today is not None else None
+    if tb is None:
+        return None
+    today_start = tb[0]
+    prev_md = None
+    prev_end = None
+    for md in ctx.calendar_list():                      # 시간순
+        b = trading_day_of(md)
+        if b is None or b[1] > today_start:             # 당일 이상은 제외
+            continue
+        if prev_end is None or b[1] > prev_end:
+            prev_md, prev_end = md, b[1]
+    if prev_md is None or prev_md.regular is None:
+        return None
+    reg = prev_md.regular
+    df = buf.frame()
+    ts = df["ts_ms"].to_numpy()
+    mask = (ts >= int(reg.start_ms)) & (ts < int(reg.end_ms))
+    closes = df["close_u"].to_numpy()[mask]
+    if closes.size == 0:
+        return None
+    return int(closes[-1])
+
+
 async def _refresh_baseline(ctx: CollectorContext, symbol: str, now_ms: int) -> None:
-    """일봉 베이스라인. 함정4: **당일 봉은 진행형**이라 완성봉으로 쓰면 안 된다."""
+    """일봉 베이스라인 + 전일종가. 함정4: **당일 봉은 진행형**이라 완성봉으로 쓰면 안 된다.
+
+    일봉(수정주가)은 ADV20·ATR20 등 **다일 계산**에만 쓰고, 당일 조건 분모(prev_close)는
+    원주가 1분봉에서 뽑는다 (`_raw_prev_close`) — 계열 혼합 금지 (§2.3, 라이브 오탐 방지).
+    """
     page = await ctx.client.get_candles(symbol, "1d", count=60,
                                         adjusted=candle_adjusted("1d"))
     ctx.after_call(GROUP_CHART)
@@ -1381,7 +1466,13 @@ async def _refresh_baseline(ctx: CollectorContext, symbol: str, now_ms: int) -> 
     if not rows:
         return
     ctx.baselines[symbol] = compute_daily_baseline(candles_frame(rows))
-    ctx.prev_close[symbol] = int(rows[-1].close_u)
+    raw_pc = _raw_prev_close(ctx, symbol, now_ms)
+    if raw_pc is not None:
+        ctx.prev_close[symbol] = raw_pc                 # 원주가 전일 정규장 마지막 종가
+    else:
+        # 원주가 전일종가를 못 구하면 수정주가 종가를 **쓰지 않는다** — 혼합 대신
+        # 미설정으로 두어 detect_events 의 원주가 폴백에 맡긴다 (라이브 오탐 방지).
+        ctx.prev_close.pop(symbol, None)
 
 
 # --------------------------------------------------------------------------- #

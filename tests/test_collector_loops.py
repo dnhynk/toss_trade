@@ -310,11 +310,43 @@ def test_daily_baseline_excludes_the_progressing_today_bar(tmp_path):
 
     asyncio.run(loops._refresh_baseline(ctx, "AAA", ctx.clock.now_ms()))
     assert ctx.counters["daily_today_bar_dropped"] == 1
-    assert ctx.prev_close["AAA"] != 9_999_999            # 진행형 봉을 전일종가로 쓰지 않는다
     assert ctx.baselines["AAA"]["n_days"] == 5
+    # prev_close 는 **수정주가 일봉에서 뽑지 않는다** (§2.3 혼합 금지 수정). 이 테스트는
+    # 1분봉 버퍼가 없으므로 원주가 전일종가를 구할 수 없어 prev_close 는 미설정이어야 한다
+    # — 특히 진행형 일봉 종가(9,999,999)로 채워지면 안 된다.
+    assert "AAA" not in ctx.prev_close
     # 저장은 받은 그대로 (당일 봉도 DB 에는 들어간다 — 자르는 것은 베이스라인 계산뿐)
     assert ctx.store._conn.execute("SELECT COUNT(*) FROM candles_1d").fetchone()[0] == 6
     ctx.store.close()
+
+
+def test_prev_close_uses_raw_1m_not_adjusted_daily(tmp_path):
+    """항목 5 회귀: 당일 조건 분모(prev_close)는 전일 **정규장 마지막 1분봉(원주가)**.
+
+    수정 전에는 일봉(수정주가) 종가를 썼다 — 분할 종목에서 전일 대비 가짜 갭 -> day
+    트리거 라이브 오탐(RECT). 원주가 1분봉끼리 비교해야 한다.
+    """
+    day1 = simple_day("2026-07-29", DAY0 - 1440 * MIN_MS)
+    day2 = simple_day("2026-07-30", DAY0)
+    now = day2.regular.start_ms + 30 * MIN_MS
+    # 수정주가 일봉 종가(2,000,00x)와 **다른** 원주가 1분봉 종가(1,930,000)를 둔다.
+    et_midnight = day2.regular.start_ms - int(9.5 * HOUR_MS)
+    daily = [bar(et_midnight - i * 24 * HOUR_MS, close_u=2_000_000 + i,
+                 vol_qu=56_090_840_000_000) for i in range(5, 0, -1)]
+    client = PagingClient([], daily=daily)
+    ctx, _ = build_ctx(tmp_path, client, now_ms=now)
+    ctx.scheduler.calendar = {"previous": day1, "today": day2}
+    ctx.history_days = [day1]
+    # 전일 정규장 1분봉 (원주가): 마지막 봉 종가 = 1,930,000
+    buf = ctx.buffer("AAA")
+    buf.upsert([bar(day1.regular.start_ms + i * MIN_MS, close_u=1_900_000 + i * 1000,
+                    symbol="AAA") for i in range(31)])       # 마지막 = 1,900,000+30,000
+    try:
+        asyncio.run(loops._refresh_baseline(ctx, "AAA", now))
+        assert ctx.prev_close["AAA"] == 1_930_000            # 원주가 전일 정규장 마지막 봉
+        assert ctx.prev_close["AAA"] not in {2_000_001, 2_000_005}   # 수정주가 일봉 아님
+    finally:
+        ctx.store.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -654,6 +686,109 @@ def test_schema_mismatch_skips_without_killing_the_loop(tmp_path):
     ctx.store.close()
 
 
+# --------------------------------------------------------------------------- #
+# 5일 무인 하드닝 — 인증 실패 별도 노출 + 삼켜지던 사각 승격 (항목 1·2)
+# --------------------------------------------------------------------------- #
+def test_auth_expired_is_counted_as_auth_failure_not_api_error(tmp_path):
+    """항목 1: 인증 실패가 api_errors 에 뭉개지지 않고 auth_failures 로 드러난다.
+
+    2026-08-01 사고: 재발급 실패가 api_errors=0 인 채 조용히 지나갔다. AuthExpired 는
+    TossApiError 하위라 광역 핸들러에 잡히면 api_errors 가 되므로 먼저 잡아 분리한다.
+    """
+    from tossmon.api.errors import AuthExpired
+
+    class AuthDown(StubClient):
+        async def get_prices(self, symbols):
+            self.counters["requests"] += 1
+            raise AuthExpired("token issuance rejected (401)")
+
+    ctx, _ = build_ctx(tmp_path, AuthDown({}), symbols=("AAA",))
+    asyncio.run(loops.run_tier1_price_sweep(ctx.client, ctx.store, ctx.cfg, ctx=ctx,
+                                            cycles=3))
+    assert ctx.running()                                  # 인증 실패로 죽지는 않는다
+    assert ctx.counters["auth_failures"] == 3             # 별도 카운터로 계상
+    assert ctx.counters.get("api_errors", 0) == 0         # api_errors 로 뭉개지지 않음
+    assert ctx.counters.get("loop_errors", 0) == 0
+    assert ctx.notifier.counters["warn"] >= 3             # AUTH-FAILURE 로그 남김
+    assert ctx.telemetry()["auth_failures"] == 3          # 워치독이 5분마다 읽는다
+    ctx.store.close()
+
+
+def test_token_issuance_runtimeerror_is_classified_as_auth_failure(tmp_path):
+    """항목 1·2: env 부재/리스 충돌은 RuntimeError 로 온다 — 이것도 auth_failures 로 승격.
+
+    바로 이 경로가 2026-08-01 사고의 실제 형태(env 부재로 재발급 RuntimeError)다.
+    """
+    class NoEnv(StubClient):
+        async def get_prices(self, symbols):
+            raise RuntimeError("TOSS_BASE_URL is not set (계약 C-9)")
+
+    ctx, _ = build_ctx(tmp_path, NoEnv({}), symbols=("AAA",))
+    asyncio.run(loops.run_tier1_price_sweep(ctx.client, ctx.store, ctx.cfg, ctx=ctx,
+                                            cycles=2))
+    assert ctx.counters["auth_failures"] == 2             # loop_errors 가 아니라 auth_failures
+    assert ctx.counters.get("loop_errors", 0) == 0
+    ctx.store.close()
+
+
+def test_generic_runtimeerror_stays_loop_error(tmp_path):
+    """분류 정확성: 토큰과 무관한 RuntimeError 는 여전히 loop_errors (오분류 금지)."""
+    class Bug(StubClient):
+        async def get_prices(self, symbols):
+            raise RuntimeError("index out of range in some parser")
+
+    ctx, _ = build_ctx(tmp_path, Bug({}), symbols=("AAA",))
+    asyncio.run(loops.run_tier1_price_sweep(ctx.client, ctx.store, ctx.cfg, ctx=ctx,
+                                            cycles=2))
+    assert ctx.counters["loop_errors"] == 2
+    assert ctx.counters.get("auth_failures", 0) == 0
+    ctx.store.close()
+
+
+def test_telemetry_exposes_blindspot_counters_for_the_watchdog(tmp_path):
+    """항목 2·4: 삼켜지던 사각과 데이터 건강도가 텔레메트리에 실린다 (워치독 계약)."""
+    ctx, _ = build_ctx(tmp_path, StubClient({}), symbols=("AAA",))
+    try:
+        data = ctx.telemetry()
+        for key in ("auth_failures", "loop_errors", "schema_mismatch",
+                    "event_write_failures", "promotion_write_failures",
+                    "rankings_write_failures", "ranking_snap_age_s",
+                    "prices_missing", "fetch_success_pct", "candles_1m"):
+            assert key in data, key
+        assert data["ranking_snap_age_s"] == -1           # 스냅 없으면 -1
+        assert data["fetch_success_pct"] == 100.0         # 요청 없으면 100
+    finally:
+        ctx.store.close()
+
+
+def test_ranking_snap_age_grows_when_the_ranking_loop_stalls(tmp_path):
+    """항목 4: 랭킹 스냅 간격 이상 — 마지막 스냅 이후 경과가 커지면 워치독이 잡는다."""
+    ctx, _ = build_ctx(tmp_path, StubClient({}))
+    try:
+        ctx.rankings.last_snap_ms = ctx.clock.now_ms()
+        assert ctx.telemetry()["ranking_snap_age_s"] == 0
+        ctx.clock.advance(600)                            # 10분 경과, 새 스냅 없음
+        assert ctx.telemetry()["ranking_snap_age_s"] == 600
+    finally:
+        ctx.store.close()
+
+
+def test_fetch_success_pct_reflects_silent_omission(tmp_path):
+    """항목 4: 워치 종목 대비 조회 성공률 — 조용한 누락(함정1)이 비율로 드러난다."""
+    now = DAY0 + 900 * MIN_MS
+    known = {"AAA": Price(symbol="AAA", ts_ms=now - 1000, last_u=1_000_000),
+             "BBB": Price(symbol="BBB", ts_ms=now - 1000, last_u=1_000_000)}
+    ctx, _ = build_ctx(tmp_path, StubClient(known), now_ms=now,
+                       symbols=("AAA", "BBB", "GHOST1", "GHOST2"))
+    try:
+        asyncio.run(loops.tier1_sweep_once(ctx))
+        assert ctx.counters["prices_seen"] == 2
+        assert ctx.counters["prices_missing"] == 2
+        assert ctx.telemetry()["fetch_success_pct"] == 50.0
+    finally:
+        ctx.store.close()
+
+
 def test_loops_idle_while_the_market_is_closed(tmp_path):
     client = StubClient({})
     ctx, day = build_ctx(tmp_path, client, now_ms=day_closed(),
@@ -725,6 +860,45 @@ def test_ranking_int64_overflow_is_clamped_per_row_not_fatal(tmp_path):
         data = ctx.telemetry()
         assert data["rankings_clamped"] == 4
         assert data["rankings_write_failures"] == 0
+    finally:
+        ctx.store.close()
+
+
+def test_ranking_clamp_survives_realistic_micro_unit_overflow(tmp_path):
+    """항목 3: 실데이터 형태(마이크로 단위 대형 정수)로 클램프 분기를 조인다.
+
+    라이브에서 오버플로한 것은 마이크로 단위(값×1e6) 필드다. 여러 필드가 한 행에서
+    동시에 넘치고, 여러 행에 흩어져도 **행 단위로** 클램프되고 배치가 살아남아야 한다.
+    경계값(2^63-1)은 통과, 그 바로 위(2^63)는 클램프.
+    """
+    over = 2 ** 63                                              # 정확히 상한 바로 위
+    at_max = loops.SQLITE_INT_MAX                              # 경계 = 2^63-1, 통과
+    # 대형주 애프터장 실측형: 거래대금 amount_u 와 거래량 vol_qu 가 동시에 마이크로
+    # 오버플로 (예: $9.3e12 상당 마이크로 = 9.3e18, 200억주 마이크로 = 2e19).
+    client = RankingClient([
+        _rrow(1, "MEGA", amount_u=9_300_000_000 * 1_000_000_000,   # ~9.3e18 > 상한
+              vol_qu=20_000_000_000 * 1_000_000_000),             # ~2e19 > 상한
+        _rrow(2, "EDGE", amount_u=at_max, vol_qu=at_max),         # 경계 — 통과
+        _rrow(3, "TINY", amount_u=1_500_000, vol_qu=42),          # 정상
+    ])
+    ctx, _ = build_ctx(tmp_path, client)
+    warns: list[str] = []
+    ow = ctx.notifier.warn
+    ctx.notifier.warn = lambda m: (warns.append(m), ow(m))[1]
+    try:
+        asyncio.run(loops.rankings_once(ctx))
+        got = ctx.store._conn.execute(
+            "SELECT symbol, amount_u, vol_qu FROM rankings_snap WHERE "
+            "ranking_type='TOSS_SECURITIES_TRADING_AMOUNT' ORDER BY rank").fetchall()
+        assert [g[0] for g in got] == ["MEGA", "EDGE", "TINY"]     # 3행 전부 저장
+        assert got[0][1] == at_max and got[0][2] == at_max        # MEGA 두 필드 클램프
+        assert got[1][1] == at_max and got[1][2] == at_max        # EDGE 경계는 원값(통과)
+        assert got[2][1] == 1_500_000 and got[2][2] == 42         # TINY 원값
+        # MEGA 한 행에 2필드 × 4 rtype = 8, EDGE 는 경계라 클램프 아님
+        assert ctx.counters["rankings_clamped"] == 8
+        assert ctx.counters.get("rankings_write_failures", 0) == 0
+        mega = [w for w in warns if "MEGA" in w]
+        assert mega and "amount_u" in mega[0] and "vol_qu" in mega[0]
     finally:
         ctx.store.close()
 
