@@ -1,0 +1,465 @@
+<#
+.SYNOPSIS
+    tossmon OS-level watchdog / sentinel - owner: W5. (ASCII-only on purpose:
+    Windows PowerShell 5.1 parses BOM-less scripts as ANSI, so non-ASCII here
+    is a latent parse hazard. Korean docs live in docs/11 section 14.)
+
+.DESCRIPTION
+    Runs every 5 minutes from Task Scheduler (task: tossmon-watchdog), fully
+    independent of any agent session. Checks:
+      (a) supervisor + collector process liveness
+      (b) collector.log telemetry freshness
+      (c) telemetry counter advance during open sessions (frozen counters with
+          a live process = API death, the docs/11 section 11-1 blind spot)
+      (d) disk free space (rotate/cleanup below thresholds)
+      (e) token state (expired + open session + RuntimeError spam = token path dead)
+      (f) AC/battery state (alert on battery, low battery)
+      (g) sentinel heartbeat (mutual watch; sentinel watches this script back)
+    On failure: automatic restart through ops/launch_collector.cmd (env is
+    guaranteed inside the launcher - docs/11 section 11-1), with a rolling
+    restart budget so a permanently broken collector cannot be restart-hammered.
+    Every action writes data/ALERT_<timestamp>_<reason>.txt and a line in
+    data/watchdog.log.
+
+    Role 'sentinel' (task: tossmon-sentinel, every 30 min) only checks the
+    watchdog heartbeat and re-kicks the watchdog task if it went silent.
+
+    If data/ops_state/STOP exists the watchdog stands down completely
+    (an operator stop is intentional - never fight it).
+#>
+param(
+    [ValidateSet("watchdog", "sentinel")]
+    [string]$Role = "watchdog",
+
+    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$DataDir = "",
+    [string]$StateDir = "",
+
+    # Process identification (overridable for sandbox tests)
+    [string]$ProcName = "python.exe",
+    [string]$SupervisorPattern = "ops\.supervisor",
+    [string]$CollectorPattern = "tossmon\.collector",
+    [string]$ExeLike = "",          # default: <RepoRoot>\.venv\*
+
+    [string]$LauncherCmd = "",      # default: <RepoRoot>\ops\launch_collector.cmd
+    [switch]$DryRunRestart,          # tests: record the restart instead of executing
+
+    [double]$FreshCritMin = 15.0,
+    [int]$FreezeStrikesToRestart = 2,
+    [double]$DiskWarnGB = 5.0,
+    [double]$DiskCritGB = 3.0,
+    [int]$RestartMax = 3,
+    [int]$RestartWindowS = 7200,
+    [double]$TokenGraceMin = 10.0,
+    [int]$RuntimeErrorMin = 5,
+
+    [double]$WatchdogStaleS = 900,   # sentinel: watchdog heartbeat older -> alert
+    [double]$SentinelStaleS = 4200,  # watchdog: sentinel heartbeat older -> alert
+
+    [string]$WatchdogTaskName = "tossmon-watchdog",
+    [string]$SentinelTaskName = "tossmon-sentinel"
+)
+
+$ErrorActionPreference = "Stop"
+if ($DataDir -eq "") { $DataDir = Join-Path $RepoRoot "data" }
+if ($StateDir -eq "") { $StateDir = Join-Path $DataDir "ops_state" }
+if ($ExeLike -eq "") { $ExeLike = (Join-Path $RepoRoot ".venv") + "*" }
+if ($LauncherCmd -eq "") { $LauncherCmd = Join-Path $RepoRoot "ops\launch_collector.cmd" }
+
+$WatchdogLog = Join-Path $DataDir "watchdog.log"
+$StateFile = Join-Path $StateDir "watchdog_state.json"
+$StopFile = Join-Path $StateDir "STOP"
+$HeartbeatFile = Join-Path $StateDir "watchdog_heartbeat.txt"
+$SentinelHeartbeatFile = Join-Path $StateDir "sentinel_heartbeat.txt"
+$CollectorLog = Join-Path $DataDir "collector.log"
+$TokenStateFile = Join-Path $DataDir "token_state.json"
+
+$NowEpoch = [int][DateTimeOffset]::Now.ToUnixTimeSeconds()
+$NowStamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+function Write-Log([string]$line) {
+    $dir = Split-Path -Parent $WatchdogLog
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force $dir | Out-Null }
+    [IO.File]::AppendAllText($WatchdogLog, "$NowStamp [$Role] $line`r`n", [Text.Encoding]::UTF8)
+}
+
+function Load-State {
+    if (Test-Path $StateFile) {
+        try { return Get-Content $StateFile -Raw | ConvertFrom-Json } catch { }
+    }
+    return New-Object PSObject
+}
+
+function Save-State($state) {
+    $dir = Split-Path -Parent $StateFile
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force $dir | Out-Null }
+    [IO.File]::WriteAllText($StateFile, ($state | ConvertTo-Json -Depth 6), [Text.Encoding]::UTF8)
+}
+
+function Get-Prop($obj, [string]$name, $default) {
+    if ($null -ne $obj -and $null -ne $obj.PSObject.Properties[$name]) { return $obj.$name }
+    return $default
+}
+
+function Set-Prop($obj, [string]$name, $value) {
+    if ($null -ne $obj.PSObject.Properties[$name]) { $obj.$name = $value }
+    else { $obj | Add-Member -NotePropertyName $name -NotePropertyValue $value }
+}
+
+# Alert with per-key dedup: fires once per state transition, re-fires after $repeatS.
+function Raise-Alert($state, [string]$key, [string]$level, [string]$body, [double]$repeatS = 21600) {
+    $alerts = Get-Prop $state "alert_last" (New-Object PSObject)
+    $last = Get-Prop $alerts $key 0
+    if (($NowEpoch - $last) -lt $repeatS) {
+        Write-Log "ALERT-SUPPRESSED key=$key (deduped)"
+        return $false
+    }
+    Set-Prop $alerts $key $NowEpoch
+    Set-Prop $state "alert_last" $alerts
+    $fname = "ALERT_{0}_{1}.txt" -f (Get-Date -Format "yyyyMMdd_HHmmss"), $key
+    $path = Join-Path $DataDir $fname
+    $text = "[$level] $NowStamp  key=$key`r`n`r`n$body`r`n"
+    [IO.File]::WriteAllText($path, $text, [Text.Encoding]::UTF8)
+    Write-Log "ALERT[$level] key=$key file=$fname"
+    return $true
+}
+
+function Clear-AlertKey($state, [string]$key) {
+    $alerts = Get-Prop $state "alert_last" $null
+    if ($null -ne $alerts -and $null -ne $alerts.PSObject.Properties[$key]) {
+        $alerts.PSObject.Properties.Remove($key)
+    }
+}
+
+function Get-TossProcs([string]$pattern) {
+    # $PID exclusion: when patterns are passed as CLI arguments (sandbox tests) the
+    # watchdog's own command line would otherwise match itself.
+    Get-CimInstance Win32_Process -Filter "Name='$ProcName'" -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.ProcessId -ne $PID -and
+            $_.CommandLine -match $pattern -and
+            ($ExeLike -eq "*" -or ($_.ExecutablePath -and $_.ExecutablePath -like $ExeLike))
+        }
+}
+
+# Last telemetry line of collector.log -> @{ts=<datetime>; session=<s>; counters=<string>}
+function Get-LastTelemetry {
+    if (-not (Test-Path $CollectorLog)) { return $null }
+    $tail = Get-Content $CollectorLog -Tail 400 -ErrorAction SilentlyContinue
+    if ($null -eq $tail) { return $null }
+    $line = $tail | Where-Object { $_ -match "telemetry session=" } | Select-Object -Last 1
+    if ($null -eq $line) { return $null }
+    if ($line -match "^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+\s+\S+\s+telemetry session=(\S+)\s+(.*)$") {
+        return @{
+            ts = [datetime]::ParseExact($Matches[1], "yyyy-MM-dd HH:mm:ss", $null)
+            ts_str = $Matches[1]
+            session = $Matches[2]
+            counters = $Matches[3].Trim()
+        }
+    }
+    return $null
+}
+
+function Get-LogTail([int]$lines = 400) {
+    if (-not (Test-Path $CollectorLog)) { return @() }
+    $t = Get-Content $CollectorLog -Tail $lines -ErrorAction SilentlyContinue
+    if ($null -eq $t) { return @() }
+    return $t
+}
+
+function Get-PowerInfo {
+    $bat = Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $bat) { return @{ has_battery = $false; on_ac = $true; pct = 100 } }
+    $online = $true
+    try {
+        $bs = Get-CimInstance -Namespace root\wmi -ClassName BatteryStatus -ErrorAction Stop |
+            Select-Object -First 1
+        if ($null -ne $bs) { $online = [bool]$bs.PowerOnline }
+    } catch {
+        # fall back: Win32_Battery.BatteryStatus 2 = on AC
+        $online = ($bat.BatteryStatus -eq 2)
+    }
+    return @{ has_battery = $true; on_ac = $online; pct = [int]$bat.EstimatedChargeRemaining }
+}
+
+function Get-FreeGB {
+    $drive = [IO.Path]::GetPathRoot((Resolve-Path $DataDir).Path)
+    $du = [IO.DriveInfo]::new($drive)
+    return [math]::Round($du.AvailableFreeSpace / 1GB, 2)
+}
+
+function Invoke-Restart($state, [string]$reason) {
+    # rolling restart budget - a broken collector must not be restart-hammered
+    $hist = @(@(Get-Prop $state "restarts" @()) | Where-Object { ($NowEpoch - $_) -lt $RestartWindowS })
+    if ($hist.Count -ge $RestartMax) {
+        Raise-Alert $state "restart_budget_exhausted" "CRIT" (
+            "Watchdog wanted to restart the collector (reason: $reason) but the restart budget " +
+            "($RestartMax per $RestartWindowS s) is exhausted. NOT restarting. " +
+            "Manual intervention required. Check data/watchdog.log and recent ALERT files.") 3600 | Out-Null
+        return $false
+    }
+
+    if ($DryRunRestart) {
+        Set-Prop $state "restarts" (@($hist) + $NowEpoch)
+        Set-Prop $state "last_restart_dryrun" "$NowStamp reason=$reason launcher=$LauncherCmd"
+        Write-Log "RESTART-DRYRUN reason=$reason (would run: $LauncherCmd)"
+        return $true
+    }
+
+    # kill remnants first so a half-dead tree cannot double-run against the API lease
+    $rem = @(Get-TossProcs $SupervisorPattern) + @(Get-TossProcs $CollectorPattern)
+    foreach ($p in $rem) {
+        try { & taskkill /PID $p.ProcessId /T /F 2>&1 | Out-Null } catch { }
+    }
+    if ($rem.Count -gt 0) { Start-Sleep -Seconds 3 }
+
+    Write-Log "RESTART reason=$reason launcher=$LauncherCmd"
+    Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$LauncherCmd`"" `
+        -WindowStyle Hidden -WorkingDirectory $RepoRoot
+    Start-Sleep -Seconds 25
+
+    $supAfter = @(Get-TossProcs $SupervisorPattern)
+    $colAfter = @(Get-TossProcs $CollectorPattern)
+    $ok = ($supAfter.Count -ge 1 -and $colAfter.Count -ge 1)
+    Set-Prop $state "restarts" (@($hist) + $NowEpoch)
+    $outcome = "FAILED"
+    if ($ok) { $outcome = "OK" }
+    Raise-Alert $state "restarted_$reason" "WARN" (
+        "Watchdog restarted the collector. reason=$reason outcome=$outcome`r`n" +
+        "supervisor_procs=$($supAfter.Count) collector_procs=$($colAfter.Count)`r`n" +
+        "If outcome=FAILED check data/supervisor.stdout.log and data/collector.log tails.") 60 | Out-Null
+    Write-Log "RESTART outcome=$outcome sup=$($supAfter.Count) col=$($colAfter.Count)"
+    return $ok
+}
+
+# ---------------- sentinel role ----------------
+if ($Role -eq "sentinel") {
+    $state = Load-State
+    [IO.File]::WriteAllText($SentinelHeartbeatFile, "$NowStamp epoch=$NowEpoch", [Text.Encoding]::UTF8)
+    $ok = $true
+    if (Test-Path $HeartbeatFile) {
+        $age = $NowEpoch - [int](Get-Item $HeartbeatFile).LastWriteTimeUtc.Subtract(
+            [datetime]'1970-01-01').TotalSeconds
+        if ($age -gt $WatchdogStaleS) {
+            $ok = $false
+            Raise-Alert $state "watchdog_silent" "CRIT" (
+                "Watchdog heartbeat is $([int]$age)s old (threshold $WatchdogStaleS s). " +
+                "Re-kicking task '$WatchdogTaskName'.") 3600 | Out-Null
+            try { & schtasks /Run /TN $WatchdogTaskName 2>&1 | Out-Null } catch { }
+        }
+    } else {
+        $ok = $false
+        Raise-Alert $state "watchdog_heartbeat_missing" "CRIT" (
+            "Watchdog heartbeat file does not exist: $HeartbeatFile. " +
+            "Re-kicking task '$WatchdogTaskName'.") 3600 | Out-Null
+        try { & schtasks /Run /TN $WatchdogTaskName 2>&1 | Out-Null } catch { }
+    }
+    if ($ok) { Write-Log "sentinel OK (watchdog heartbeat fresh)" }
+    Save-State $state
+    exit 0
+}
+
+# ---------------- watchdog role ----------------
+$state = Load-State
+[IO.File]::WriteAllText($HeartbeatFile, "$NowStamp epoch=$NowEpoch", [Text.Encoding]::UTF8)
+
+# 0. operator STOP -> stand down completely
+if (Test-Path $StopFile) {
+    if (-not (Get-Prop $state "stop_seen" $false)) {
+        Set-Prop $state "stop_seen" $true
+        Raise-Alert $state "stop_observed" "INFO" (
+            "STOP file present ($StopFile) - watchdog standing down (no checks, no restarts) " +
+            "until the STOP file is removed. This is the intended operator-stop path.") 1 | Out-Null
+    }
+    Write-Log "STOP present - standing down"
+    Save-State $state
+    exit 0
+}
+if (Get-Prop $state "stop_seen" $false) {
+    Set-Prop $state "stop_seen" $false
+    Clear-AlertKey $state "stop_observed"
+    Write-Log "STOP cleared - resuming watch"
+}
+
+$problems = @()
+$restartReason = $null
+
+# (a) process liveness
+$sup = @(Get-TossProcs $SupervisorPattern)
+$col = @(Get-TossProcs $CollectorPattern)
+if ($sup.Count -eq 0 -and $col.Count -eq 0) {
+    $problems += "both_dead"
+    $restartReason = "process_dead"
+} elseif ($sup.Count -eq 0) {
+    # collector alive but unsupervised: a later crash would never be restarted
+    $problems += "supervisor_dead"
+    $restartReason = "supervisor_dead"
+} elseif ($col.Count -eq 0) {
+    # supervisor alive, collector gone - give the supervisor's own backoff one
+    # cycle (up to 300 s) before stepping in
+    $strikes = (Get-Prop $state "collector_missing_strikes" 0) + 1
+    Set-Prop $state "collector_missing_strikes" $strikes
+    if ($strikes -ge 2) {
+        $problems += "collector_dead_x$strikes"
+        $restartReason = "collector_dead"
+    } else {
+        Write-Log "collector missing (strike 1) - letting supervisor backoff work"
+    }
+} else {
+    Set-Prop $state "collector_missing_strikes" 0
+}
+
+# (b)+(c) telemetry freshness and counter advance
+$tele = Get-LastTelemetry
+$session = "unknown"
+$ageMin = -1
+if ($null -ne $tele) {
+    $session = $tele.session
+    $ageMin = [math]::Round(((Get-Date) - $tele.ts).TotalMinutes, 1)
+    if ($ageMin -gt $FreshCritMin -and $null -eq $restartReason -and $col.Count -ge 1) {
+        # process alive but log dead
+        $problems += "log_stale_${ageMin}min"
+        $restartReason = "log_stale"
+    }
+    $prev = Get-Prop $state "last_telemetry" $null
+    $openNow = ($session -ne "closed")
+    if ($null -ne $prev -and $openNow -and (Get-Prop $prev "session" "closed") -ne "closed") {
+        if ($tele.counters -eq (Get-Prop $prev "counters" "") -and $tele.ts_str -ne (Get-Prop $prev "ts" "")) {
+            $strikes = (Get-Prop $state "freeze_strikes" 0) + 1
+            Set-Prop $state "freeze_strikes" $strikes
+            if ($strikes -ge $FreezeStrikesToRestart -and $null -eq $restartReason) {
+                $problems += "counters_frozen_x$strikes"
+                $restartReason = "counters_frozen"
+            }
+        } else {
+            Set-Prop $state "freeze_strikes" 0
+        }
+    } elseif (-not $openNow) {
+        # closed session: frozen counters are NORMAL - never alarm on them here
+        Set-Prop $state "freeze_strikes" 0
+    }
+    Set-Prop $state "last_telemetry" ([PSCustomObject]@{
+        ts = $tele.ts_str; session = $session; counters = $tele.counters })
+} elseif ($col.Count -ge 1 -and $null -eq $restartReason) {
+    # collector alive but no telemetry parseable at all
+    $problems += "no_telemetry"
+}
+
+# (e) token state: only meaningful during open sessions
+if ($null -eq $restartReason -and $session -ne "closed" -and $session -ne "unknown" -and
+    (Test-Path $TokenStateFile)) {
+    try {
+        $tok = Get-Content $TokenStateFile -Raw | ConvertFrom-Json
+        $expMs = [double](Get-Prop $tok "expires_at_ms" 0)
+        $nowMs = $NowEpoch * 1000.0
+        if ($expMs -gt 0 -and $nowMs -gt ($expMs + $TokenGraceMin * 60000)) {
+            $tailText = (Get-LogTail 400) -join "`n"
+            $reCount = ([regex]::Matches($tailText, "unexpected RuntimeError")).Count
+            $baseUrlErr = $tailText -match "TOSS_BASE_URL is not set"
+            if ($reCount -ge $RuntimeErrorMin -or $baseUrlErr) {
+                $problems += "token_dead_re$reCount"
+                $restartReason = "token_dead"
+            }
+        }
+    } catch {
+        Write-Log "token_state.json unreadable: $($_.Exception.Message)"
+    }
+}
+
+# (d) disk defense
+$freeGB = Get-FreeGB
+if ($freeGB -lt $DiskCritGB) {
+    $problems += "disk_crit_${freeGB}GB"
+    Raise-Alert $state "disk_critical" "CRIT" (
+        "Free disk $freeGB GB is below critical $DiskCritGB GB.`r`n" +
+        "Actions: log rotation forced; polluted-DB backups " +
+        "(tossmon_20260730_polluted.db*, archive_20260730_polluted) will be DELETED to keep " +
+        "the live collection writing. See watchdog.log for what was removed.") 10800 | Out-Null
+    $py = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+    try { & $py -m ops.rotate_logs --config (Join-Path $RepoRoot "ops\ops_config.yaml") 2>&1 |
+            ForEach-Object { Write-Log "rotate: $_" } } catch { Write-Log "rotate failed: $($_.Exception.Message)" }
+    foreach ($victim in @("tossmon_20260730_polluted.db", "tossmon_20260730_polluted.db-shm",
+                           "tossmon_20260730_polluted.db-wal")) {
+        $vp = Join-Path $DataDir $victim
+        if (Test-Path $vp) {
+            $mb = [math]::Round((Get-Item $vp).Length / 1MB, 1)
+            try { Remove-Item $vp -Force; Write-Log "disk-crit deleted $victim (${mb}MB)" } catch { }
+        }
+    }
+    $vd = Join-Path $DataDir "archive_20260730_polluted"
+    if (Test-Path $vd) {
+        try { Remove-Item $vd -Recurse -Force; Write-Log "disk-crit deleted archive_20260730_polluted/" } catch { }
+    }
+} elseif ($freeGB -lt $DiskWarnGB) {
+    $problems += "disk_warn_${freeGB}GB"
+    if (Raise-Alert $state "disk_warn" "WARN" (
+            "Free disk $freeGB GB is below warning $DiskWarnGB GB. Running log rotation. " +
+            "If this keeps dropping, the critical tier ($DiskCritGB GB) deletes polluted-DB backups.") 21600) {
+        $py = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+        try { & $py -m ops.rotate_logs --config (Join-Path $RepoRoot "ops\ops_config.yaml") 2>&1 |
+                ForEach-Object { Write-Log "rotate: $_" } } catch { Write-Log "rotate failed: $($_.Exception.Message)" }
+    }
+} else {
+    Clear-AlertKey $state "disk_warn"
+    Clear-AlertKey $state "disk_critical"
+}
+
+# (f) power
+$pw = Get-PowerInfo
+$powerNow = "ac"
+if ($pw.has_battery -and (-not $pw.on_ac)) { $powerNow = "battery" }
+$powerPrev = Get-Prop $state "power" "ac"
+if ($powerNow -eq "battery") {
+    if ($powerPrev -ne "battery") {
+        Raise-Alert $state "on_battery" "WARN" (
+            "Machine switched to BATTERY power (charge $($pw.pct)%). Collection continues " +
+            "(scheduler battery limits were removed) but plug in AC as soon as possible. " +
+            "DC sleep timeouts are set to 0 by the hardening pass, but battery drain will " +
+            "eventually kill the machine.") 1 | Out-Null
+    }
+    if ($pw.pct -le 20) {
+        Raise-Alert $state "battery_low" "CRIT" (
+            "Battery at $($pw.pct)% and still on battery power. The machine will die soon " +
+            "and collection with it. PLUG IN NOW.") 1800 | Out-Null
+    }
+} elseif ($powerPrev -eq "battery") {
+    Raise-Alert $state "power_restored" "INFO" ("AC power restored (charge $($pw.pct)%).") 1 | Out-Null
+    Clear-AlertKey $state "on_battery"
+    Clear-AlertKey $state "battery_low"
+}
+Set-Prop $state "power" $powerNow
+
+# (g) sentinel heartbeat (mutual watch)
+if (Test-Path $SentinelHeartbeatFile) {
+    $sAge = $NowEpoch - [int](Get-Item $SentinelHeartbeatFile).LastWriteTimeUtc.Subtract(
+        [datetime]'1970-01-01').TotalSeconds
+    if ($sAge -gt $SentinelStaleS) {
+        Raise-Alert $state "sentinel_silent" "WARN" (
+            "Sentinel heartbeat is $([int]$sAge)s old (threshold $SentinelStaleS s). " +
+            "Re-kicking task '$SentinelTaskName'.") 3600 | Out-Null
+        try { & schtasks /Run /TN $SentinelTaskName 2>&1 | Out-Null } catch { }
+    } else {
+        Clear-AlertKey $state "sentinel_silent"
+    }
+}
+
+# act
+if ($null -ne $restartReason) {
+    Raise-Alert $state "watch_$restartReason" "CRIT" (
+        "Watchdog detected: $($problems -join ', ') (session=$session age_min=$ageMin " +
+        "sup=$($sup.Count) col=$($col.Count)). Restarting via $LauncherCmd") 60 | Out-Null
+    Invoke-Restart $state $restartReason | Out-Null
+    Set-Prop $state "collector_missing_strikes" 0
+    Set-Prop $state "freeze_strikes" 0
+}
+
+$summary = "sup=$($sup.Count) col=$($col.Count) session=$session age_min=$ageMin " +
+    "free_gb=$freeGB power=$powerNow($($pw.pct)%)"
+if ($problems.Count -gt 0) { $summary += " problems=" + ($problems -join ",") }
+else { $summary = "OK $summary" }
+Write-Log $summary
+
+Save-State $state
+if ($null -ne $restartReason) { exit 2 }
+if ($problems.Count -gt 0) { exit 1 }
+exit 0

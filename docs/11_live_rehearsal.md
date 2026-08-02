@@ -711,4 +711,63 @@ collector_state.json: watch=1500 tier2+=145` → `collector start base_url=… l
 패턴 감시로 보완. 관찰 항목: `rankings_clamped` 첫 발화(§11-3 클램프 분기 실전 미발동 상태).
 
 **유의**: 기동 시점 기기가 배터리(67%) 구동 — 설정 ①② 해제로 수집은 계속되지만 주중
-무인 운영을 위해 전원 연결 권장(코디네이터 보고에 포함).
+무인 운영을 위해 전원 연결 권장(코디네이터 보고에 포함). → 22:2x 사용자 AC 연결 확인됨.
+
+## 14. 5일 무인 하드닝 (2026-08-02 22:2x, spec coordination/specs/w5_5day_hardening.md) — `가동 중`
+
+**원칙: 감시·복구가 에이전트에 의존하면 실패.** 모든 방어는 OS 작업 스케줄러 소속 —
+에이전트/코디네이터 세션이 끝나도 스스로 돈다. 가동 중인 수집기(§13, 21:50:49 기동분)는
+건드리지 않고 바깥에 방어층만 덧댔다.
+
+**구성 (schtasks 5개, 전부 배터리 허용·배터리 전환 무중단·StartWhenAvailable)**:
+
+| 작업 | 주기 | 역할 |
+|---|---|---|
+| tossmon-watchdog | 5분 | `ops/watchdog.ps1` — 아래 점검 (a)~(g) + 자동 재기동 |
+| tossmon-sentinel | 30분 | 같은 스크립트 `-Role sentinel` — 워치독 심박 감시·재가동(상호 감시) |
+| tossmon-logrotate | 매일 00:10 | `ops/rotate_logs.py` (기존) — 크기 회전·gzip·14일 보존 |
+| tossmon-dailyhealth | 매일 08:52 | `ops/daily_health.py` (신규) — 전일 수집 품질 요약 |
+| tossmon-collector-oneshot | 수동/워치독 | §13 런처 — env(TOSS_BASE_URL·TOSS_LIVE) 보장 재기동 경로 |
+
+**워치독 점검·대응** (`ops/watchdog.ps1`, 상태 `data/ops_state/watchdog_state.json`,
+로그 `data/watchdog.log`, 경보 `data/ALERT_<ts>_<key>.txt`):
+(a) supervisor·collector 프로세스 생존 — 죽으면 잔재 taskkill 후
+`ops/launch_collector.cmd` 재기동(env 보장, §11-1 재발 차단). collector 만 죽고
+supervisor 가 살아 있으면 supervisor 백오프에 1주기(5분) 양보 후 개입.
+(b) collector.log 텔레메트리 신선도(15분 초과 = 사망 취급) (c) **개장 세션 중 카운터
+동결 감지** — 연속 2회(≈10분) 동일 카운터면 API 사망 판정(§11-1 을 2시간→10분으로 단축).
+closed 세션 동결은 정상으로 제외(§12 오탐 후속 반영) (d) 디스크: warn 5GB → 로테이션+경보,
+crit 3GB → 오염 백업(`tossmon_20260730_polluted.db*`, `archive_20260730_polluted/`) 삭제
+포함 — Errno 28 재발 차단 (e) 토큰: 개장 세션 + 만료 10분 초과 + `unexpected RuntimeError`
+폭주/`TOSS_BASE_URL` 로그면 재기동 (f) 전원: AC↔배터리 전환·배터리 20% 이하 경보,
+DC 절전/최대절전 유휴 타임아웃 0 으로 변경(원복: `powercfg /change standby-timeout-dc 4` 등)
+(g) 센티널 심박 상호 확인. **재기동 예산 3회/2h** — 초과 시 재기동 중단+CRIT 경보(C-8 취지).
+`data/ops_state/STOP` 존재 시 전면 스탠드다운(운영자 정지와 싸우지 않는다).
+
+**발동 검증 (전 층, 샌드박스=scratchpad 복제 경로 — 라이브 무접촉)**:
+T1 프로세스 사망→재기동+ALERT / T1b 재기동이 실제 런처를 실행(증거 파일) / T2 로그
+신선도 위반→재기동 / T3 개장 중 카운터 동결→2스트라이크 재기동, T3b closed 동결→무발화
+(음성 검증) / T5 토큰 사망→재기동, T5b 토큰 만료+closed→무발화(현 주말 실상태와 동일) /
+T4 디스크 warn→로테이션+ALERT, T4b crit→오염 백업 삭제 / T7 센티널이 침묵 워치독
+감지→ALERT+재가동, 신선하면 OK / T8 재기동 예산 소진→재기동 억제+CRIT / T9 STOP
+스탠드다운 / 전원 전환(battery→ac)→ALERT_power_restored — **13/13 PASS**. 라이브 검증:
+워치독 22:26:10·22:30:55 OK 사이클, 센티널 22:32:54 상호감시 OK, 로테이션은 실제 실행에서
+수집 중인 `collector.stdout.log`(24MB) busy-skip(유실 0), daily_health 는 실데이터에서
+**§11-1 실사고 공백 102.8분을 정확히 재검출**(2026-08-01 자 요약 생성됨). 실기동 경로
+자체(§13 런처)는 21:50:49 실제 기동으로 검증된 것과 동일물.
+
+**남은 단일 실패점 (솔직 목록)**: ① Windows 자동 재부팅 — 활성 시간 11~05시라 재부팅
+허용창(05~11시)이 애프터 세션과 겹침. 스케줄러 작업이 InteractiveToken 이라 재부팅 후
+**로그온 전까지 수집·워치독 전부 정지**. 관리자 권한이 아니라 일시중지를 걸 수 없었다 —
+**사용자 조치: Windows 업데이트 '1주 일시중지' + 재부팅 발생 시 로그인**. ② 작업 스케줄러
+서비스/머신 자체(배터리 방전·하드웨어) — 워치독도 같이 죽는 계열, OS 안에서는 방어 불가.
+③ 토큰 재발급 실패의 카운터 사각(§11-1 후속 (i)) — 로그 패턴 우회 감시로만 보완, W4
+코드 수정 전까지 잔존. ④ 수집기 측 워치독 부재 감지(상호 감시의 collector 쪽 절반)는 W4
+코드 필요 — 센티널 30분 주기로 부분 보완. ⑤ ALERT 는 파일 기반 — 외부 푸시 채널이 없어
+사람이 안 보면 모름(아침 확인 목록으로 보완). ⑥ 에이전트 도구 호출 활성 중 태어난 워치독
+런은 §11-2 계열로 걷힐 수 있음 — 무인 상태(본래 설계 대상)에선 해당 없음, 다음 5분 주기가
+자연 복구.
+
+**아침 확인 파일 (사용자용)**: `data/ALERT_*.txt`(있으면 문제 — 없는 게 정상),
+`data/watchdog.log`(5분마다 1줄, `OK sup=1 col=1 ...` 이 정상), `data/daily_health_<날짜>.txt`
+(매일 08:52 생성, 전일 수집 품질), `data/collector.log`(원 로그, telemetry 라인).
