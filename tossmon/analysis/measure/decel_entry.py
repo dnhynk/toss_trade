@@ -75,6 +75,10 @@ MIN_ROWS_PER_CYCLE = 1000
 #: 칸이 이보다 얇으면 판정하지 않는다.
 MIN_CELL_N = 200
 
+#: **모든 판정 옆에 붙일 경제적 기준** — 정규장 실측 왕복 비용 (docs/23 §10-R.5).
+#: 유의성만으로는 아무 의미가 없다: 비용을 못 넘는 효과는 거래로 옮길 수 없다.
+ROUND_TRIP_BP = D.MEASURED_ROUND_TRIP_REGULAR * 1e4
+
 BOOTSTRAP_N = 1000
 BOOTSTRAP_SEED = 20260730
 
@@ -260,8 +264,29 @@ def surface_is_flat(rows: list[dict], *, session: str = "regular") -> dict:
 # --------------------------------------------------------------------------- #
 # 4. 2단계 — 속도를 통제하고 가속도가 추가 정보를 주는가
 # --------------------------------------------------------------------------- #
+def powered_cell_count(panel: pd.DataFrame, *, w: int = PRIMARY_WINDOW,
+                       h: int = PRIMARY_H) -> int:
+    """**보정 분모** — 우리가 실제로 들여다보는 (세션 x 속도구간) 칸 수.
+
+    세션 안 5구간만 보정하면 안 된다. 우리는 **4세션 x 5구간**을 보고 그중 하나를
+    근거로 판정하기 때문이다. 분모가 좁으면 표본이 늘 때마다 답이 뒤집힌다.
+    """
+    if panel is None or panel.empty:
+        return 1
+    n = 0
+    for sess in SS.SESSIONS:
+        d = panel[panel["session"] == sess].dropna(
+            subset=[f"vn{w}", f"an{w}", f"fwd{h}"])
+        if len(d) < MIN_CELL_N:
+            continue
+        for _, g in d.assign(v_bin=quantile_bins(d[f"vn{w}"])).groupby("v_bin"):
+            if len(g) >= MIN_CELL_N:
+                n += 1
+    return max(1, n)
+
+
 def acceleration_effect(panel: pd.DataFrame, *, w: int = PRIMARY_WINDOW,
-                        h: int = PRIMARY_H) -> list[dict]:
+                        h: int = PRIMARY_H, n_comparisons: int | None = None) -> list[dict]:
     """**이것이 진짜 검정이다** (docs/27 §3-2단계).
 
     주장은 "급락하면 산다"가 아니라 **"급락이 감속하면 산다"** 다. 그래서 **같은 속도
@@ -271,6 +296,7 @@ def acceleration_effect(panel: pd.DataFrame, *, w: int = PRIMARY_WINDOW,
     if panel is None or panel.empty:
         return []
     rng = np.random.default_rng(BOOTSTRAP_SEED)
+    m = n_comparisons or powered_cell_count(panel, w=w, h=h)
     rows = []
     for sess in SS.SESSIONS:
         d = panel[panel["session"] == sess].dropna(
@@ -294,7 +320,7 @@ def acceleration_effect(panel: pd.DataFrame, *, w: int = PRIMARY_WINDOW,
             lo, hi = float(np.percentile(boot, 2.5)), float(np.percentile(boot, 97.5))
             # 5개 속도 구간을 동시에 보므로 보정한다. "어느 칸이든 하나"는 규칙이 아니다 —
             # Q1 에서 바로 그 형태가 자료가 늘자 뒤집혔다.
-            ab = 100.0 * (0.05 / N_QUANTILES) / 2.0
+            ab = 100.0 * (0.05 / m) / 2.0
             blo = float(np.percentile(boot, ab))
             bhi = float(np.percentile(boot, 100.0 - ab))
             rows.append({
@@ -305,10 +331,53 @@ def acceleration_effect(panel: pd.DataFrame, *, w: int = PRIMARY_WINDOW,
                 "bottom_accel_bp": float(bot.mean() * 1e4),
                 "effect_bp": eff, "ci_low": lo, "ci_high": hi,
                 "ci_low_bonferroni": blo, "ci_high_bonferroni": bhi,
+                "n_comparisons": m,
+                # **유의성 옆에 항상 크기를 붙인다.**
+                "cost_bp": ROUND_TRIP_BP,
+                "effect_over_cost": float(eff / ROUND_TRIP_BP),
+                "economically_dead": bool(eff <= ROUND_TRIP_BP),
                 "is_falling": bool(float(pd.to_numeric(g[f"vn{w}"],
                                                        errors="coerce").median()) < 0),
                 "verdict": ("above_zero" if blo > 0 else
                             "below_zero" if bhi < 0 else "crosses_zero")})
+    return rows
+
+
+def cell_window_consistency(panel: pd.DataFrame, *, windows=WINDOWS,
+                            h: int = PRIMARY_H) -> list[dict]:
+    """**창을 바꿔도 같은 답이 나오는 칸만 유효하다** (docs/27 §2-3).
+
+    사전 등록된 기준인데 게이트가 참조하지 않아, 표는 "잡음"이라 말하는데 판정은
+    "진행"이라고 하는 일이 벌어졌다. 이제 **칸 단위로** 부호와 유의성이 3·5·10봉에서
+    일관되는지 보고, 아니면 그 칸을 **무효** 처리한다.
+    """
+    if panel is None or panel.empty:
+        return []
+    by_w = {w: {(x["session"], x["v_bin"]): x
+                for x in acceleration_effect(panel, w=w, h=h)}
+            for w in windows}
+    keys = sorted({k for d in by_w.values() for k in d})
+    rows = []
+    for sess, vb in keys:
+        got = [by_w[w].get((sess, vb)) for w in windows]
+        present = [x for x in got if x is not None]
+        if len(present) < len(windows):
+            rows.append({"session": sess, "v_bin": vb, "consistent": False,
+                         "reason": "not measurable at every window",
+                         "n_windows": len(present)})
+            continue
+        signs = {int(np.sign(x["effect_bp"])) for x in present}
+        verdicts = {x["verdict"] for x in present}
+        rows.append({
+            "session": sess, "v_bin": vb,
+            "is_falling": bool(present[0].get("is_falling")),
+            "effects_bp": [round(x["effect_bp"], 2) for x in present],
+            "verdicts": sorted(verdicts),
+            "consistent": bool(len(signs) == 1 and len(verdicts) == 1),
+            "reason": ("" if len(signs) == 1 and len(verdicts) == 1 else
+                       "sign flips across windows" if len(signs) > 1 else
+                       "significance changes across windows"),
+            "n_windows": len(present)})
     return rows
 
 
@@ -333,7 +402,8 @@ def window_stability(panel: pd.DataFrame, *, windows=WINDOWS,
 # --------------------------------------------------------------------------- #
 # 5. 사전 등록 중단 기준 (docs/27 §4)
 # --------------------------------------------------------------------------- #
-def stop_gate(flat: dict, accel: list[dict], stability: list[dict]) -> dict:
+def stop_gate(flat: dict, accel: list[dict], stability: list[dict],
+              consistency: list[dict] | None = None) -> dict:
     """**하나라도 걸리면 그 지점에서 종료.** 억지로 살리지 않는다."""
     if not flat.get("available"):
         return {"stopped_at": "stage1", "proceed": False,
@@ -348,6 +418,16 @@ def stop_gate(flat: dict, accel: list[dict], stability: list[dict]) -> dict:
     # **사전등록 가설은 `v<0` 구간에 관한 것이다** (docs/27 §4). 상승 구간에서 뭔가
     # 나와도 그것은 이 가설이 아니다. "어느 칸이든 하나 0 을 넘나"는 규칙이 아니다 —
     # Q1 에서 정확히 그 형태가 자료가 늘자 뒤집혔고, 그 교훈을 여기 적용한다.
+    # **창 안정성을 판정에 쓴다** — 사전 등록 기준인데 표만 찍고 있었다.
+    ok = {(c["session"], c["v_bin"]) for c in (consistency or []) if c["consistent"]}
+    if consistency is not None:
+        powered = [x for x in powered if (x["session"], x["v_bin"]) in ok]
+        if not powered:
+            return {"stopped_at": "stage2", "proceed": False,
+                    "reason": ("no cell keeps the same sign AND the same verdict "
+                               "across fit windows 3/5/10 - this is noise "
+                               "(docs/27 sec 2-3)"),
+                    "n_consistent_cells": 0}
     falling = [x for x in powered if x.get("is_falling")]
     if not falling:
         return {"stopped_at": "stage2", "proceed": False,
@@ -375,8 +455,19 @@ def stop_gate(flat: dict, accel: list[dict], stability: list[dict]) -> dict:
                 "reason": ("the effect changes sign with the fit window - noise, not "
                            "signal (docs/27 sec 2-3)"),
                 "median_effect_by_window_bp": meds}
+    # **경제적으로 죽은 효과는 통과시키지 않는다.** 비용을 못 넘으면 유의해도 못 먹는다.
+    alive = [x for x in win if not x.get("economically_dead", True)]
+    if not alive:
+        best = max((x["effect_bp"] for x in win), default=float("nan"))
+        return {"stopped_at": "stage2", "proceed": False,
+                "reason": ("the surviving effect is smaller than the measured round "
+                           "trip - statistically present, economically dead"),
+                "best_effect_bp": best, "cost_bp": ROUND_TRIP_BP,
+                "best_over_cost": (best / ROUND_TRIP_BP if best == best
+                                   else float("nan"))}
     return {"stopped_at": None, "proceed": True,
-            "reason": "acceleration carries information beyond velocity in falling bins",
+            "reason": ("acceleration carries information beyond velocity in falling "
+                       "bins, survives every fit window, and exceeds the measured cost"),
             "n_falling_bins_above_zero": len(win)}
 
 
@@ -388,7 +479,8 @@ def build_report(conn) -> dict:
     flat = surface_is_flat(surf)
     accel = acceleration_effect(panel) if flat.get("available") and not flat.get("flat") else []
     stab = window_stability(panel) if accel else []
-    gate = stop_gate(flat, accel, stab)
+    cons = cell_window_consistency(panel) if accel else []
+    gate = stop_gate(flat, accel, stab, cons)
     cycles = sorted(panel["cycle_date"].unique().tolist()) if len(panel) else []
     return {
         "holdout": {"start": SS.HOLDOUT_START, "end": SS.HOLDOUT_END,
@@ -404,6 +496,7 @@ def build_report(conn) -> dict:
         "surface_summary": flat,
         "acceleration_effect": accel,
         "window_stability": stab,
+        "cell_window_consistency": cons,
         "gate": gate,
         "prefix_note": ("v and a are fitted on PAST bars only (x=0 is the current "
                         "bar), so the entry condition is prefix-invariant by "
@@ -450,16 +543,21 @@ def main(db: Path, *, out_dir: Path | None = None) -> int:
     if rep["acceleration_effect"]:
         print("  the hypothesis is about FALLING bins (v<0); rising bins are shown "
               "but are not the test")
+        print(f"  'x cost' is the effect divided by the measured regular round trip "
+              f"({ROUND_TRIP_BP:.0f} bp). Below 1.0 means it cannot pay for itself.")
         print(f"{'session':<9}{'v_bin':>6}{'v med':>8}{'fall':>6}{'n top':>7}"
               f"{'n bot':>7}{'top bp':>9}{'bot bp':>9}{'effect':>9}"
-              f"{'Bonf low':>10}{'Bonf high':>10}{'verdict':>15}")
+              f"{'Bonf low':>10}{'Bonf high':>10}{'verdict':>15}"
+              f"{'x cost':>9}{'econ':>7}")
         for r in rep["acceleration_effect"]:
             print(f"{r['session']:<9}{r['v_bin']:>6}{r['v_median']:>8.2f}"
                   f"{('yes' if r['is_falling'] else 'no'):>6}"
                   f"{r['n_top_accel']:>7}{r['n_bottom_accel']:>7}"
                   f"{r['top_accel_bp']:>9.2f}{r['bottom_accel_bp']:>9.2f}"
                   f"{r['effect_bp']:>9.2f}{r['ci_low_bonferroni']:>10.2f}"
-                  f"{r['ci_high_bonferroni']:>10.2f}{r['verdict']:>15}")
+                  f"{r['ci_high_bonferroni']:>10.2f}{r['verdict']:>15}"
+                  f"{r['effect_over_cost']:>9.2f}"
+                  f"{('DEAD' if r['economically_dead'] else 'alive'):>7}")
     else:
         print("  not run - stage 1 stopped first")
 
@@ -471,6 +569,16 @@ def main(db: Path, *, out_dir: Path | None = None) -> int:
             print(f"  window {r['window']:>3} bars: {r['n_bins']} bins, median effect "
                   f"{r['median_effect_bp']:+.2f} bp, bins above zero "
                   f"{r['n_above_zero']}")
+
+    if rep["cell_window_consistency"]:
+        print("\n=== [docs/27 stage 2] CELL-LEVEL WINDOW CONSISTENCY (this now gates)")
+        print(f"{'session':<9}{'v_bin':>6}{'fall':>6}{'effects 3/5/10 bars':>26}"
+              f"{'consistent':>12}  reason")
+        for c in rep["cell_window_consistency"]:
+            eff = str(c.get("effects_bp", "-"))
+            print(f"{c['session']:<9}{c['v_bin']:>6}"
+                  f"{('yes' if c.get('is_falling') else 'no'):>6}{eff:>26}"
+                  f"{str(c['consistent']):>12}  {c['reason']}")
 
     print("\n=== [docs/27 stage gate] PREREGISTERED STOP RULE")
     g = rep["gate"]

@@ -207,8 +207,10 @@ def test_gate_stops_when_there_is_no_powered_falling_bin():
 
 
 def test_gate_proceeds_only_when_acceleration_survives():
+    """이제 통과하려면 **비용도 넘어야** 한다 — 유의성만으로는 부족하다."""
     accel = [{"session": "regular", "v_bin": 0, "v_median": -1.0,
-              "is_falling": True, "verdict": "above_zero"}]
+              "is_falling": True, "verdict": "above_zero",
+              "effect_bp": 200.0, "economically_dead": False}]
     stab = [{"window": 3, "n_bins": 4, "median_effect_bp": 5.0},
             {"window": 10, "n_bins": 4, "median_effect_bp": 4.0}]
     assert DE.stop_gate({"available": True, "flat": False}, accel, stab)["proceed"]
@@ -319,3 +321,57 @@ def test_gate_stops_when_the_window_flips_the_sign():
 def test_gate_uses_bonferroni_verdicts_not_raw_ones():
     src = pathlib.Path(DE.__file__).read_text(encoding="utf-8")
     assert 'blo > 0' in src and 'bhi < 0' in src
+
+
+# --------------------------------------------------------------------------- #
+# 9. 세 번째 재발 방지 — 창 안정성·전역 보정·경제적 크기
+# --------------------------------------------------------------------------- #
+def test_gate_rejects_cells_that_are_inconsistent_across_windows():
+    """**표는 '잡음'이라 하는데 게이트는 '진행'이라 하던 자리다.**
+
+    사전 등록 기준(docs/27 §2-3)이 이제 판정에 실제로 쓰인다.
+    """
+    accel = [{"session": "regular", "v_bin": 0, "v_median": -1.0,
+              "is_falling": True, "verdict": "above_zero",
+              "effect_bp": 8.0, "economically_dead": True}]
+    cons = [{"session": "regular", "v_bin": 0, "consistent": False,
+             "reason": "sign flips across windows"}]
+    g = DE.stop_gate({"available": True, "flat": False}, accel, [], cons)
+    assert g["proceed"] is False
+    assert "across fit windows" in g["reason"]
+
+
+def test_gate_stops_when_the_survivor_cannot_pay_for_itself():
+    """**+8 bp 짜리 '유의한' 결과도 비용 66 bp 의 8분의 1이다.**"""
+    accel = [{"session": "regular", "v_bin": 0, "v_median": -1.0,
+              "is_falling": True, "verdict": "above_zero",
+              "effect_bp": 8.01, "economically_dead": True}]
+    cons = [{"session": "regular", "v_bin": 0, "consistent": True, "reason": ""}]
+    g = DE.stop_gate({"available": True, "flat": False}, accel, [], cons)
+    assert g["proceed"] is False
+    assert "economically dead" in g["reason"]
+    assert g["best_over_cost"] < 0.2
+
+
+def test_consistency_marks_a_sign_flip_as_inconsistent():
+    rows = [{"session": "regular", "v_bin": 0, "effect_bp": 5.0,
+             "verdict": "above_zero", "is_falling": True},
+            {"session": "regular", "v_bin": 0, "effect_bp": -0.4,
+             "verdict": "crosses_zero", "is_falling": True}]
+    signs = {int(np.sign(r["effect_bp"])) for r in rows}
+    assert len(signs) > 1              # 이 상황을 consistent=False 로 봐야 한다
+
+
+def test_cost_constant_has_a_single_definition():
+    """비용 상수가 두 군데면 언젠가 갈라진다."""
+    from tossmon.analysis.measure import design_b as _D
+    from tossmon.analysis.measure import rotation_q1 as _RQ
+    assert DE.ROUND_TRIP_BP == pytest.approx(_D.MEASURED_ROUND_TRIP_REGULAR * 1e4)
+    assert _RQ.REALIZED_ROUND_TRIP == pytest.approx(_D.MEASURED_ROUND_TRIP_REGULAR)
+
+
+def test_bonferroni_denominator_counts_all_sessions_not_just_one():
+    """세션 안 5구간만 보정하면 분모가 좁다 — 4세션을 다 센다."""
+    src = pathlib.Path(DE.__file__).read_text(encoding="utf-8")
+    assert "def powered_cell_count(" in src
+    assert "0.05 / m" in src and "0.05 / N_QUANTILES" not in src

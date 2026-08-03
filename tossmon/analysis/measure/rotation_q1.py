@@ -74,8 +74,8 @@ ASYMMETRY_K = (1, 2, 3, 4, 5)
 
 #: 경제적 유의성 환산에 쓰는 **정규장 실측 왕복 비용** (docs/23 §10-R.5):
 #: 유효 스프레드 중앙 0.46% + 수수료 0.2%. 통계적 유의성만으로는 아무 의미가 없다.
-EFFECTIVE_SPREAD_REGULAR = 0.0046
-REALIZED_ROUND_TRIP = EFFECTIVE_SPREAD_REGULAR + D.COMMISSION_ROUND_TRIP
+EFFECTIVE_SPREAD_REGULAR = D.MEASURED_EFFECTIVE_SPREAD_REGULAR
+REALIZED_ROUND_TRIP = D.MEASURED_ROUND_TRIP_REGULAR
 
 #: 경제적 환산에서 쓰는 횡단면 분위 수. 매 분 상위 분위를 사는 규칙을 흉내낸다.
 N_BUCKETS = 10

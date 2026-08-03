@@ -280,6 +280,13 @@ def summarize(df: pd.DataFrame, rule: str, *, clip: int = 100) -> dict:
 #:     편도 = $2~5 밴드 움직임 조건부 상대 스프레드 2.56%(docs/18 §3.1)의 절반.
 COMMISSION_ROUND_TRIP = 0.002
 ONE_LEG_SPREAD = 0.0128
+#: **docs/23 §10-R.5 실측** — 정규장 유효 스프레드 중앙값과 그 왕복 비용.
+#: 통계적 유의성 옆에 **항상 이 값과의 비율**을 붙인다. 비용을 못 넘는 효과는
+#: 유의해도 거래로 옮길 수 없다. 정의는 **여기 한 곳**에만 둔다.
+MEASURED_EFFECTIVE_SPREAD_REGULAR = 0.0046
+MEASURED_ROUND_TRIP_REGULAR = (MEASURED_EFFECTIVE_SPREAD_REGULAR
+                               + COMMISSION_ROUND_TRIP)
+
 COST_SCENARIOS = {
     "market_2.38pct": 0.0238,
     "limit_only_0.2pct": COMMISSION_ROUND_TRIP,
