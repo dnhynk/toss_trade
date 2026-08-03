@@ -47,8 +47,9 @@ DEFAULT_MAX_GAP_S = 40
 #: 두 슈팅을 별개로 셀 최소 간격.
 DEFAULT_MIN_SEPARATION_S = 24
 
-SHOT_COLUMNS = ("symbol", "ordinal", "start_ms", "peak_ms", "end_ms",
-                "start_u", "peak_u", "rise", "span_s", "gap_prev_s")
+SHOT_COLUMNS = ("symbol", "ordinal", "start_ms", "detect_ms", "peak_ms", "end_ms",
+                "start_u", "detect_u", "peak_u", "rise", "rise_after_detect",
+                "span_s", "gap_prev_s")
 
 
 def price_series(rankings: pd.DataFrame, symbol: str, ranking_type: str) -> pd.Series:
@@ -164,9 +165,15 @@ def detect_shots(series: pd.Series, *, symbol: str = "",
                 k += 1
             rows.append({
                 "symbol": symbol, "ordinal": len(rows) + 1,
-                "start_ms": int(lo_ts), "peak_ms": int(ts[k]), "end_ms": int(ts[k]),
+                "start_ms": int(lo_ts),
+                # 슈팅이 **슈팅임을 알 수 있게 된** 시각 = 임계를 처음 넘은 봉.
+                # 시작점(저점)은 상승이 끝나야 알 수 있으므로 진입 기준이 될 수 없다.
+                "detect_ms": int(ts[hit]), "detect_u": float(px[hit]),
+                "peak_ms": int(ts[k]), "end_ms": int(ts[k]),
                 "start_u": float(lo_px), "peak_u": float(px[k]),
                 "rise": float(px[k] / lo_px - 1.0),
+                # 탐지 이후 **남은** 상승폭 — 사후 전구간 상한(rise)과 구분한다.
+                "rise_after_detect": float(px[k] / px[hit] - 1.0),
                 "span_s": float((ts[k] - lo_ts) / 1000.0),
                 "gap_prev_s": (_NAN if prev_end_ms is None
                                else float((lo_ts - prev_end_ms) / 1000.0)),
@@ -326,6 +333,121 @@ def symbol_stratum(price_usd: float, shares_outstanding_qu: float | None) -> str
     if TARGET_PRICE_USD[0] <= price_usd < TARGET_PRICE_USD[1]:
         return "target"
     return "sec27_other_price"
+
+
+# --------------------------------------------------------------------------- #
+# 포착 가능한 수익 — 사후 상한과 엄격히 구분한다 (docs/23 §10)
+# --------------------------------------------------------------------------- #
+#: 탐지 지연 후보(초). 0 은 이론 상한(자료 해상도조차 무시)이고, 13초는 스냅 1개,
+#: 26/39초는 판정+주문+체결 지연을 더한 현실 구간이다.
+DEFAULT_DELAYS_S = (0, 13, 26, 39)
+
+
+def price_at(series: pd.Series, ts_ms: int) -> float:
+    """`ts_ms` **이하**의 마지막 관측가. 미래를 보지 않는다. 없으면 `NaN`."""
+    if series is None or series.empty:
+        return _NAN
+    prior = series[series.index <= ts_ms]
+    return float(prior.iloc[-1]) if len(prior) else _NAN
+
+
+def sell_on_downtick(series: pd.Series, from_ms: int, *,
+                     horizon_s: int = 600) -> tuple[float, int]:
+    """**관측 가능한** 이탈: 진입 후 직전 관측가보다 낮아진 첫 봉에서 판다.
+
+    완벽한 고점 매도는 사후에만 가능하다. 이 규칙은 매 시점 과거만 보고 판정한다.
+    끝까지 하락 전환이 없으면 지평의 마지막 관측가로 청산한다.
+    반환 `(가격, 시각)`; 관측이 없으면 `(NaN, from_ms)`.
+    """
+    if series is None or series.empty:
+        return _NAN, from_ms
+    w = series[(series.index >= from_ms)
+               & (series.index <= from_ms + horizon_s * 1000)]
+    if w.empty:
+        return _NAN, from_ms
+    prev = float(w.iloc[0])
+    for ts, px in zip(w.index.tolist()[1:], w.to_numpy()[1:]):
+        px = float(px)
+        if px < prev:
+            return px, int(ts)
+        prev = px
+    return float(w.iloc[-1]), int(w.index[-1])
+
+
+def capturable_shot_return(series: pd.Series, shot, *, delay_s: int = 13,
+                           horizon_s: int = 600) -> dict:
+    """**설계 A** — 슈팅을 탐지해 진입하고 관측 가능한 규칙으로 이탈한다.
+
+    진입가는 `detect_ms + delay_s` **이하**의 마지막 관측가다. 슈팅의 시작점(저점)은
+    상승이 끝나야 알 수 있으므로 진입 기준이 될 수 없다 — 그것을 쓰면 승률이 1.000 이
+    나오고, 그것이 룩어헤드의 표식이다.
+
+    `hindsight_rise` (전구간 상한)와 `captured` (실제 포착)를 **함께** 돌려주어
+    둘을 섞어 쓰지 못하게 한다.
+    """
+    d_ms = int(shot["detect_ms"]) + delay_s * 1000
+    entry = price_at(series, d_ms)
+    if not (entry == entry and entry > 0):
+        return {"entry_u": _NAN, "exit_u": _NAN, "captured": _NAN,
+                "hindsight_rise": float(shot["rise"]), "hold_s": _NAN,
+                "reason": "no_quote_at_entry"}
+    exit_u, exit_ms = sell_on_downtick(series, d_ms, horizon_s=horizon_s)
+    if not (exit_u == exit_u):
+        return {"entry_u": entry, "exit_u": _NAN, "captured": _NAN,
+                "hindsight_rise": float(shot["rise"]), "hold_s": _NAN,
+                "reason": "no_exit_quote"}
+    return {"entry_u": entry, "exit_u": exit_u,
+            "captured": float(exit_u / entry - 1.0),
+            "hindsight_rise": float(shot["rise"]),
+            "hold_s": float((exit_ms - d_ms) / 1000.0), "reason": "downtick"}
+
+
+def find_oversold_entry(series: pd.Series, *, drop: float = 0.05,
+                        lookback_s: int = 600, start_ms: int | None = None
+                        ) -> tuple[float, int]:
+    """**설계 B** 진입 — 비정상 과매도 후 **반등 확인** 시 기계적으로 산다.
+
+    판별기(털기 vs 사망)를 쓰지 않는다 — 사용자 확정대로 그 판별은 이 전략에 불필요하다.
+    조건: 최근 `lookback_s` 고점 대비 `drop` 이상 하락한 뒤, **직전 관측가보다 높은**
+    첫 봉의 가격에 진입. 매 시점 과거만 본다. 성립 안 하면 `(NaN, -1)`.
+    """
+    if series is None or series.empty:
+        return _NAN, -1
+    s = series if start_ms is None else series[series.index >= start_ms]
+    if len(s) < 3:
+        return _NAN, -1
+    ts = s.index.to_numpy(dtype="int64")
+    px = s.to_numpy(dtype="float64")
+    for i in range(1, len(px)):
+        lo = ts[i] - lookback_s * 1000
+        window = px[(ts <= ts[i]) & (ts >= lo)]
+        if window.size < 2:
+            continue
+        hi = float(window.max())
+        if hi > 0 and px[i] <= hi * (1.0 - drop) and px[i] > px[i - 1]:
+            return float(px[i]), int(ts[i])
+    return _NAN, -1
+
+
+def shot_exit_from_entry(series: pd.Series, shots: pd.DataFrame, entry_u: float,
+                         entry_ms: int, *, n: int = 1,
+                         horizon_s: int = 1800) -> dict:
+    """**설계 B** — 이미 보유 중일 때 **N번째 슈팅의 고점에 판다**.
+
+    설계 A 와 달리 슈팅을 예측할 필요가 없다: 들고 있는 동안 좋은 가격이 오는 것이다.
+    슈팅이 오지 않는 경우는 **손실이 아니라 별도 범주**(`reason="no_shot"`)로 계상하고
+    호출부가 비율을 보고한다.
+    """
+    if series is None or series.empty or not (entry_u > 0):
+        return {"ret": _NAN, "reason": "no_path", "wait_s": _NAN}
+    after = (shots[(shots["peak_ms"] > entry_ms)
+                   & (shots["peak_ms"] <= entry_ms + horizon_s * 1000)]
+             if shots is not None and len(shots) else None)
+    if after is None or len(after) < n:
+        return {"ret": _NAN, "reason": "no_shot", "wait_s": _NAN}
+    row = after.iloc[n - 1]
+    return {"ret": float(float(row["peak_u"]) / entry_u - 1.0), "reason": f"shot#{n}",
+            "wait_s": float((int(row["peak_ms"]) - entry_ms) / 1000.0)}
 
 
 def required_days(shots_per_day: float, *, min_n: int = 30) -> dict:

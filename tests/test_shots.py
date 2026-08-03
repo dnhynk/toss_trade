@@ -292,3 +292,110 @@ def test_multi_series_empty_and_unknown_symbol():
 
 def test_volume_ranking_is_the_default_primary_series():
     assert S.DEFAULT_RANKING_TYPES[0] == S.TOSS_VOLUME
+
+
+# --------------------------------------------------------------------------- #
+# 포착 가능한 수익 — 사후 상한과의 분리 + 룩어헤드 회귀
+# --------------------------------------------------------------------------- #
+def test_shot_records_the_moment_it_became_knowable():
+    """detect_ms 는 임계를 처음 넘은 봉 — 시작점(저점)보다 늦어야 한다."""
+    sh = S.detect_shots(series([1.00, 1.01, 1.05, 1.06]), min_rise=0.02)
+    r = sh.iloc[0]
+    assert r["detect_ms"] > r["start_ms"]
+    assert r["detect_u"] > r["start_u"]
+    assert r["rise_after_detect"] < r["rise"]     # 남은 상승폭 < 전구간 상한
+
+
+def test_price_at_never_reads_the_future():
+    s = series([1.00, 2.00, 3.00])
+    assert S.price_at(s, S12 - 1) == pytest.approx(1.00e6)
+    assert S.price_at(s, S12) == pytest.approx(2.00e6)
+    assert math.isnan(S.price_at(s, -1))
+
+
+def test_sell_on_downtick_exits_at_the_first_lower_quote():
+    s = series([1.00, 1.10, 1.20, 1.15, 1.30])
+    px, ts = S.sell_on_downtick(s, 0)
+    assert px == pytest.approx(1.15e6)            # 이후 1.30 은 보지 않는다
+    assert ts == 3 * S12
+
+
+def test_sell_on_downtick_falls_back_to_last_quote_when_monotone():
+    s = series([1.00, 1.10, 1.20])
+    px, _ = S.sell_on_downtick(s, 0)
+    assert px == pytest.approx(1.20e6)
+
+
+def test_capturable_return_is_below_the_hindsight_rise():
+    """핵심 회귀: 포착 가능 수익이 사후 전구간 상한보다 작아야 한다."""
+    s = series([1.00, 1.01, 1.05, 1.08, 1.06])
+    sh = S.detect_shots(s, min_rise=0.02)
+    r = S.capturable_shot_return(s, sh.iloc[0], delay_s=0)
+    assert r["captured"] < r["hindsight_rise"]
+
+
+def test_capturable_return_shrinks_as_detection_delay_grows():
+    s = series([1.00, 1.01, 1.05, 1.08, 1.09, 1.07])
+    sh = S.detect_shots(s, min_rise=0.02)
+    a = S.capturable_shot_return(s, sh.iloc[0], delay_s=0)["captured"]
+    b = S.capturable_shot_return(s, sh.iloc[0], delay_s=2 * 13)["captured"]
+    assert b <= a
+
+
+def test_capturable_entry_never_uses_the_shot_low():
+    """진입가는 detect 시점 가격이어야 한다 — 저점 진입이면 룩어헤드다."""
+    s = series([1.00, 1.01, 1.05, 1.06])
+    sh = S.detect_shots(s, min_rise=0.02)
+    r = S.capturable_shot_return(s, sh.iloc[0], delay_s=0)
+    assert r["entry_u"] == pytest.approx(float(sh.iloc[0]["detect_u"]))
+    assert r["entry_u"] > float(sh.iloc[0]["start_u"])
+
+
+def test_capturable_return_nan_when_no_quote_exists():
+    s = pd.Series(dtype="float64")
+    sh = S.detect_shots(series([1.00, 1.05]), min_rise=0.02)
+    assert math.isnan(S.capturable_shot_return(s, sh.iloc[0])["captured"])
+
+
+def test_oversold_entry_requires_a_drop_then_an_uptick():
+    s = series([1.00, 1.00, 0.90, 0.88, 0.92])
+    px, ts = S.find_oversold_entry(s, drop=0.05, lookback_s=600)
+    assert px == pytest.approx(0.92e6)            # 반등 확인 봉
+    assert ts == 4 * S12
+
+
+def test_oversold_entry_nan_when_no_drop():
+    s = series([1.00, 1.01, 1.02])
+    assert math.isnan(S.find_oversold_entry(s, drop=0.05)[0])
+
+
+def test_oversold_entry_uses_only_past_quotes():
+    """앞부분만 준 결과가 전체를 준 결과와 같아야 한다."""
+    px = [1.00, 1.00, 0.90, 0.88, 0.92, 1.50]
+    full = S.find_oversold_entry(series(px), drop=0.05)
+    part = S.find_oversold_entry(series(px[:5]), drop=0.05)
+    assert full == part
+
+
+def test_design_b_sells_into_a_shot_while_already_holding():
+    s = series([1.00, 1.00, 0.90, 0.88, 0.92, 0.94, 1.00, 1.00])
+    sh = S.detect_shots(s, min_rise=0.02)
+    e_px, e_ms = S.find_oversold_entry(s, drop=0.05)
+    r = S.shot_exit_from_entry(s, sh, e_px, e_ms, n=1)
+    assert r["reason"] == "shot#1" and r["ret"] > 0
+
+
+def test_design_b_reports_no_shot_as_its_own_category_not_a_loss():
+    s = series([1.00, 1.00, 0.90, 0.88, 0.92])
+    e_px, e_ms = S.find_oversold_entry(s, drop=0.05)
+    r = S.shot_exit_from_entry(s, pd.DataFrame(columns=S.SHOT_COLUMNS), e_px, e_ms)
+    assert r["reason"] == "no_shot"
+    assert math.isnan(r["ret"])                   # 손실 0 이 아니라 미도래
+
+
+def test_design_b_ignores_shots_that_peaked_before_entry():
+    s = series([1.00, 1.06, 1.00, 0.90, 0.88, 0.92])
+    sh = S.detect_shots(s, min_rise=0.02)
+    e_px, e_ms = S.find_oversold_entry(s, drop=0.05)
+    r = S.shot_exit_from_entry(s, sh, e_px, e_ms, n=1)
+    assert r["reason"] == "no_shot"               # 진입 전 고점은 팔 수 없다
