@@ -113,13 +113,21 @@ def build_summary(cfg, date_str: str | None) -> str:
             lines += ["", "last telemetry:", "  " + tele[-1].strip()]
     except OSError:
         lines.append("collector.log unreadable")
+    # 계획 정비(PLANNED_)와 진짜 사고(ALERT_)를 분리해서 센다 — 아침에 한 줄만 보고
+    # "ALERT 0건이면 무사"라고 판단할 수 있어야 한다(워치독이 접두어로 구분해 쓴다).
     try:
         day_ago = time.time() - 86400
         alerts = sorted(p.name for p in cfg.log_dir.glob("ALERT_*.txt")
                         if p.stat().st_mtime >= day_ago)
+        planned = sorted(p.name for p in cfg.log_dir.glob("PLANNED_*.txt")
+                         if p.stat().st_mtime >= day_ago)
         lines.append("")
-        lines.append(f"ALERT files (24h): {len(alerts)}")
+        lines.append(f"ALERT files (24h, 진짜 문제): {len(alerts)}")
         lines += [f"  {a}" for a in alerts]
+        if not alerts:
+            lines.append("  (없음 — 무인 구간에 사고 없음)")
+        lines.append(f"PLANNED files (24h, 계획된 정비): {len(planned)}")
+        lines += [f"  {p}" for p in planned]
     except OSError:
         pass
     return "\n".join(lines) + "\n"

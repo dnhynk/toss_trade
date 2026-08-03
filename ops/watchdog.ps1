@@ -66,6 +66,12 @@ param(
     [double]$WatchdogStaleS = 900,   # sentinel: watchdog heartbeat older -> alert
     [double]$SentinelStaleS = 4200,  # watchdog: sentinel heartbeat older -> alert
 
+    # Planned-maintenance window. While active, alerts are written as PLANNED_*.txt
+    # instead of ALERT_*.txt so "any ALERT file means trouble" stays true for a morning
+    # glance. Self-expiring on purpose: a forgotten marker must never silence a real
+    # outage for days, so it is auto-removed once it expires.
+    [double]$PlannedDefaultMin = 30,
+
     [string]$WatchdogTaskName = "tossmon-watchdog",
     [string]$SentinelTaskName = "tossmon-sentinel"
 )
@@ -80,6 +86,7 @@ $WatchdogLog = Join-Path $DataDir "watchdog.log"
 $StateFile = Join-Path $StateDir "watchdog_state.json"
 $StopFile = Join-Path $StateDir "STOP"
 $HeartbeatFile = Join-Path $StateDir "watchdog_heartbeat.txt"
+$PlannedFile = Join-Path $StateDir "PLANNED"
 $SentinelHeartbeatFile = Join-Path $StateDir "sentinel_heartbeat.txt"
 $CollectorLog = Join-Path $DataDir "collector.log"
 $TokenStateFile = Join-Path $DataDir "token_state.json"
@@ -116,8 +123,45 @@ function Set-Prop($obj, [string]$name, $value) {
     else { $obj | Add-Member -NotePropertyName $name -NotePropertyValue $value }
 }
 
+# Planned-maintenance window: an operator drops $PlannedFile before an intentional
+# stop/restart. Optional content (one key=value per line):
+#     reason=rebase onto main, picking up the W4 blindspot fix
+#     until=2026-08-03 10:45:00
+# With no 'until' the window lasts $PlannedDefaultMin minutes from the file's mtime.
+# Expired markers are DELETED here, not honoured - a forgotten marker must never turn
+# into a permanent alert silencer.
+function Get-PlannedWindow {
+    if (-not (Test-Path $PlannedFile)) { return @{ active = $false; reason = ""; until = $null } }
+    $reason = ""
+    $until = $null
+    try {
+        foreach ($line in (Get-Content $PlannedFile -ErrorAction SilentlyContinue)) {
+            if ($line -match "^\s*reason\s*=\s*(.+?)\s*$") { $reason = $Matches[1] }
+            elseif ($line -match "^\s*until\s*=\s*(.+?)\s*$") {
+                try { $until = [datetime]::Parse($Matches[1]) } catch { }
+            }
+        }
+    } catch { }
+    if ($null -eq $until) {
+        $until = (Get-Item $PlannedFile).LastWriteTime.AddMinutes($PlannedDefaultMin)
+    }
+    if ((Get-Date) -gt $until) {
+        try {
+            Remove-Item $PlannedFile -Force
+            Write-Log ("planned window EXPIRED at {0:yyyy-MM-dd HH:mm:ss} - marker auto-removed, " -f $until +
+                       "alerts are live again")
+        } catch { }
+        return @{ active = $false; reason = $reason; until = $until }
+    }
+    return @{ active = $true; reason = $reason; until = $until }
+}
+
 # Alert with per-key dedup: fires once per state transition, re-fires after $repeatS.
-function Raise-Alert($state, [string]$key, [string]$level, [string]$body, [double]$repeatS = 21600) {
+# During a planned window (or for inherently-operator-driven keys) the file is written
+# as PLANNED_*.txt with a marker header, so an unattended morning glance can keep using
+# the simple rule "any ALERT_* file means something went wrong".
+function Raise-Alert($state, [string]$key, [string]$level, [string]$body,
+                     [double]$repeatS = 21600, [bool]$alwaysPlanned = $false) {
     $alerts = Get-Prop $state "alert_last" (New-Object PSObject)
     $last = Get-Prop $alerts $key 0
     if (($NowEpoch - $last) -lt $repeatS) {
@@ -126,11 +170,28 @@ function Raise-Alert($state, [string]$key, [string]$level, [string]$body, [doubl
     }
     Set-Prop $alerts $key $NowEpoch
     Set-Prop $state "alert_last" $alerts
-    $fname = "ALERT_{0}_{1}.txt" -f (Get-Date -Format "yyyyMMdd_HHmmss"), $key
+
+    $planned = $alwaysPlanned -or $script:PlannedNow.active
+    $prefix = "ALERT"
+    $header = ""
+    if ($planned) {
+        $prefix = "PLANNED"
+        $why = $script:PlannedNow.reason
+        if ($alwaysPlanned -and $why -eq "") { $why = "operator-driven action (STOP file)" }
+        if ($why -eq "") { $why = "(no reason recorded)" }
+        $hdrUntil = ""
+        if ($null -ne $script:PlannedNow.until -and -not $alwaysPlanned) {
+            $hdrUntil = " window until {0:yyyy-MM-dd HH:mm:ss}" -f $script:PlannedNow.until
+        }
+        $header = "PLANNED MAINTENANCE - this was expected, not an outage.$hdrUntil`r`n" +
+                  "reason: $why`r`n" +
+                  "(Written as PLANNED_ instead of ALERT_ so that any ALERT_ file still means trouble.)`r`n`r`n"
+    }
+    $fname = "{0}_{1}_{2}.txt" -f $prefix, (Get-Date -Format "yyyyMMdd_HHmmss"), $key
     $path = Join-Path $DataDir $fname
-    $text = "[$level] $NowStamp  key=$key`r`n`r`n$body`r`n"
+    $text = "$header[$level] $NowStamp  key=$key`r`n`r`n$body`r`n"
     [IO.File]::WriteAllText($path, $text, [Text.Encoding]::UTF8)
-    Write-Log "ALERT[$level] key=$key file=$fname"
+    Write-Log "$prefix[$level] key=$key file=$fname"
     return $true
 }
 
@@ -335,6 +396,14 @@ function Invoke-Restart($state, [string]$reason) {
     return $ok
 }
 
+# Evaluate once per run, before anything can raise an alert (also performs the
+# auto-expiry of a stale marker).
+$script:PlannedNow = Get-PlannedWindow
+if ($script:PlannedNow.active) {
+    Write-Log ("planned window ACTIVE until {0:yyyy-MM-dd HH:mm:ss} - alerts this cycle are " -f $script:PlannedNow.until +
+               "written as PLANNED_ (reason: $($script:PlannedNow.reason))")
+}
+
 # ---------------- sentinel role ----------------
 if ($Role -eq "sentinel") {
     $state = Load-State
@@ -370,9 +439,11 @@ $state = Load-State
 if (Test-Path $StopFile) {
     if (-not (Get-Prop $state "stop_seen" $false)) {
         Set-Prop $state "stop_seen" $true
+        # A STOP file is by definition an operator action, so this is always PLANNED -
+        # it must never look like an outage on the morning check.
         Raise-Alert $state "stop_observed" "INFO" (
             "STOP file present ($StopFile) - watchdog standing down (no checks, no restarts) " +
-            "until the STOP file is removed. This is the intended operator-stop path.") 1 | Out-Null
+            "until the STOP file is removed. This is the intended operator-stop path.") 1 $true | Out-Null
     }
     Write-Log "STOP present - standing down"
     Save-State $state
