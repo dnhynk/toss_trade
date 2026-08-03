@@ -490,3 +490,76 @@ def test_runner_stop_mid_window_persists_progress_and_resumes(tmp_path):
     assert win["bars_in_window"] == ref_win[0]["bars_in_window"]   # 유실·중복 없음
     assert client2.calls["1d"] == 0                            # 스크린은 캐시로 스킵
     assert client2.calls["1m"] < client1.calls["1m"] + 10      # 이어받기 (전체 재수집 아님)
+
+
+# --------------------------------------------------------------------------- #
+# 디스크 preflight + Errno 28 분류 (2026-08-02 사고 후속, 소유: W4)
+# --------------------------------------------------------------------------- #
+def test_disk_preflight_blocks_start_and_escalates(tmp_path, monkeypatch):
+    """여유 공간이 임계 미만이면 러너를 **아예 안 띄우고** 디스크 사유로 에스컬레이션한다."""
+    monkeypatch.setattr(SUP.Supervisor, "_disk_free_gb", lambda self: 0.5)  # < 2GB
+    runner = _runner(tmp_path, """
+        (OUT / 'backfill_manifest.json').write_text('{}')
+        sys.exit(0)
+    """)
+    rc = _run_main(_argv(tmp_path, runner))
+    assert rc == 1
+    assert _runs(tmp_path) == 0                       # 기동 자체가 없었다
+    log = _log(tmp_path)
+    assert "DISK-PREFLIGHT-FAIL" in log
+    assert "ESCALATION:" in log and "DISK-FULL" in log
+    assert "RUNNER-START" not in log                  # 러너를 안 띄웠다
+    assert (tmp_path / "escalation.txt").exists()     # 에스컬레이션 채널도 발화
+
+
+def test_errno28_escalates_immediately_without_burning_strikes(tmp_path, monkeypatch):
+    """가동 중 Errno 28 은 크래시가 아니라 디스크다 — 스트라이크 미소모로 즉시 에스컬레이션.
+
+    수정 전: 일반 크래시로 오분류해 3회 무의미 재시도 후에야 포기했다.
+    """
+    monkeypatch.setattr(SUP.Supervisor, "_disk_free_gb", lambda self: 100.0)  # preflight OK
+    runner = _runner(tmp_path, """
+        print("Traceback (most recent call last):")
+        print("OSError: [Errno 28] No space left on device")
+        sys.exit(1)
+    """)
+    rc = _run_main(_argv(tmp_path, runner))
+    assert rc == 1
+    assert _runs(tmp_path) == 1                        # 딱 1회 — 3회 재시도 안 함
+    log = _log(tmp_path)
+    assert "class=disk-full" in log
+    assert "ESCALATION:" in log and "DISK-FULL" in log
+    assert "strike=3" not in log and "BACKOFF" not in log   # 스트라이크 미소모
+
+
+def test_disk_recovers_then_starts_normally(tmp_path, monkeypatch):
+    """여유 회복 후 (다음 기동) 정상 기동->DONE. preflight 가 회복을 막지 않는다."""
+    disk = [0.5]
+    monkeypatch.setattr(SUP.Supervisor, "_disk_free_gb", lambda self: disk[0])
+    runner = _runner(tmp_path, """
+        (OUT / 'backfill_manifest.json').write_text('{}')
+        sys.exit(0)
+    """)
+    argv = _argv(tmp_path, runner)
+    assert _run_main(argv) == 1                        # 부족 -> 차단
+    assert _runs(tmp_path) == 0
+    disk[0] = 100.0                                    # 공간 회복
+    assert _run_main(argv) == 0                        # 정상 기동 -> DONE
+    assert _runs(tmp_path) == 1
+    log = _log(tmp_path)
+    assert "DISK-PREFLIGHT-OK" in log and "DONE" in log
+
+
+def test_status_line_carries_disk_free_and_warns_when_low(tmp_path, monkeypatch):
+    """STATUS 는 여유 공간을 항상 싣고, 경고 임계(4GB) 미만이면 DISK-LOW 로 승격한다."""
+    monkeypatch.setattr(SUP.Supervisor, "_disk_free_gb", lambda self: 3.0)  # >=2 기동, <4 경고
+    runner = _runner(tmp_path, """
+        time.sleep(0.4)
+        (OUT / 'backfill_manifest.json').write_text('{}')
+        sys.exit(0)
+    """)
+    rc = _run_main(_argv(tmp_path, runner))
+    assert rc == 0
+    log = _log(tmp_path)
+    assert "disk_free_gb=3.00" in log
+    assert "DISK-LOW" in log                           # 3.0 < 4.0
