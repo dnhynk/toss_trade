@@ -24,3 +24,7 @@ dist/
 # Logs
 logs/
 *.log
+
+# Runner outputs (never commit — these blocked a rebase once)
+out/
+tossmon/analysis/measure/*.json
