@@ -53,6 +53,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from tossmon.analysis import session as SS
 from tossmon.analysis import shots as S
 from tossmon.analysis.measure import design_b as D
 from tossmon.analysis.rules import bootstrap_ci_mean
@@ -383,7 +384,8 @@ def evaluate_all(series_by_symbol: dict, ctx_by_symbol: dict, entries: list[dict
             continue
         ctx = ctx_by_symbol.get(e["symbol"], {})
         rec = {"symbol": e["symbol"], "entry_ms": fill_ms, "entry_u": entry_u,
-               "entry_idx": e.get("entry_idx", -1)}
+               "entry_idx": e.get("entry_idx", -1),
+               "session": SS.session_of(fill_ms)}
         for name, fn in price_rules.items():
             r = fn(ser, fill_ms, entry_u)
             rec[name] = (float(r["exit_u"] / entry_u - 1.0)
@@ -581,6 +583,7 @@ def ceiling_arm(series_by_symbol: dict, entries: list[dict], *,
         ceil = float(r["exit_u"] / entry_u - 1.0)
         rows.append({
             "entry_idx": e.get("entry_idx", -1), "symbol": e["symbol"],
+            "session": SS.session_of(fill_ms),
             "ceiling": ceil, "pre_rv": pre, "horizon_rv": hor,
             "ceiling_per_pre_rv": (ceil / pre if pre == pre and pre > 0
                                    else float("nan")),
@@ -688,6 +691,41 @@ def run(db: Path, *, entry_delay_s: int = D.ENTRY_DELAY_S,
             "control_matching": match_stats}
 
 
+def ceiling_by_session(allr: pd.DataFrame, allp: pd.DataFrame) -> list[dict]:
+    """**상한과 회수율을 세션별로.** 세션마다 유동성이 다르면 여지도 다를 수 있다.
+
+    0 건인 세션도 행을 남긴다 — 표에서 조용히 사라지면 "없다"와 "안 쟀다"가
+    구분되지 않는다.
+    """
+    out = []
+    top = ("downtick_1", "share_drop_50pct", "rank_reverse_5")
+    for sess in SS.SESSIONS:
+        r = allr[allr["session"] == sess] if "session" in allr.columns else allr.iloc[0:0]
+        p = (allp[allp["session"] == sess]
+             if len(allp) and "session" in allp.columns else pd.DataFrame())
+        c = (pd.to_numeric(r.get("ceiling_perfect_foresight"), errors="coerce").dropna()
+             if len(r) else pd.Series(dtype=float))
+        cm = float(c.mean()) if len(c) else float("nan")
+        lo, hi = (bootstrap_ci_mean(c.tolist()) if len(c) >= 2
+                  else (float("nan"), float("nan")))
+        diff = D.difference_ci(r, p, "ceiling_perfect_foresight",
+                               n_rules=len(SS.SESSIONS))
+        rules = []
+        for name in top:
+            v = (pd.to_numeric(r.get(name), errors="coerce").dropna()
+                 if len(r) else pd.Series(dtype=float))
+            m = float(v.mean()) if len(v) else float("nan")
+            rules.append({"rule": name, "n": int(len(v)), "gross_mean": m,
+                          "recovery_of_ceiling": recovery_of_ceiling(m, cm)})
+        out.append({"session": sess, "n_entries": int(len(r)),
+                    "ceiling_mean": cm, "ceiling_ci": [lo, hi],
+                    "ceiling_diff_mean": diff["mean"],
+                    "ceiling_diff_ci": list(diff["ci"]),
+                    "ceiling_diff_verdict": diff["verdict"],
+                    "ceiling_pair_n": diff["n"], "rules": rules})
+    return out
+
+
 def build_report(res: dict) -> dict:
     """docs/23 §10-P 의 표를 **한 자료구조로** 만든다."""
     days = [d for d in res["days"] if len(res["real"].get(d, []))]
@@ -761,6 +799,8 @@ def build_report(res: dict) -> dict:
         "controls": build_controls(res.get("control_real", pd.DataFrame()),
                                    res.get("control_arms", {}),
                                    res.get("control_matching", [])),
+        "session_counts": SS.session_counts(allr["entry_ms"]),
+        "by_session": ceiling_by_session(allr, allp),
         "rules": rules,
     }
 
@@ -863,6 +903,29 @@ def main(db: Path, *, out_dir: Path | None = None) -> int:
           "so symbol volatility cancels entirely.")
     print("  NOTE 'room exists' and 'room is reachable' are different claims. No "
           "observable rule captures it (all 20 cross zero).")
+
+    print("\n=== [docs/23 sec 10-Q.5] CEILING AND RECOVERY BY SESSION")
+    print(f"  entry session mix: {rep['session_counts']}")
+    print(f"{'session':<10}{'n':>5}{'ceiling':>10}{'CI low':>10}{'CI high':>10}"
+          f"{'vs plac':>10}{'pair n':>8}{'verdict':>15}")
+    for b in rep["by_session"]:
+        if not b["n_entries"]:
+            print(f"{b['session']:<10}{0:>5}{'':>10}{'':>10}{'':>10}{'':>10}"
+                  f"{'':>8}{'NO ENTRIES':>15}")
+            continue
+        print(f"{b['session']:<10}{b['n_entries']:>5}{b['ceiling_mean']:>10.4f}"
+              f"{b['ceiling_ci'][0]:>10.4f}{b['ceiling_ci'][1]:>10.4f}"
+              f"{b['ceiling_diff_mean']:>10.4f}{b['ceiling_pair_n']:>8}"
+              f"{b['ceiling_diff_verdict']:>15}")
+    print(f"\n{'session':<10}{'rule':<22}{'n':>5}{'gross':>10}{'recovery':>10}")
+    for b in rep["by_session"]:
+        for r in b["rules"]:
+            if not r["n"]:
+                continue
+            print(f"{b['session']:<10}{r['rule']:<22}{r['n']:>5}"
+                  f"{r['gross_mean']:>10.4f}{r['recovery_of_ceiling']:>10.3f}")
+    print("  NOTE the ceiling is still perfect-foresight and UNACHIEVABLE in every "
+          "session, and sec 10-P.7 showed its edge is volatility selection.")
 
     out = (out_dir or OUT_DIR)
     out.mkdir(parents=True, exist_ok=True)

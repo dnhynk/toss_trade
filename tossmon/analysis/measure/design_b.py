@@ -41,6 +41,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from tossmon.analysis import execution as X
+from tossmon.analysis import session as SS
 from tossmon.analysis import shots as S
 from tossmon.analysis.rules import bootstrap_ci_mean
 
@@ -223,7 +225,9 @@ def evaluate(series_by_symbol: dict, entries: list[dict], *,
                # 이 인덱스로 짝지어야 한다(씨앗을 독립 표본으로 세면 안 된다).
                # 쌍체 키. **날짜 접두사가 붙은 전역 고유 키**여야 한다 —
                # 날마다 0 부터 다시 세면 다른 날 진입끼리 짝이 맺힌다.
-               "entry_idx": e.get("entry_idx", -1)}
+               "entry_idx": e.get("entry_idx", -1),
+               # **세션은 필터가 아니라 차원이다.** 경계에 걸치면 진입 시각 기준.
+               "session": SS.session_of(fill_ms)}
         for name, fn in rules.items():
             r = fn(ser, fill_ms, entry_u)
             rec[name] = (float(r["exit_u"] / entry_u - 1.0)
@@ -342,6 +346,157 @@ def days_needed_for_difference(diff_mean: float, diff_sd: float,
             "floor_applied": bool(n / entries_per_day < MIN_DAY_CLUSTERS)}
 
 
+# --------------------------------------------------------------------------- #
+# 세션별 비용 모델 (사용자 지적 2026-08-03) — 단일 2.38% 를 대체한다
+# --------------------------------------------------------------------------- #
+SESSION_CLIPS = (100, 500, 1000, 2000)
+
+#: 호가 단계가 이 비율 미만이면 **클립 비용을 낼 수 없다** — 최우선 호가만으로는
+#: 큰 클립이 어디까지 먹고 들어가는지 알 수 없기 때문이다.
+MULTI_LEVEL_MIN_RATE = 0.5
+
+
+def book_rows(conn) -> pd.DataFrame:
+    """호가 스냅을 **한 번만** 파싱해 세션·대역·비용을 붙인다."""
+    # 티어2 호가가 없는 DB 도 정상 입력이다 — 비용 모델이 **비어 나올 뿐** 터지지 않는다.
+    try:
+        ob = pd.read_sql_query(
+            "SELECT symbol, snap_ms, bid1_u, bid1_qu, ask1_u, ask1_qu, depth_json "
+            "FROM orderbook_snap", conn)
+    except Exception:
+        return pd.DataFrame()
+    rows = []
+    for r in ob.itertuples(index=False):
+        bids, asks = X.parse_depth(r.depth_json)
+        mid = X.mid_u(r.bid1_u, r.ask1_u)
+        rec = {"symbol": r.symbol, "snap_ms": int(r.snap_ms),
+               "session": SS.session_of(int(r.snap_ms)),
+               "n_bid_lv": len(bids), "n_ask_lv": len(asks),
+               "rel_spread": X.relative_spread(r.bid1_u, r.ask1_u),
+               "mid_usd": (mid / X.MICRO if mid == mid else float("nan")),
+               "tob_min_usd": X.top_of_book_usd(r.bid1_u, r.bid1_qu,
+                                                r.ask1_u, r.ask1_qu)["min_usd"]}
+        rec["band"] = X.price_band(rec["mid_usd"])
+        for clip in SESSION_CLIPS:
+            rt = (X.round_trip_cost(bids, asks, clip, exit_mode="cross")
+                  if bids and asks else {"total": float("nan"),
+                                         "entry_exhausted": True})
+            rec[f"rt_{clip}"] = rt["total"]
+            # **호가를 다 먹고도 못 채운 건 비용을 지어내지 않는다** — 따로 센다.
+            rec[f"exhausted_{clip}"] = bool(rt["entry_exhausted"])
+        rows.append(rec)
+    return pd.DataFrame(rows)
+
+
+def depth_completeness(books: pd.DataFrame) -> dict:
+    """**자료 완전성 먼저.** 세션마다 호가 단계가 몇 개나 저장돼 있나.
+
+    실측 결과 **다단계 호가는 주간(`day`) 세션에서만 저장된다** — 나머지 세션은
+    최우선 호가 1단뿐이다. 이건 유동성이 아니라 **수집 형태**의 문제일 수 있으므로,
+    세션 간 클립 비용을 비교하기 전에 **반드시 먼저 읽어야 하는 표**다.
+    """
+    if books is None or books.empty:
+        return {}
+    g = books.groupby("session")
+    return {s: {"rows": int(len(d)),
+                "median_ask_levels": float(d["n_ask_lv"].median()),
+                "multi_level_rate": float((d["n_ask_lv"] > 1).mean())}
+            for s, d in g}
+
+
+def session_clip_costs(books: pd.DataFrame, *, band: str | None = None) -> dict:
+    """세션 x 클립 왕복 비용(중앙값). **낼 수 없는 칸은 `measurable=False`.**
+
+    `$100` 은 최우선 호가만으로도 대개 채워지므로 **모든 세션에서 측정 가능**하다
+    (채우지 못한 스냅은 제외하고 그 비율을 함께 낸다). 그보다 큰 클립은 다단계
+    호가가 있어야 하므로 **`day` 외에는 낼 수 없다** — 지어내지 않고 그렇게 적는다.
+    """
+    if books is None or books.empty:
+        return {}
+    d0 = books if band is None else books[books["band"] == band]
+    out = {}
+    for s, d in d0.groupby("session"):
+        multi = float((d["n_ask_lv"] > 1).mean())
+        per_clip = {}
+        for clip in SESSION_CLIPS:
+            ok = d[~d[f"exhausted_{clip}"]]
+            v = pd.to_numeric(ok[f"rt_{clip}"], errors="coerce").dropna()
+            # 최우선 호가만 있는 세션에서 $100 초과 클립은 **측정 불가**다.
+            measurable = bool(len(v) >= 30 and
+                              (clip == min(SESSION_CLIPS)
+                               or multi >= MULTI_LEVEL_MIN_RATE))
+            per_clip[clip] = {
+                "measurable": measurable,
+                "median": float(v.median()) if measurable else float("nan"),
+                "n": int(len(v)),
+                "excluded_exhausted_rate": float(d[f"exhausted_{clip}"].mean()),
+                "reason": ("" if measurable else
+                           "top-of-book only - clip depth unknown"
+                           if multi < MULTI_LEVEL_MIN_RATE else "n < 30"),
+            }
+        out[s] = {"n_snaps": int(len(d)), "n_symbols": int(d["symbol"].nunique()),
+                  "multi_level_rate": multi,
+                  "median_rel_spread": float(pd.to_numeric(
+                      d["rel_spread"], errors="coerce").dropna().median()),
+                  "median_tob_usd": float(pd.to_numeric(
+                      d["tob_min_usd"], errors="coerce").dropna().median()),
+                  "by_clip": per_clip}
+    return out
+
+
+def within_symbol_cost_contrast(books: pd.DataFrame, *,
+                                reference: str = "regular") -> dict:
+    """**종목 내 대조** — 세션마다 종목 구성이 다르므로 이것이 정본이다.
+
+    티어2 승격이 동적이라 세션별 단순 중앙값은 **종목 구성 차이**를 비용 차이로
+    오독하게 만든다. 그래서 `reference` 세션과 **같은 종목**을 가진 짝만 남겨
+    종목별 차이의 중앙값을 낸다.
+    """
+    if books is None or books.empty:
+        return {}
+    piv = (books.groupby(["symbol", "session"])["rel_spread"]
+           .median().unstack())
+    if reference not in getattr(piv, "columns", []):
+        return {"reference": reference, "available": False,
+                "reason": f"no {reference} snapshots"}
+    out = {"reference": reference, "available": True, "pairs": {}}
+    for s in piv.columns:
+        if s == reference:
+            continue
+        both = piv.dropna(subset=[reference, s])
+        out["pairs"][s] = {
+            "n_symbols": int(len(both)),
+            "median_reference": (float(both[reference].median())
+                                 if len(both) else float("nan")),
+            "median_other": float(both[s].median()) if len(both) else float("nan"),
+            "median_within_symbol_delta": (float((both[s] - both[reference]).median())
+                                           if len(both) else float("nan")),
+            "powered": bool(len(both) >= 10),
+        }
+    return out
+
+
+def session_cost_model(conn, *, band: str = "$2-5") -> dict:
+    """세션별 비용 모델 전체. `CLIP_COSTS` 의 단일 값을 대체하는 자리다."""
+    books = book_rows(conn)
+    return {"band": band,
+            "depth_completeness": depth_completeness(books),
+            "all_bands": session_clip_costs(books),
+            "in_band": session_clip_costs(books, band=band),
+            "within_symbol": within_symbol_cost_contrast(books),
+            "note": ("multi-level depth is stored only in the day session, so "
+                     "clip costs above $100 are not computable elsewhere")}
+
+
+def session_round_trip(cost_model: dict, session: str, *, clip: int = 100) -> float:
+    """그 세션의 왕복 비용. 낼 수 없으면 **NaN** 이고, 단일 값으로 대체하지 않는다."""
+    row = (cost_model.get("all_bands", {}).get(session, {})
+           .get("by_clip", {}).get(clip))
+    if not row or not row.get("measurable"):
+        return float("nan")
+    return float(row["median"])
+
+
 def load_days(conn) -> list[str]:
     return [r[0] for r in conn.execute(
         "SELECT DISTINCT date(snap_ms/1000,'unixepoch') FROM rankings_snap ORDER BY 1")]
@@ -386,9 +541,11 @@ def run(db: Path, *, entry_delay_s: int = ENTRY_DELAY_S,
                 pl.append(d)
             plac_by_day[day] = (pd.concat(pl, ignore_index=True) if pl
                                 else pd.DataFrame())
+        cost_model = session_cost_model(conn)
     finally:
         conn.close()
-    return {"days": days, "real": real_by_day, "placebo": plac_by_day}
+    return {"days": days, "real": real_by_day, "placebo": plac_by_day,
+            "cost_model": cost_model}
 
 
 def min_rise_independence(db: Path | None = None, thresholds=(0.01, 0.02, 0.03, 0.05),
@@ -421,6 +578,42 @@ def min_rise_independence(db: Path | None = None, thresholds=(0.01, 0.02, 0.03, 
                          "net_mean": base["net_mean"]} for t in thresholds},
             "note": ("exits never reference the shot definition, so every threshold "
                      "yields the identical number by construction")}
+
+
+def session_breakdown(allr: pd.DataFrame, allp: pd.DataFrame,
+                      cost_model: dict) -> list[dict]:
+    """**세션별로 전부 다시 낸다** — 진입 수·총수익·위약 대비 차이·그 세션의 실측 비용.
+
+    세션은 필터가 아니라 차원이므로 0 건인 세션도 행을 남긴다. 날 군집은 세션을
+    가르면 더 얇아지므로(정규장은 사이클 하나뿐) CI 는 **전부 잠정**이다.
+    """
+    out = []
+    for sess in SS.SESSIONS:
+        r = allr[allr["session"] == sess] if "session" in allr.columns else allr.iloc[0:0]
+        p = (allp[allp["session"] == sess]
+             if len(allp) and "session" in allp.columns else pd.DataFrame())
+        cost = session_round_trip(cost_model, sess)
+        row = {"session": sess, "n_entries": int(len(r)),
+               "measured_round_trip": cost,
+               "cycle_dates": sorted({SS.session_date(int(m))
+                                      for m in r.get("entry_ms", [])}),
+               "rules": []}
+        for rule in exit_rules().keys():
+            v = pd.to_numeric(r.get(rule), errors="coerce").dropna() if len(r) else pd.Series(dtype=float)
+            lo, hi = (bootstrap_ci_mean(v.tolist()) if len(v) >= 2
+                      else (_nan(), _nan()))
+            diff = difference_ci(r, p, rule, n_rules=len(exit_rules()))
+            mean = float(v.mean()) if len(v) else _nan()
+            row["rules"].append({
+                "rule": rule, "n": int(len(v)), "gross_mean": mean,
+                "gross_ci": [lo, hi],
+                # **그 세션에서 실제로 잰 비용**을 뺀다. 못 잰 세션은 NaN 그대로 둔다.
+                "net_at_session_cost": (mean - cost
+                                        if mean == mean and cost == cost else _nan()),
+                "diff_mean": diff["mean"], "diff_ci": list(diff["ci"]),
+                "diff_verdict": diff["verdict"], "pair_n": diff["n"]})
+        out.append(row)
+    return out
 
 
 def build_report(res: dict) -> dict:
@@ -460,7 +653,12 @@ def build_report(res: dict) -> dict:
             "diff_verdict": diff["verdict"],
             "days_needed": dn,
         })
+    cost_model = res.get("cost_model", {})
     return {"days": days, "n_real": int(len(allr)), "entries_per_day": epd,
+            # 사용자 지적(2026-08-03): 세션은 1급 차원이다.
+            "session_counts": SS.session_counts(allr["entry_ms"]),
+            "cost_model": cost_model,
+            "by_session": session_breakdown(allr, allp, cost_model),
             "cost_scenarios": dict(COST_SCENARIOS),
             # C-2 성공 기준 점검도 러너가 만든다 — 문서에 싣는 수치가 여기를 지나야 한다.
             "min_rise_independence": min_rise_independence(res=res),
@@ -533,6 +731,67 @@ def main(db: Path, *, out_dir: Path | None = None) -> int:
     print(f"  {ind['note']}")
     for t, v in ind["shared_result_across_thresholds"].items():
         print(f"    min_rise={t}: gross {v['gross_mean']:+.4f}  net {v['net_mean']:+.4f}")
+
+    # ---- 세션 (사용자 지적 2026-08-03) ----
+    cm = rep["cost_model"]
+    print("\n=== [docs/23 sec 10-Q.1] SESSION MIX of the entries (KST boundaries)")
+    print(f"  {rep['session_counts']}")
+    print("  boundary rule: an entry is assigned by its ENTRY time; an exit that "
+          "crosses into the next session does not move it.")
+
+    print("\n=== [docs/23 sec 10-Q.2] DEPTH COMPLETENESS - read this BEFORE any cost table")
+    print(f"{'session':<10}{'rows':>8}{'median ask levels':>20}{'multi-level rate':>19}")
+    for s, d in cm.get("depth_completeness", {}).items():
+        print(f"{s:<10}{d['rows']:>8}{d['median_ask_levels']:>20.1f}"
+              f"{d['multi_level_rate']:>19.3f}")
+    print("  !! multi-level depth is stored ONLY in the day session. Elsewhere we have "
+          "top-of-book only,")
+    print("  !! so clip costs above the smallest clip are NOT computable there. This is "
+          "a DATA property, not a liquidity finding.")
+
+    print("\n=== [docs/23 sec 10-Q.3] SESSION x CLIP round-trip cost (median, "
+          "cross-and-cross)")
+    print(f"{'session':<10}{'snaps':>7}{'syms':>6}{'spread':>9}{'ToB $':>9}"
+          + "".join(f"{'$'+str(c):>13}" for c in SESSION_CLIPS))
+    for s, d in cm.get("all_bands", {}).items():
+        cells = []
+        for c in SESSION_CLIPS:
+            r = d["by_clip"][c]
+            cells.append(f"{r['median']:>13.4f}" if r["measurable"] else f"{'n/a':>13}")
+        print(f"{s:<10}{d['n_snaps']:>7}{d['n_symbols']:>6}"
+              f"{d['median_rel_spread']:>9.4f}{d['median_tob_usd']:>9.0f}"
+              + "".join(cells))
+    print("  n/a = not computable (top-of-book only). We do not invent a number for it.")
+
+    ws = cm.get("within_symbol", {})
+    print("\n=== [docs/23 sec 10-Q.3b] WITHIN-SYMBOL contrast vs regular (spread)")
+    if ws.get("available"):
+        for s, d in ws["pairs"].items():
+            tag = "" if d["powered"] else "  (UNDERPOWERED n<10)"
+            print(f"  regular vs {s:<8} n_symbols={d['n_symbols']:<4} "
+                  f"regular={d['median_reference']:.4f}  {s}={d['median_other']:.4f}  "
+                  f"within-symbol delta={d['median_within_symbol_delta']:+.4f}{tag}")
+        print("  session symbol mix differs (tier-2 promotion is dynamic), so the "
+              "pooled table above is confounded; THIS is the canonical comparison.")
+    else:
+        print(f"  unavailable: {ws.get('reason')}")
+
+    print("\n=== [docs/23 sec 10-Q.4] PER-SESSION result (downtick_1, at that "
+          "session's measured cost)")
+    print(f"{'session':<10}{'n':>5}{'cost':>9}{'gross':>9}{'net':>9}{'diff':>9}"
+          f"{'CI low':>9}{'CI high':>9}{'verdict':>15}")
+    for b in rep["by_session"]:
+        r = next((x for x in b["rules"] if x["rule"] == "downtick_1"), None)
+        if r is None or not b["n_entries"]:
+            print(f"{b['session']:<10}{b['n_entries']:>5}{'':>9}{'':>9}{'':>9}"
+                  f"{'':>9}{'':>9}{'':>9}{'NO ENTRIES':>15}")
+            continue
+        print(f"{b['session']:<10}{b['n_entries']:>5}{b['measured_round_trip']:>9.4f}"
+              f"{r['gross_mean']:>9.4f}{r['net_at_session_cost']:>9.4f}"
+              f"{r['diff_mean']:>9.4f}{r['diff_ci'][0]:>9.4f}{r['diff_ci'][1]:>9.4f}"
+              f"{r['diff_verdict']:>15}")
+    print("  NOTE splitting by session thins the day clusters further - every "
+          "per-session CI is provisional.")
 
     out = (out_dir or OUT_DIR)
     out.mkdir(parents=True, exist_ok=True)

@@ -151,6 +151,54 @@ def test_every_public_function_is_reachable_from_main(mod):
         f"or add them to NOT_WIRED with a reason.")
 
 
+#: 러너들이 **공유하는 라이브러리** 와 그 별칭. 라이브러리에는 `main()` 이 없으므로
+#: "어느 러너의 `main()` 에서든 도달 가능한가"로 같은 원칙을 건다 — 아무도 안 쓰는
+#: 공개 함수가 조용히 쌓이는 것을 막는다.
+SHARED_LIBRARIES = ((SESSION_MOD := __import__(
+    "tossmon.analysis.session", fromlist=["session"]), "SS"),)
+
+
+def _attribute_uses(src: str, alias: str, live: set[str]) -> set[str]:
+    """`main()` 에서 도달 가능한 함수들 안에서 쓰인 `alias.<name>` 전부."""
+    tree = ast.parse(src)
+    used: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name not in live:
+            continue
+        for sub in ast.walk(node):
+            if (isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name)
+                    and sub.value.id == alias):
+                used.add(sub.attr)
+    return used
+
+
+@pytest.mark.parametrize("lib,alias", SHARED_LIBRARIES,
+                         ids=lambda x: x if isinstance(x, str) else "")
+def test_shared_library_functions_are_all_reachable_from_some_runner(lib, alias):
+    """공유 라이브러리의 공개 함수도 **전부** 어느 러너 `main()` 에선가 닿아야 한다.
+
+    라이브러리 안에서 서로 부르는 것도 도달로 친다(`session_counts` -> `sessions_of`).
+    """
+    seed: set[str] = set()
+    for mod in GUARDED_MODULES:
+        src = _module_source(mod)
+        live = _reachable_from(src) | {ENTRY}
+        seed |= _attribute_uses(src, alias, live)
+    lib_src = pathlib.Path(lib.__file__).read_text(encoding="utf-8")
+    graph = _call_graph(lib_src)
+    reach, stack = set(seed), list(seed)
+    while stack:
+        for nxt in graph.get(stack.pop(), ()):
+            if nxt not in reach:
+                reach.add(nxt)
+                stack.append(nxt)
+    orphans = _public_functions(lib_src) - reach
+    assert not orphans, (
+        f"{lib.__name__}: public functions no runner reaches: {sorted(orphans)}")
+
+
 def test_optout_entries_have_a_reason():
     for name, reason in NOT_WIRED.items():
         assert reason and reason.strip(), f"{name} opts out with no reason"
