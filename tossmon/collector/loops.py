@@ -614,6 +614,8 @@ class CollectorContext:
             # 지금 50건 상한에 걸려 있는 종목 수 — 0 이 아니면 그 종목은 적응형
             # 빠른 레인으로 옮겨져 있다 (예산 중립 재배분).
             "tape_saturated": len(self.tape_saturated_ms),
+            # 절대 임계를 못 넘어 비어 있던 tier3 정원을 상대 순위로 채운 횟수.
+            "tier3_capacity_fills": int(self.counters.get("tier3_capacity_fills", 0)),
             "api_errors": int(self.counters.get("api_errors", 0)),
             # ↓ "조용히 죽거나 나빠지는" 사각을 드러내는 최소 집합 (워치독 5분 판독용).
             # 인증 실패(별도 노출), 광역 catch 로 삼켜지던 것들, 쓰기 실패, 수집 건강도.
@@ -1548,6 +1550,13 @@ async def run_tier3_micro(client: TossClient, store: Store, cfg: Config, *,
     done = 0
     while ctx.running() and (cycles is None or done < cycles):
         done += 1
+        # 빈 tier3 정원을 측정된 상위 후보로 채운다 — 빈 슬롯은 순손실이다
+        # (절대 임계 0.60 은 개장 직후에만 넘어서, 그 뒤 장 내내 정원이 비어 있었다).
+        if ctx.collecting():
+            filled = ctx.tiers.fill_to_capacity(3, ctx.clock.now_ms())
+            if filled:
+                ctx.bump("tier3_capacity_fills", len(filled))
+                ctx.flush_changes()
         members = sorted(ctx.tiers.members(3))
         if not ctx.collecting() or not members:
             await ctx.clock.sleep(IDLE_SLEEP_S)
