@@ -69,6 +69,17 @@ WINDOW_CANDIDATES = tuple(range(1, 31))
 #: Q0 역산에 쓸 랭킹 스냅 표본 수(전량은 불필요하게 느리다).
 Q0_SAMPLE = 400
 
+#: **비대칭 검정**에서 볼 lag 크기. 주 판정은 `corr(+k) - corr(-k)` 다.
+ASYMMETRY_K = (1, 2, 3, 4, 5)
+
+#: 경제적 유의성 환산에 쓰는 **정규장 실측 왕복 비용** (docs/23 §10-R.5):
+#: 유효 스프레드 중앙 0.46% + 수수료 0.2%. 통계적 유의성만으로는 아무 의미가 없다.
+EFFECTIVE_SPREAD_REGULAR = 0.0046
+REALIZED_ROUND_TRIP = EFFECTIVE_SPREAD_REGULAR + D.COMMISSION_ROUND_TRIP
+
+#: 경제적 환산에서 쓰는 횡단면 분위 수. 매 분 상위 분위를 사는 규칙을 흉내낸다.
+N_BUCKETS = 10
+
 BOOTSTRAP_N = 1000
 BOOTSTRAP_SEED = 20260730
 
@@ -78,6 +89,13 @@ OUT_DIR = D.OUT_DIR
 REPORTED_FIELDS = (
     "session", "lag_min", "n_obs", "corr_real", "corr_placebo",
     "diff", "ci_low", "ci_high", "verdict",
+)
+
+#: 비대칭 검정표가 싣는 필드 전체.
+ASYMMETRY_FIELDS = (
+    "session", "k", "n_minutes", "corr_lead", "corr_lag", "asymmetry",
+    "ci_low", "ci_high", "ci_low_bonferroni", "ci_high_bonferroni",
+    "n_comparisons", "verdict",
 )
 
 
@@ -283,7 +301,173 @@ def cross_correlation(panel: pd.DataFrame, *, lags=LAGS,
     return rows
 
 
-def q1_gate(rows: list[dict]) -> dict:
+def asymmetry_test(panel: pd.DataFrame, *, ks=ASYMMETRY_K,
+                   seeds=PLACEBO_SEEDS) -> list[dict]:
+    """**주 판정 — 선행이 후행보다 센가.** `corr(+k) - corr(-k)` 의 쌍체 부트스트랩 CI.
+
+    ## 왜 "선행 셀이 하나라도 0 을 넘나"를 버렸나
+
+    그 규칙은 셀이 55개(세션 5 x lag 11)라 **다중검정에 무방비**였고, 실제로
+    **자료가 늘자 답이 뒤집혔다**(`regular lag +1` 이 0 교차 -> 0 초과).
+    사전등록 규칙이 실행 시점에 따라 달라지면 규칙이 아니다.
+
+    ## 왜 이 지표가 옳은가
+
+    관측된 모양은 lag -1 / 0 / +1 이 **거의 같은 크기**이고 +-2 에서 꺼진다 —
+    선행이 아니라 **동시 관계**다. `corr(+k) - corr(-k)` 는 그 **동시 성분이 상쇄**되므로
+    "돈이 먼저인가 가격이 먼저인가"만 남는다. 대칭이면 0 이고, 그러면 **선행 없음**이다.
+
+    쌍체로 재는 이유: 같은 분(minute) 군집을 **동시에** 재표집해야 두 상관의 공통
+    변동이 상쇄된다. 따로 재표집하면 차이의 분산이 부풀려진다.
+    """
+    if panel is None or panel.empty:
+        return []
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    sessions = [s for s in SS.SESSIONS]
+    # 본페로니 분모는 **실제로 판정한 칸 수**다 — 미리 세어 둔다.
+    judged = []
+    cache: dict = {}
+    for k in ks:
+        pr_p, pr_m = lagged_pairs(panel, k), lagged_pairs(panel, -k)
+        for sess in sessions:
+            a = pr_p[pr_p["session"] == sess] if len(pr_p) else pr_p
+            b = pr_m[pr_m["session"] == sess] if len(pr_m) else pr_m
+            if a is None or b is None or len(a) < 3 or len(b) < 3:
+                cache[(k, sess)] = None
+                continue
+            sa = minute_stats(a["dshare"].to_numpy(), a["ret"].to_numpy(),
+                              a["ts_ms"].to_numpy())
+            sb = minute_stats(b["dshare"].to_numpy(), b["ret"].to_numpy(),
+                              b["ts_ms"].to_numpy())
+            common = sa.index.intersection(sb.index)
+            cache[(k, sess)] = (sa.loc[common], sb.loc[common], len(a), len(b))
+            if len(common) >= 2 and min(len(a), len(b)) >= MIN_OBS_FOR_VERDICT:
+                judged.append((k, sess))
+    m = max(1, len(judged))
+    rows = []
+    for k in ks:
+        for sess in sessions:
+            got = cache.get((k, sess))
+            if got is None:
+                rows.append({"session": sess, "k": k, "n_minutes": 0,
+                             "corr_lead": float("nan"), "corr_lag": float("nan"),
+                             "asymmetry": float("nan"), "ci_low": float("nan"),
+                             "ci_high": float("nan"),
+                             "ci_low_bonferroni": float("nan"),
+                             "ci_high_bonferroni": float("nan"),
+                             "n_comparisons": m, "verdict": "insufficient"})
+                continue
+            sa, sb, na, nb = got
+            c_lead, c_lag = corr_from_stats(sa), corr_from_stats(sb)
+            keys = sa.index.to_numpy()
+            powered = (k, sess) in judged
+            diffs = []
+            for _ in range(BOOTSTRAP_N if powered else 0):
+                # **같은 분 목록으로 두 상관을 동시에** 다시 계산한다 (쌍체).
+                pick = keys[rng.integers(0, len(keys), size=len(keys))]
+                x, y = corr_from_stats(sa.loc[pick]), corr_from_stats(sb.loc[pick])
+                if x == x and y == y:
+                    diffs.append(x - y)
+            if len(diffs) >= 100:
+                lo, hi = (float(np.percentile(diffs, 2.5)),
+                          float(np.percentile(diffs, 97.5)))
+                ab = 100.0 * (0.05 / m) / 2.0
+                blo, bhi = (float(np.percentile(diffs, ab)),
+                            float(np.percentile(diffs, 100.0 - ab)))
+            else:
+                lo = hi = blo = bhi = float("nan")
+            verdict = ("insufficient" if not powered or blo != blo else
+                       "lead_stronger" if blo > 0 else
+                       "lag_stronger" if bhi < 0 else "symmetric")
+            rows.append({"session": sess, "k": k, "n_minutes": int(len(keys)),
+                         "corr_lead": c_lead, "corr_lag": c_lag,
+                         "asymmetry": (c_lead - c_lag
+                                       if c_lead == c_lead and c_lag == c_lag
+                                       else float("nan")),
+                         "ci_low": lo, "ci_high": hi,
+                         "ci_low_bonferroni": blo, "ci_high_bonferroni": bhi,
+                         "n_comparisons": m, "verdict": verdict})
+    return rows
+
+
+def economic_significance(panel: pd.DataFrame, *, lag: int = 1,
+                          n_buckets: int = N_BUCKETS) -> list[dict]:
+    """**통계적 유의성만으로는 무의미하다** — 실제 매매 규칙으로 몇 bp 인가.
+
+    n 이 10만이면 상관 0.02 도 유의해지지만 0.02 는 **분산의 0.04%** 다. 그래서
+    신호를 그대로 규칙으로 바꾼다: **매 분 횡단면으로 `dshare` 상위 분위를 사고
+    1분 뒤 판다.** 그 평균 수익률(bp)을 **정규장 실측 왕복 비용**과 나란히 놓는다.
+    """
+    if panel is None or panel.empty:
+        return []
+    pr = lagged_pairs(panel, lag)
+    if pr is None or pr.empty:
+        return []
+    rows = []
+    for sess in SS.SESSIONS:
+        d = pr[pr["session"] == sess]
+        if len(d) < MIN_OBS_FOR_VERDICT:
+            rows.append({"session": sess, "n": int(len(d)), "powered": False})
+            continue
+        # 매 분 안에서 순위 -> 실제로 그 시점에 할 수 있는 선택만 쓴다.
+        rank = d.groupby("ts_ms")["dshare"].rank(pct=True, method="first")
+        top = d.loc[rank > 1.0 - 1.0 / n_buckets, "ret"]
+        bot = d.loc[rank <= 1.0 / n_buckets, "ret"]
+        allr = d["ret"]
+        top_bp = float(top.mean() * 1e4) if len(top) else float("nan")
+        rows.append({
+            "session": sess, "n": int(len(d)), "powered": True,
+            "n_top": int(len(top)),
+            "top_decile_bp_per_min": top_bp,
+            "bottom_decile_bp_per_min": (float(bot.mean() * 1e4) if len(bot)
+                                         else float("nan")),
+            "spread_bp": (float((top.mean() - bot.mean()) * 1e4)
+                          if len(top) and len(bot) else float("nan")),
+            "all_bp": float(allr.mean() * 1e4) if len(allr) else float("nan"),
+            "round_trip_cost_bp": REALIZED_ROUND_TRIP * 1e4,
+            "net_bp": top_bp - REALIZED_ROUND_TRIP * 1e4,
+            "variance_explained": None,
+        })
+    return rows
+
+
+def q1_gate(rows: list[dict], asym: list[dict] | None = None,
+            econ: list[dict] | None = None) -> dict:
+    """**사전 등록된 중단 기준을 코드로 집행한다 (비대칭 판정으로 개정).**
+
+    구 규칙("선행 셀이 하나라도 0 을 넘나")은 셀 55개에 다중검정 무방비였고
+    **자료가 늘자 답이 뒤집혔다.** 개정 규칙은 **선행이 후행보다 센가**만 본다:
+    본페로니 보정 후 `corr(+k) - corr(-k)` 의 CI 가 0 을 초과하는 `k` 가 있어야 한다.
+    """
+    out = {"by_session": {}, "proceed_to_q2": False,
+           "rule": ("asymmetry: corr(+k) - corr(-k) must exceed zero after "
+                    "Bonferroni correction; a symmetric peak is NOT a lead")}
+    for sess in SS.SESSIONS:
+        a = [x for x in (asym or []) if x["session"] == sess
+             and x["verdict"] != "insufficient"]
+        if not a:
+            out["by_session"][sess] = {"decision": "insufficient", "n_k": 0}
+            continue
+        lead = [x for x in a if x["verdict"] == "lead_stronger"]
+        best = max(a, key=lambda x: x["asymmetry"] if x["asymmetry"] == x["asymmetry"]
+                   else -9e9)
+        e = next((x for x in (econ or []) if x["session"] == sess
+                  and x.get("powered")), None)
+        out["by_session"][sess] = {
+            "decision": "proceed" if lead else "stop",
+            "n_k": len(a),
+            "n_k_lead_stronger": len(lead),
+            "max_asymmetry": best["asymmetry"], "max_asymmetry_k": best["k"],
+            "net_bp_at_top_decile": (e.get("net_bp") if e else None),
+            "reason": ("lead side is stronger than lag side" if lead else
+                       "lead and lag sides are indistinguishable - symmetric "
+                       "association is a SIMULTANEOUS relation, not a lead")}
+        if lead:
+            out["proceed_to_q2"] = True
+    return out
+
+
+
     """**사전 등록된 중단 기준을 코드로 집행한다.**
 
     선행(lag>0)에서 위약 대비 차이 CI 가 0 을 초과하는 칸이 **하나도 없거나**,
@@ -317,6 +501,8 @@ def build_report(conn) -> dict:
     universe = set(ranks["symbol"]) if len(ranks) else None
     panel = build_panel(cd["candles"], universe)
     rows = cross_correlation(panel)
+    asym = asymmetry_test(panel)
+    econ = economic_significance(panel)
     cycles = (sorted(panel["cycle_date"].unique().tolist()) if len(panel) else [])
     return {
         "holdout": {"start": SS.HOLDOUT_START, "end": SS.HOLDOUT_END,
@@ -329,7 +515,9 @@ def build_report(conn) -> dict:
         "panel_rows": int(len(panel)),
         "session_counts": (SS.session_counts(panel["ts_ms"]) if len(panel) else {}),
         "cross_correlation": rows,
-        "gate": q1_gate(rows),
+        "asymmetry": asym,
+        "economic": econ,
+        "gate": q1_gate(rows, asym, econ),
         "signal_note": ("primary signal is QUANTITY share from candles; dollar share "
                         "is deliberately NOT used because it embeds price and would "
                         "make return prediction circular"),
@@ -375,14 +563,45 @@ def main(db: Path, *, out_dir: Path | None = None) -> int:
               f"{r['corr_placebo']:>9.4f}{r['diff']:>9.4f}{r['ci_low']:>9.4f}"
               f"{r['ci_high']:>9.4f}{r['verdict']:>15}")
 
-    print("\n=== [docs/26 Q1] PREREGISTERED STOP RULE")
-    for sess, g in rep["gate"]["by_session"].items():
-        if g.get("n_cells", 0) == 0:
+    print("\n=== [docs/26 Q1b] ASYMMETRY corr(+k) - corr(-k)  [PRIMARY TEST]")
+    print("  a symmetric peak at -1/0/+1 is a SIMULTANEOUS relation, not a lead;")
+    print("  this statistic cancels that common component. Bonferroni over "
+          f"{(rep['asymmetry'][0]['n_comparisons'] if rep['asymmetry'] else 0)} cells.")
+    print(f"{'session':<9}{'k':>3}{'minutes':>9}{'corr +k':>9}{'corr -k':>9}"
+          f"{'asym':>9}{'CI low':>9}{'CI high':>9}{'Bonf low':>10}{'Bonf high':>10}"
+          f"{'verdict':>16}")
+    for r in rep["asymmetry"]:
+        if r["verdict"] == "insufficient":
             continue
-        print(f"  {sess:<9} {g['decision'].upper():<12} argmax lag "
-              f"{g['argmax_lag_min']:+d} min (corr {g['argmax_corr']:+.4f}), "
-              f"leading cells above zero: {g['n_leading_cells_above_zero']} "
-              f"-> {g['reason']}")
+        print(f"{r['session']:<9}{r['k']:>3}{r['n_minutes']:>9}{r['corr_lead']:>9.4f}"
+              f"{r['corr_lag']:>9.4f}{r['asymmetry']:>9.4f}{r['ci_low']:>9.4f}"
+              f"{r['ci_high']:>9.4f}{r['ci_low_bonferroni']:>10.4f}"
+              f"{r['ci_high_bonferroni']:>10.4f}{r['verdict']:>16}")
+
+    print("\n=== [docs/26 Q1c] ECONOMIC SIGNIFICANCE - bp per minute vs measured cost")
+    print("  rule: each minute, buy the top decile by dshare, sell one minute later")
+    print(f"{'session':<9}{'n':>8}{'top bp':>9}{'bottom bp':>11}{'spread bp':>11}"
+          f"{'cost bp':>9}{'net bp':>9}")
+    for e in rep["economic"]:
+        if not e.get("powered"):
+            continue
+        print(f"{e['session']:<9}{e['n']:>8}{e['top_decile_bp_per_min']:>9.2f}"
+              f"{e['bottom_decile_bp_per_min']:>11.2f}{e['spread_bp']:>11.2f}"
+              f"{e['round_trip_cost_bp']:>9.1f}{e['net_bp']:>9.2f}")
+    print("  cost = regular effective spread 0.46pct + commission 0.2pct (docs/23 "
+          "sec 10-R.5). A correlation of 0.02 explains 0.04pct of variance.")
+
+    print("\n=== [docs/26 Q1] PREREGISTERED STOP RULE")
+    print(f"  rule: {rep['gate']['rule']}")
+    for sess, g in rep["gate"]["by_session"].items():
+        if g.get("n_k", 0) == 0:
+            continue
+        net = g.get("net_bp_at_top_decile")
+        net_s = f", net {net:+.2f} bp/min" if net is not None else ""
+        print(f"  {sess:<9} {g['decision'].upper():<12} max asymmetry "
+              f"{g['max_asymmetry']:+.4f} at k={g['max_asymmetry_k']}, "
+              f"k with lead stronger: {g['n_k_lead_stronger']}/{g['n_k']}{net_s}")
+        print(f"             -> {g['reason']}")
     print(f"\n  PROCEED TO Q2: {rep['gate']['proceed_to_q2']}")
 
     out = (out_dir or OUT_DIR)
