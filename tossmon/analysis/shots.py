@@ -65,6 +65,52 @@ def price_series(rankings: pd.DataFrame, symbol: str, ranking_type: str) -> pd.S
     return s
 
 
+#: 토스 랭킹 두 계열. **거래량 계열이 우리 마이크로캡을 3.4배 더 담는다**
+#: (238/792 = 30.1% vs 72/778 = 9.3%) — 거래대금 상위는 정의상 대형주가 차지하기 때문이다.
+#: 그래서 슈팅 검출의 **1차 계열은 거래량**이다.
+TOSS_VOLUME = "TOSS_SECURITIES_TRADING_VOLUME"
+TOSS_AMOUNT = "TOSS_SECURITIES_TRADING_AMOUNT"
+DEFAULT_RANKING_TYPES = (TOSS_VOLUME, TOSS_AMOUNT)
+
+
+def price_series_multi(rankings: pd.DataFrame, symbol: str, *,
+                       ranking_types=DEFAULT_RANKING_TYPES) -> pd.Series:
+    """여러 랭킹 계열을 **하나의 가격 계열로 합친다** (슈팅 이중계산 금지).
+
+    같은 종목이 두 랭킹에 동시에 오르면 스냅이 중복되는데, 그대로 두면 같은 임펄스를
+    **두 번 세게 된다.** 그래서 `snap_ms` 기준으로 합집합을 만들되 **한 시각에 한 값**만
+    남긴다.
+
+    같은 (종목, 시각)에서 두 계열의 `last_u` 는 실측상 **94.2%가 완전히 일치**한다
+    (불일치 시 최대 차 $0.26). 불일치는 같은 순간의 같은 가격이어야 하므로 **자료 불일치**이며,
+    **중앙값**을 취하고 그 건수를 `attrs["conflicts"]` 로 **센다**(조용히 버리지 않는다).
+
+    반환 계열의 `attrs`: `n_by_type`(계열별 기여 스냅 수), `conflicts`(불일치 시각 수).
+    """
+    if rankings is None or len(rankings) == 0:
+        out = pd.Series(dtype="float64")
+        out.attrs.update({"n_by_type": {}, "conflicts": 0})
+        return out
+    frames, n_by_type = [], {}
+    for rt in ranking_types:
+        d = rankings[(rankings["ranking_type"] == rt)
+                     & (rankings["symbol"] == symbol)]
+        d = d[pd.to_numeric(d["last_u"], errors="coerce") > 0]
+        n_by_type[rt] = int(len(d))
+        if len(d):
+            frames.append(d[["snap_ms", "last_u"]])
+    if not frames:
+        out = pd.Series(dtype="float64")
+        out.attrs.update({"n_by_type": n_by_type, "conflicts": 0})
+        return out
+    allrows = pd.concat(frames, ignore_index=True)
+    grp = allrows.groupby("snap_ms")["last_u"]
+    conflicts = int((grp.nunique() > 1).sum())
+    out = grp.median().astype("float64").sort_index()
+    out.attrs.update({"n_by_type": n_by_type, "conflicts": conflicts})
+    return out
+
+
 def _segments(series: pd.Series, max_gap_s: int):
     """연속 관측 구간으로 자른다 — 간격이 크면 **잇지 않고 끊는다**."""
     if series.empty:

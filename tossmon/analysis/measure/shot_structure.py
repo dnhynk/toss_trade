@@ -19,7 +19,10 @@ import pandas as pd
 
 from tossmon.analysis import shots as S
 
-TOSS = "TOSS_SECURITIES_TRADING_AMOUNT"
+#: **1차 계열은 거래량 랭킹**이다 (docs/23 §9). 거래대금 랭킹은 정의상 대형주가 차지해
+#: 우리 마이크로캡을 9.3%밖에 담지 않는 반면, 거래량 랭킹은 30.1%를 담는다.
+TOSS = "TOSS_SECURITIES_TRADING_VOLUME"
+TOSS_AMOUNT = "TOSS_SECURITIES_TRADING_AMOUNT"
 MARKET = "MARKET_TRADING_AMOUNT"
 
 #: 기본 입력 — 호출부가 바꿀 수 있다.
