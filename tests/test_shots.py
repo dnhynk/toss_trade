@@ -1,0 +1,207 @@
+"""연속 슈팅 구조 테스트 — tossmon/analysis/shots.py (docs/23)."""
+from __future__ import annotations
+
+import math
+
+import pandas as pd
+import pytest
+
+from tossmon.analysis import shots as S
+
+S12 = 13_000          # 실측 스냅 주기 (~13초)
+
+
+def series(prices, *, step_ms=S12, start=0):
+    return pd.Series({start + i * step_ms: float(p) * 1_000_000
+                      for i, p in enumerate(prices)}, dtype="float64")
+
+
+def ranks(rows, ranking_type="TOSS"):
+    return pd.DataFrame({"snap_ms": [r[0] for r in rows],
+                         "ranking_type": [ranking_type] * len(rows),
+                         "symbol": [r[1] for r in rows],
+                         "last_u": [int(r[2] * 1_000_000) for r in rows]})
+
+
+# --------------------------------------------------------------------------- #
+# 가격 계열
+# --------------------------------------------------------------------------- #
+def test_price_series_drops_absent_snaps_rather_than_filling():
+    rk = ranks([(0, "A", 1.0), (S12, "B", 5.0), (2 * S12, "A", 1.1)])
+    s = S.price_series(rk, "A", "TOSS")
+    assert list(s.index) == [0, 2 * S12]         # B 스냅을 A 의 결측으로 채우지 않는다
+    assert len(s) == 2
+
+
+def test_price_series_empty_on_unknown_symbol_or_type():
+    rk = ranks([(0, "A", 1.0)])
+    assert S.price_series(rk, "ZZ", "TOSS").empty
+    assert S.price_series(rk, "A", "NOPE").empty
+    assert S.price_series(pd.DataFrame(), "A", "TOSS").empty
+
+
+def test_price_series_ignores_nonpositive_prices():
+    rk = ranks([(0, "A", 1.0), (S12, "A", 0.0)])
+    assert len(S.price_series(rk, "A", "TOSS")) == 1
+
+
+# --------------------------------------------------------------------------- #
+# 슈팅 검출
+# --------------------------------------------------------------------------- #
+def test_detects_a_single_shot():
+    sh = S.detect_shots(series([1.00, 1.01, 1.05, 1.05]), min_rise=0.02)
+    assert len(sh) == 1
+    assert sh.iloc[0]["rise"] == pytest.approx(0.05)
+    assert sh.iloc[0]["ordinal"] == 1
+
+
+def test_ignores_a_rise_below_threshold():
+    assert S.detect_shots(series([1.00, 1.005, 1.01]), min_rise=0.02).empty
+
+
+def test_detects_consecutive_shots_and_numbers_them():
+    # 두 번의 임펄스 사이에 눌림 (스냅 간격 13초, 분리 24초 요구)
+    px = [1.00, 1.05, 1.02, 1.02, 1.02, 1.08, 1.08]
+    sh = S.detect_shots(series(px), min_rise=0.02, min_separation_s=24)
+    assert len(sh) >= 2
+    assert list(sh["ordinal"])[:2] == [1, 2]
+    assert sh.iloc[1]["gap_prev_s"] > 0
+
+
+def test_shot_must_complete_within_max_span():
+    """천천히 오르는 것은 슈팅이 아니다 — 사용자 관찰의 핵심(1분 미만)."""
+    slow = series([1.00 + 0.004 * i for i in range(20)])     # 20*13s 에 걸쳐 +8%
+    assert S.detect_shots(slow, min_rise=0.02, max_span_s=60).empty
+
+
+def test_gap_in_coverage_breaks_the_series_instead_of_bridging():
+    """랭킹에서 빠진 구간을 이어붙여 가짜 슈팅을 만들지 않는다."""
+    s = pd.Series({0: 1.00e6, 600_000: 1.20e6}, dtype="float64")   # 10분 공백
+    assert S.detect_shots(s, min_rise=0.02, max_gap_s=40).empty
+
+
+def test_shot_frame_keeps_columns_when_empty():
+    sh = S.detect_shots(pd.Series(dtype="float64"))
+    assert list(sh.columns) == list(S.SHOT_COLUMNS)
+
+
+def test_detect_shots_uses_no_future_information():
+    """앞부분만 준 결과가 전체를 준 결과의 접두여야 한다."""
+    px = [1.00, 1.05, 1.02, 1.02, 1.02, 1.09, 1.09]
+    full = S.detect_shots(series(px), min_rise=0.02)
+    part = S.detect_shots(series(px[:3]), min_rise=0.02)
+    assert len(part) >= 1
+    assert part.iloc[0]["start_ms"] == full.iloc[0]["start_ms"]
+    assert part.iloc[0]["rise"] == pytest.approx(full.iloc[0]["rise"])
+
+
+# --------------------------------------------------------------------------- #
+# 요약 / 연속성
+# --------------------------------------------------------------------------- #
+def test_shot_summary_reports_zero_rather_than_nan_count():
+    e = S.shot_summary(S.detect_shots(pd.Series(dtype="float64")))
+    assert e["n_shots"] == 0 and math.isnan(e["median_rise"])
+
+
+def test_shot_summary_compounds_total_rise():
+    sh = S.detect_shots(series([1.00, 1.05, 1.02, 1.02, 1.02, 1.08]), min_rise=0.02)
+    s = S.shot_summary(sh)
+    assert s["n_shots"] == len(sh) and s["total_rise"] > 0
+
+
+def test_next_shot_within_detects_continuation():
+    sh = S.detect_shots(series([1.00, 1.05, 1.02, 1.02, 1.02, 1.09]), min_rise=0.02)
+    first_peak = int(sh.iloc[0]["peak_ms"])
+    assert S.next_shot_within(sh, first_peak, within_s=120) is True
+    assert S.next_shot_within(sh, int(sh.iloc[-1]["peak_ms"]), within_s=120) is False
+    assert S.next_shot_within(pd.DataFrame(columns=S.SHOT_COLUMNS), 0, 60) is False
+
+
+def test_continuation_table_reports_conditional_probability():
+    sh = S.detect_shots(series([1.00, 1.05, 1.02, 1.02, 1.02, 1.09]), min_rise=0.02)
+    t = S.continuation_table(sh)
+    assert set(["ordinal", "n", "p_next"]).issubset(t.columns)
+    assert t.iloc[0]["p_next"] == pytest.approx(1.0)      # 1번 뒤에 2번이 왔다
+
+
+# --------------------------------------------------------------------------- #
+# 슈팅 기반 이탈
+# --------------------------------------------------------------------------- #
+def test_exit_into_shot_1_sells_at_the_first_shot_peak():
+    s = series([1.00, 1.05, 1.02, 1.02, 1.02, 1.09])
+    sh = S.detect_shots(s, min_rise=0.02)
+    r = S.simulate_shot_exit(s, 0, 1.00e6, sh,
+                             S.ShotExitRule("x", mode="into_shot_n", n=1))
+    assert r["reason"] == "shot#1"
+    assert r["gross"] == pytest.approx(0.05)
+
+
+def test_exit_into_shot_2_rides_the_second_impulse():
+    s = series([1.00, 1.05, 1.02, 1.02, 1.02, 1.09])
+    sh = S.detect_shots(s, min_rise=0.02)
+    r = S.simulate_shot_exit(s, 0, 1.00e6, sh,
+                             S.ShotExitRule("x", mode="into_shot_n", n=2))
+    assert r["reason"] == "shot#2"
+    assert r["gross"] > 0.05          # 두 번째까지 들고 있으면 더 벌었다
+
+
+def test_exit_into_shot_n_falls_back_to_horizon_when_n_never_arrives():
+    s = series([1.00, 1.05, 1.04])
+    sh = S.detect_shots(s, min_rise=0.02)
+    r = S.simulate_shot_exit(s, 0, 1.00e6, sh,
+                             S.ShotExitRule("x", mode="into_shot_n", n=3))
+    assert r["reason"] == "horizon"
+
+
+def test_exit_on_shot_fail_leaves_when_the_sequence_stops():
+    # 슈팅 1회 뒤 계속 조용 -> fail_after_s 뒤 청산
+    s = series([1.00, 1.05] + [1.04] * 20)
+    sh = S.detect_shots(s, min_rise=0.02)
+    r = S.simulate_shot_exit(s, 0, 1.00e6, sh,
+                             S.ShotExitRule("x", mode="on_shot_fail",
+                                            fail_after_s=60))
+    assert r["reason"] == "shot_fail"
+    assert r["exit_min"] >= 1
+
+
+def test_exit_rules_share_the_shape_of_rules_simulate_exit():
+    from tossmon.analysis.rules import ExitRule, simulate_exit
+    p = pd.DataFrame({"ts_ms": [0, 60_000], "high_u": [1_000_000, 1_100_000],
+                      "low_u": [1_000_000, 1_000_000],
+                      "close_u": [1_000_000, 1_050_000]})
+    a = simulate_exit(p, 1.0e6, 0, ExitRule("t", horizon_min=60))
+    s = series([1.00, 1.05, 1.02, 1.02, 1.02, 1.09])
+    b = S.simulate_shot_exit(s, 0, 1.00e6, S.detect_shots(s, min_rise=0.02),
+                             S.ShotExitRule("x", n=1))
+    assert set(a).issubset(set(b))          # 같은 순위표에 그대로 들어간다
+
+
+def test_shot_exit_rejects_unknown_mode():
+    s = series([1.00, 1.05])
+    with pytest.raises(ValueError):
+        S.simulate_shot_exit(s, 0, 1.0e6, S.detect_shots(s, min_rise=0.02),
+                             S.ShotExitRule("x", mode="teleport"))
+
+
+def test_shot_exit_nan_on_empty_series():
+    r = S.simulate_shot_exit(pd.Series(dtype="float64"), 0, 1.0e6,
+                             pd.DataFrame(columns=S.SHOT_COLUMNS),
+                             S.ShotExitRule("x"))
+    assert math.isnan(r["gross"]) and r["reason"] == "no_path"
+
+
+def test_shot_exit_ignores_shots_before_entry():
+    s = series([1.00, 1.05, 1.02, 1.02, 1.02, 1.09])
+    sh = S.detect_shots(s, min_rise=0.02)
+    late = int(sh.iloc[0]["peak_ms"]) + 1
+    r = S.simulate_shot_exit(s, late, float(s.loc[s.index[s.index >= late][0]]), sh,
+                             S.ShotExitRule("x", mode="into_shot_n", n=1))
+    assert r["n_shots_after"] < len(sh)      # 진입 전 슈팅은 세지 않는다
+
+
+# --------------------------------------------------------------------------- #
+# 필요 표본
+# --------------------------------------------------------------------------- #
+def test_required_days_inverts_the_observation_rate():
+    assert S.required_days(10.0, min_n=30)["days_needed"] == 3
+    assert S.required_days(0.0)["days_needed"] is None
