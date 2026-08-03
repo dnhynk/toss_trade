@@ -90,6 +90,7 @@ $HeartbeatFile = Join-Path $StateDir "watchdog_heartbeat.txt"
 $PlannedFile = Join-Path $StateDir "PLANNED"
 $SentinelHeartbeatFile = Join-Path $StateDir "sentinel_heartbeat.txt"
 $CollectorLog = Join-Path $DataDir "collector.log"
+$StateJson = Join-Path $DataDir "collector_state.json"
 $TokenStateFile = Join-Path $DataDir "token_state.json"
 
 $NowEpoch = [int][DateTimeOffset]::Now.ToUnixTimeSeconds()
@@ -195,9 +196,33 @@ function Raise-Alert($state, [string]$key, [string]$level, [string]$body,
     }
     $fname = "{0}_{1}_{2}.txt" -f $prefix, (Get-Date -Format "yyyyMMdd_HHmmss"), $key
     $path = Join-Path $DataDir $fname
+    if ($null -eq $body -or $body.Trim() -eq "") {
+        # An alert with no body is not an alert. If the caller handed us nothing, say so
+        # in the file itself rather than leaving a mystery for the morning reader.
+        $body = "(no detail was supplied by the check that raised this - this is itself a " +
+                "defect in ops/watchdog.ps1; the key above says which check it was)"
+        Write-Log "ALERT-BODY-EMPTY key=$key - wrote a placeholder body, fix the caller"
+    }
     $text = "$header[$level] $NowStamp  key=$key`r`n`r`n$body`r`n"
-    [IO.File]::WriteAllText($path, $text, [Text.Encoding]::UTF8)
-    Write-Log "$prefix[$level] key=$key file=$fname"
+    # No BOM: these are plain-text files read by people and by simple tools, and a BOM
+    # makes the first line look corrupt in some readers.
+    [IO.File]::WriteAllText($path, $text, [Text.UTF8Encoding]::new($false))
+    # Verify what actually landed on disk. A zero-byte alert file is a silent failure of
+    # the alerting path itself, which is the worst possible place to have one.
+    $written = 0
+    try { $written = (Get-Item $path -ErrorAction Stop).Length } catch { }
+    if ($written -le 0) {
+        Write-Log "ALERT-WRITE-FAILED key=$key file=$fname wrote ${written} bytes - retrying once"
+        try {
+            [IO.File]::WriteAllText($path, $text, [Text.UTF8Encoding]::new($false))
+            $written = (Get-Item $path -ErrorAction Stop).Length
+        } catch { }
+        if ($written -le 0) {
+            Write-Log "ALERT-WRITE-FAILED-TWICE key=$key file=$fname - alert content is LOST, detail follows in this log"
+            Write-Log ("lost alert body [$level] key=$key : " + ($body -replace "`r?`n", " "))
+        }
+    }
+    Write-Log "$prefix[$level] key=$key file=$fname bytes=$written"
     return $true
 }
 
@@ -219,22 +244,122 @@ function Get-TossProcs([string]$pattern) {
         }
 }
 
-# Last telemetry line of collector.log -> @{ts=<datetime>; session=<s>; counters=<string>}
-function Get-LastTelemetry {
+# Telemetry from the log, scanned by TIME rather than by line count.
+#
+# 2026-08-03 incident: this used a fixed `-Tail 400`. Telemetry is emitted every 5
+# minutes, but tier-promotion logging can produce ~300 lines/minute, so 400 lines covered
+# roughly 1.5 minutes and contained ZERO telemetry lines. The watchdog went blind for
+# 20+ minutes while the collector was perfectly healthy. A window the log volume can
+# outrun is not a window - so grow the tail until it actually spans $minutes, with a
+# hard cap so a runaway log cannot make this expensive.
+function Get-LastTelemetry([double]$minutes = 20.0, [int]$maxLines = 20000) {
     if (-not (Test-Path $CollectorLog)) { return $null }
-    $tail = Get-Content $CollectorLog -Tail 400 -ErrorAction SilentlyContinue
-    if ($null -eq $tail) { return $null }
-    $line = $tail | Where-Object { $_ -match "telemetry session=" } | Select-Object -Last 1
-    if ($null -eq $line) { return $null }
-    if ($line -match "^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+\s+\S+\s+telemetry session=(\S+)\s+(.*)$") {
-        return @{
-            ts = [datetime]::ParseExact($Matches[1], "yyyy-MM-dd HH:mm:ss", $null)
-            ts_str = $Matches[1]
-            session = $Matches[2]
-            counters = $Matches[3].Trim()
+    $want = 800
+    while ($true) {
+        $tail = Get-Content $CollectorLog -Tail $want -ErrorAction SilentlyContinue
+        if ($null -eq $tail -or $tail.Count -eq 0) { return $null }
+        $line = $tail | Where-Object { $_ -match "telemetry session=" } | Select-Object -Last 1
+        if ($null -ne $line) {
+            if ($line -match "^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+\s+\S+\s+telemetry session=(\S+)\s+(.*)$") {
+                return @{
+                    ts = [datetime]::ParseExact($Matches[1], "yyyy-MM-dd HH:mm:ss", $null)
+                    ts_str = $Matches[1]
+                    session = $Matches[2]
+                    counters = $Matches[3].Trim()
+                    scanned = $tail.Count
+                }
+            }
+            return $null   # found but unparseable: format drift, report as such
+        }
+        # Did this tail already span the requested time? If so, there is genuinely no
+        # telemetry in the window and reading more lines will not help.
+        $spanned = $false
+        $first = $tail | Where-Object { $_ -match "^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})," } | Select-Object -First 1
+        if ($null -ne $first -and $first -match "^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),") {
+            $spanned = ((Get-Date) - [datetime]::ParseExact($Matches[1], "yyyy-MM-dd HH:mm:ss", $null)).TotalMinutes -ge $minutes
+        }
+        if ($spanned -or $tail.Count -lt $want -or $want -ge $maxLines) { return $null }
+        $want = [math]::Min($want * 4, $maxLines)
+    }
+}
+
+# Collector state file -> the same normalized shape. This is the PRIMARY source: it is a
+# small fixed-size JSON the collector rewrites every loop, so unlike the log it cannot be
+# outrun by log volume. Counters absent from the file mean zero (the collector only
+# stores keys it has bumped), so the known contract keys are filled in explicitly - that
+# way a delta check sees 0 rather than "unsupported".
+$script:W4_COUNTER_KEYS = @(
+    "auth_failures", "loop_errors", "schema_mismatch", "event_write_failures",
+    "promotion_write_failures", "rankings_write_failures", "rankings_clamped",
+    "prices_missing", "candles_1m", "api_errors", "tier2_orderbook_snaps"
+)
+function Get-TelemetryFromState {
+    if (-not (Test-Path $StateJson)) { return $null }
+    try {
+        $j = Get-Content $StateJson -Raw -ErrorAction Stop | ConvertFrom-Json
+    } catch { return $null }
+    if ($null -eq $j -or $null -eq $j.saved_ms) { return $null }
+    $ts = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$j.saved_ms).LocalDateTime
+    $c = @{}
+    if ($null -ne $j.counters) {
+        foreach ($p in $j.counters.PSObject.Properties) {
+            $v = 0.0
+            if ([double]::TryParse([string]$p.Value, [ref]$v)) { $c[$p.Name] = $v }
         }
     }
-    return $null
+    foreach ($k in $script:W4_COUNTER_KEYS) { if (-not $c.ContainsKey($k)) { $c[$k] = 0.0 } }
+    # derived values the telemetry line computes but the state file stores as parts
+    $seen = 0.0; $miss = 0.0
+    if ($c.ContainsKey("prices_seen")) { $seen = $c["prices_seen"] }
+    if ($c.ContainsKey("prices_missing")) { $miss = $c["prices_missing"] }
+    $c["fetch_success_pct"] = 100.0
+    if (($seen + $miss) -gt 0) { $c["fetch_success_pct"] = [math]::Round(100.0 * $seen / ($seen + $miss), 1) }
+    $c["tier2_orderbook_skipped"] = 0.0
+    foreach ($k in @("tier2_orderbook_skipped_rate", "tier2_orderbook_skipped_429")) {
+        if ($c.ContainsKey($k)) { $c["tier2_orderbook_skipped"] += $c[$k] }
+    }
+    $c["ranking_snap_age_s"] = -1.0
+    if ($null -ne $j.last_ranking_snap_ms -and [long]$j.last_ranking_snap_ms -gt 0) {
+        $c["ranking_snap_age_s"] = [math]::Max(0,
+            [math]::Floor(((Get-Date) - [DateTimeOffset]::FromUnixTimeMilliseconds([long]$j.last_ranking_snap_ms).LocalDateTime).TotalSeconds))
+    }
+    $sess = "unknown"
+    if ($null -ne $j.session) { $sess = [string]$j.session }
+    $sig = (($c.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join " ")
+    return @{ ts = $ts; ts_str = $ts.ToString("yyyy-MM-dd HH:mm:ss"); session = $sess
+              counters = $c; counters_sig = $sig; source = "state" }
+}
+
+# Read the collector's health from the best available source, and say clearly when it
+# could not be read at all. Being unable to see is itself an incident: the counter-freeze
+# detection - the only early signal we have for a silent API death - is dead while blind.
+function Get-CollectorSnapshot {
+    $tried = @()
+    $s = Get-TelemetryFromState
+    if ($null -ne $s) {
+        $ageMin = ((Get-Date) - $s.ts).TotalMinutes
+        if ($ageMin -le $FreshCritMin) { return @{ ok = $true; snap = $s; reason = "" } }
+        $tried += ("collector_state.json is stale ({0:N1} min old, threshold {1} min)" -f $ageMin, $FreshCritMin)
+    } elseif (Test-Path $StateJson) {
+        $tried += "collector_state.json exists but could not be parsed (truncated or corrupt JSON?)"
+    } else {
+        $tried += "collector_state.json does not exist at $StateJson"
+    }
+    $t = Get-LastTelemetry
+    if ($null -ne $t) {
+        $t["counters"] = Parse-Counters $t.counters
+        $t["counters_sig"] = (($t.counters.GetEnumerator() | Sort-Object Name |
+            ForEach-Object { "$($_.Name)=$($_.Value)" }) -join " ")
+        $t["source"] = "log"
+        return @{ ok = $true; snap = $t; reason = ("state file unusable, fell back to log: " + ($tried -join "; ")) }
+    }
+    if (-not (Test-Path $CollectorLog)) { $tried += "collector.log does not exist at $CollectorLog" }
+    else {
+        $sz = [math]::Round((Get-Item $CollectorLog).Length / 1MB, 1)
+        $tried += ("no parseable 'telemetry session=' line within the time-based log scan " +
+                   "(log is ${sz}MB, last modified $((Get-Item $CollectorLog).LastWriteTime.ToString('HH:mm:ss')))")
+    }
+    return @{ ok = $false; snap = $null; reason = ($tried -join "; ") }
 }
 
 # Parse "k=v k=v ..." telemetry counters into a hashtable (W4 contract, main 27abc3f).
@@ -587,7 +712,10 @@ if ($sup.Count -eq 0 -and $col.Count -eq 0) {
 }
 
 # (b)+(c) telemetry freshness and counter advance
-$tele = Get-LastTelemetry
+$snapshot = Get-CollectorSnapshot
+$tele = $snapshot.snap
+$teleSource = "none"
+if ($null -ne $tele) { $teleSource = $tele.source }
 $session = "unknown"
 $ageMin = -1
 if ($null -ne $tele) {
@@ -605,7 +733,7 @@ if ($null -ne $tele) {
     if ($null -ne $prev) { $prevTeleTs = Get-Prop $prev "ts" "" }
     $openNow = ($session -ne "closed")
     if ($null -ne $prev -and $openNow -and (Get-Prop $prev "session" "closed") -ne "closed") {
-        if ($tele.counters -eq (Get-Prop $prev "counters" "") -and $tele.ts_str -ne (Get-Prop $prev "ts" "")) {
+        if ($tele.counters_sig -eq (Get-Prop $prev "counters" "") -and $tele.ts_str -ne (Get-Prop $prev "ts" "")) {
             $strikes = (Get-Prop $state "freeze_strikes" 0) + 1
             Set-Prop $state "freeze_strikes" $strikes
             if ($strikes -ge $FreezeStrikesToRestart -and $null -eq $restartReason) {
@@ -620,10 +748,25 @@ if ($null -ne $tele) {
         Set-Prop $state "freeze_strikes" 0
     }
     Set-Prop $state "last_telemetry" ([PSCustomObject]@{
-        ts = $tele.ts_str; session = $session; counters = $tele.counters })
-} elseif ($col.Count -ge 1 -and $null -eq $restartReason) {
-    # collector alive but no telemetry parseable at all
+        ts = $tele.ts_str; session = $session; counters = $tele.counters_sig })
+} else {
+    # BLIND. This is an incident in its own right, not a log note: while the watchdog
+    # cannot read the collector's health, counter-freeze detection is dead - and that is
+    # the only early signal we have for a silent API death (docs/11 section 11-1).
+    # On 2026-08-03 this state persisted 20+ minutes and produced no alert at all, so the
+    # watchdog knew it was blind and told nobody. It must never be quiet again.
     $problems += "no_telemetry"
+    Raise-Alert $state "no_telemetry" "CRIT" (
+        "THE WATCHDOG IS BLIND - it cannot read the collector's health.`r`n`r`n" +
+        "Why it could not read:`r`n  $($snapshot.reason)`r`n`r`n" +
+        "Processes seen this cycle: supervisor=$($sup.Count) collector=$($col.Count). " +
+        "Note that liveness alone proves nothing - on 2026-08-01 the collector was alive " +
+        "and logging while every API call was failing, and only counter-freeze detection " +
+        "caught it. That detection is DISABLED while this alert stands.`r`n`r`n" +
+        "No automatic restart is performed for blindness: the collector may be perfectly " +
+        "healthy (it was on 2026-08-03) and restarting on a read failure would cause the " +
+        "outage it is meant to prevent. Check data/collector_state.json and " +
+        "data/collector.log by hand.") 1800 | Out-Null
 }
 
 # ---- W4 watchdog contract (main 27abc3f): counters + log strings ----
@@ -631,7 +774,8 @@ if ($null -ne $tele) {
 # simply absent from the telemetry line and every check below no-ops (no false alarms).
 $openSession = ($session -ne "closed" -and $session -ne "unknown")
 if ($null -ne $tele) {
-    $cur = Parse-Counters $tele.counters
+    Clear-AlertKey $state "no_telemetry"
+    $cur = $tele.counters
     $prevRaw = Get-Prop $state "last_counters" $null
     $prev = @{}
     if ($null -ne $prevRaw) {
@@ -976,9 +1120,9 @@ if ($null -ne $restartReason) {
 }
 
 $summary = "sup=$($sup.Count) col=$($col.Count) session=$session age_min=$ageMin " +
-    "free_gb=$freeGB power=$powerNow($($pw.pct)%)"
+    "src=$teleSource free_gb=$freeGB power=$powerNow($($pw.pct)%)"
 if ($null -ne $tele) {
-    $c2 = Parse-Counters $tele.counters
+    $c2 = $tele.counters
     $rsaTxt = "n/a"; if ($c2.ContainsKey("ranking_snap_age_s")) { $rsaTxt = [int]$c2["ranking_snap_age_s"] }
     $afTxt = "n/a"; if ($c2.ContainsKey("auth_failures")) { $afTxt = [int]$c2["auth_failures"] }
     $fsTxt = "n/a"; if ($c2.ContainsKey("fetch_success_pct")) { $fsTxt = $c2["fetch_success_pct"] }
