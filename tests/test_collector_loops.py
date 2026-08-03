@@ -1264,3 +1264,145 @@ def test_failed_and_retried_attempts_reach_the_budget_guard(tmp_path):
         assert ctx.budget.counters.get("MARKET_DATA", 0) == base + 5
     finally:
         ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# tier2 저빈도 호가 (W5 에스컬레이션 2026-08-03) — 승격 전후 스프레드 궤적
+# --------------------------------------------------------------------------- #
+from tossmon.api.models import Orderbook, OrderbookLevel  # noqa: E402
+
+
+class BookClient(StubClient):
+    """호가를 돌려주는 스텁. 어떤 심볼이 조회됐는지 기록한다."""
+
+    def __init__(self, known=None):
+        super().__init__(known or {})
+        self.book_calls: list[str] = []
+
+    async def get_orderbook(self, symbol):
+        self.book_calls.append(symbol)
+        self.counters["requests"] += 1
+        return Orderbook(symbol=symbol, ts_ms=DAY0,
+                         bids=[OrderbookLevel(price_u=999_000, qty_u=100_000_000)],
+                         asks=[OrderbookLevel(price_u=1_001_000, qty_u=90_000_000)])
+
+    async def get_trades(self, symbol, count=50):
+        self.counters["requests"] += 1
+        return []
+
+
+def _tier(ctx, symbol, tier):
+    """symbol 을 지정 티어로 올린다 (2 = 1회, 3 = dwell 지나 2회)."""
+    ctx.tiers.on_new_data(symbol, 0.9, 0)
+    if tier >= 3:
+        ctx.tiers.on_new_data(symbol, 0.9, 200_000)
+    ctx.flush_changes()
+
+
+def _book_ctx(tmp_path, period=600, **kw):
+    client = BookClient()
+    ctx, day = build_ctx(tmp_path, client, polling={"tier2_orderbook_s": period}, **kw)
+    return ctx, client
+
+
+def test_tier2_orderbook_polls_tier2_members_only(tmp_path):
+    """tier2 멤버가 라운드로빈으로 폴링된다. tier3 는 자기 루프(16s)가 보므로 제외."""
+    ctx, client = _book_ctx(tmp_path)
+    try:
+        _tier(ctx, "AAA", 2)
+        _tier(ctx, "BBB", 2)
+        _tier(ctx, "CCC", 3)                       # tier3 — 이 루프 대상이 아니다
+        assert sorted(ctx.tiers.members(2)) == ["AAA", "BBB"]
+
+        asyncio.run(loops.run_tier2_orderbook(ctx.client, ctx.store, ctx.cfg, ctx=ctx,
+                                              cycles=4))
+        assert set(client.book_calls) == {"AAA", "BBB"}      # tier3 CCC 는 없다
+        assert client.book_calls.count("AAA") == 2           # 라운드로빈으로 번갈아
+        assert ctx.counters["tier2_orderbook_snaps"] == 4
+        rows = ctx.store._conn.execute(
+            "SELECT DISTINCT symbol FROM orderbook_snap ORDER BY symbol").fetchall()
+        assert [r[0] for r in rows] == ["AAA", "BBB"]        # 실제로 저장된다
+        assert ctx.telemetry()["tier2_orderbook_snaps"] == 4
+    finally:
+        ctx.store.close()
+
+
+def test_tier2_orderbook_paces_one_poll_per_symbol_per_period(tmp_path):
+    """심볼당 주기 = period. 두 심볼이면 period/2 간격으로 번갈아 (예산 산식의 근거)."""
+    ctx, client = _book_ctx(tmp_path, period=600)
+    try:
+        _tier(ctx, "AAA", 2)
+        _tier(ctx, "BBB", 2)
+        before = ctx.clock.now_ms()
+        asyncio.run(loops.run_tier2_orderbook(ctx.client, ctx.store, ctx.cfg, ctx=ctx,
+                                              cycles=2))
+        elapsed_s = (ctx.clock.now_ms() - before) / 1000.0
+        assert elapsed_s == pytest.approx(600.0)             # 2건 x (600/2)
+        assert len(client.book_calls) == 2
+    finally:
+        ctx.store.close()
+
+
+def test_tier2_orderbook_yields_first_under_budget_pressure(tmp_path):
+    """예산 압박이면 tier2 호가만 건너뛴다 — tier3 테이프·호가는 그대로 돈다."""
+    ctx, client = _book_ctx(tmp_path)
+    try:
+        _tier(ctx, "AAA", 2)
+        _tier(ctx, "CCC", 3)
+        # 측정 사용률을 목표의 90% 위로 (target 7.0 -> 6.5)
+        ctx.budget.measured_rate = lambda group: 6.5
+
+        asyncio.run(loops.run_tier2_orderbook(ctx.client, ctx.store, ctx.cfg, ctx=ctx,
+                                              cycles=3))
+        assert client.book_calls == []                        # tier2 호가는 전부 양보
+        assert ctx.counters["tier2_orderbook_skipped_rate"] == 3
+        assert ctx.telemetry()["tier2_orderbook_skipped"] == 3
+
+        # 같은 압박에서도 tier3 마이크로 루프는 계속 수집한다 (밀어내지 않는다)
+        asyncio.run(loops.run_tier3_micro(ctx.client, ctx.store, ctx.cfg, ctx=ctx,
+                                          cycles=1))
+        assert "CCC" in client.book_calls                     # tier3 는 정상
+    finally:
+        ctx.store.close()
+
+
+def test_tier2_orderbook_backs_off_after_a_429(tmp_path):
+    """429 직후 쿨다운 동안 tier2 호가는 물러난다 (사고 시 1순위 희생)."""
+    # 한 사이클의 sleep(period/n)이 쿨다운(5분)보다 짧아야 쿨다운 자체를 검증할 수 있다.
+    ctx, client = _book_ctx(tmp_path, period=60)
+    try:
+        _tier(ctx, "AAA", 2)
+        ctx.budget.on_429("MARKET_DATA")                      # 사고 발생
+        asyncio.run(loops.run_tier2_orderbook(ctx.client, ctx.store, ctx.cfg, ctx=ctx,
+                                              cycles=2))
+        assert client.book_calls == []                         # 쿨다운 동안 전부 양보
+        assert ctx.counters["tier2_orderbook_skipped_429"] == 2
+
+        ctx.clock.advance(loops.TIER2_ORDERBOOK_COOLDOWN_MS / 1000 + 1)   # 쿨다운 경과
+        asyncio.run(loops.run_tier2_orderbook(ctx.client, ctx.store, ctx.cfg, ctx=ctx,
+                                              cycles=1))
+        assert client.book_calls == ["AAA"]                    # 회복 후 재개
+    finally:
+        ctx.store.close()
+
+
+def test_tier2_orderbook_disabled_by_default_and_never_ends_the_task(tmp_path):
+    """미설정/0 이면 호출 0건. **중요**: 그래도 task 가 끝나면 안 된다 —
+    run_all 이 FIRST_COMPLETED 로 기다리므로 조기 종료는 수집 전체를 내린다."""
+    for period in (0, None):
+        # period=None -> 키 자체를 안 준다(미설정). polling 섹션은 그대로 둔다.
+        sections = {} if period is None else {"tier2_orderbook_s": period}
+        client = BookClient()
+        ctx, _ = build_ctx(tmp_path, client, polling=sections)
+        try:
+            assert ctx.cfg.polling.tier2_orderbook_s == 0     # 기본 비활성
+            _tier(ctx, "AAA", 2)
+            before = ctx.clock.now_ms()
+            asyncio.run(loops.run_tier2_orderbook(ctx.client, ctx.store, ctx.cfg,
+                                                  ctx=ctx, cycles=3))
+            assert client.book_calls == []                    # 호출 0
+            # 즉시 return 이 아니라 idle 로 돌았다는 증거 (시계가 흘렀다)
+            assert ctx.clock.now_ms() > before
+            assert ctx.counters.get("tier2_orderbook_snaps", 0) == 0
+        finally:
+            ctx.store.close()

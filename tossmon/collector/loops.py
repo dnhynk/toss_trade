@@ -109,6 +109,18 @@ CURVE_NONE_TTL_MS = 5 * MIN_MS
 #: `/stocks` 예산 그룹 (계약 C-3 스펙의 STOCK 그룹).
 GROUP_STOCK = "STOCK"
 
+#: tier2 호가는 **여유가 있을 때만** 수집한다 — 측정 MARKET_DATA 사용률이 목표의 이 비율을
+#: 넘으면 그 폴을 건너뛴다. tier3 테이프(4s)·호가(16s)·랭킹·캔들을 절대 밀어내지 않기
+#: 위한 "1순위 희생" 규칙이다 (W5 에스컬레이션 2026-08-03).
+#:
+#: 이 루프는 의도적으로 `TierPlan.rates()` 에 넣지 않는다: 계획에 넣으면 예산 초과 시
+#: BudgetGuard 가 `SHRINK_TIER[MARKET_DATA]=3` 규칙대로 **tier3 정원을 깎아** 정작
+#: 지켜야 할 고빈도 수집이 줄어든다. 계획 밖에서 런타임 여유만 쓰고, 압박이 오면
+#: 스스로 물러나는 구조가 우선순위를 정확히 표현한다.
+TIER2_ORDERBOOK_HEADROOM = 0.90
+#: 429 를 맞으면 이 시간 동안 tier2 호가를 쉰다 (사고 직후 가장 먼저 물러난다).
+TIER2_ORDERBOOK_COOLDOWN_MS = 5 * MIN_MS
+
 #: 세션이 닫혔을 때 루프가 도는 간격 (초).
 IDLE_SLEEP_S = 5.0
 #: 상태파일 저장 간격 (초).
@@ -330,6 +342,9 @@ class CollectorContext:
     #: client.counters["requests"] 고수위 — 재시도·실패까지 포함한 실제 HTTP 시도를
     #: BudgetGuard 에 계상하기 위한 기준점.
     _http_requests_seen: int = 0
+    #: tier2 호가 양보 판정용 — 관측한 429 고수위와 쿨다운 종료 시각.
+    _tier2_book_429_seen: int = 0
+    _tier2_book_cooldown_ms: int = 0
     #: 유니버스 거부를 이미 로그한 심볼 (같은 심볼이 12초마다 로그를 도배하지 않게).
     _universe_logged: set[str] = field(default_factory=set)
     #: 재시작 시 복원한 심볼별 마지막 봉 시각 (백필 시작점 힌트).
@@ -597,6 +612,12 @@ class CollectorContext:
             "prices_missing": miss,
             "fetch_success_pct": fetch_success_pct,
             "candles_1m": int(self.counters.get("candles_1m", 0)),
+            # tier2 저빈도 호가 — 켜져 있으면 snaps 가 늘어야 하고, 예산 압박으로
+            # 양보하면 skipped 가 는다 (조용한 미수집 방지, W5 워치독 판독용).
+            "tier2_orderbook_snaps": int(self.counters.get("tier2_orderbook_snaps", 0)),
+            "tier2_orderbook_skipped": int(
+                self.counters.get("tier2_orderbook_skipped_rate", 0)
+                + self.counters.get("tier2_orderbook_skipped_429", 0)),
             "precision_rounded": int(getattr(self.client, "counters", {})
                                      .get("precision_rounded", 0)),
             "precision_parsed": parsed,
@@ -1543,13 +1564,82 @@ async def _poll_trades(ctx: CollectorContext, symbol: str) -> int:
     return stored
 
 
-async def _poll_orderbook(ctx: CollectorContext, symbol: str) -> int:
+async def _poll_orderbook(ctx: CollectorContext, symbol: str, *,
+                          tier2: bool = False) -> int:
     ob = await ctx.client.get_orderbook(symbol)
     ctx.after_call(GROUP_MARKET_DATA)
     snap_ms = ctx.clock.now_ms()
     ctx.store.insert_orderbook(snap_ms, ob)
     ctx.bump("orderbook_snaps")
+    if tier2:
+        ctx.bump("tier2_orderbook_snaps")
     return 1
+
+
+# --------------------------------------------------------------------------- #
+# Tier 2 — 저빈도 호가 (승격 전후 스프레드 궤적. 여유가 있을 때만)
+# --------------------------------------------------------------------------- #
+def tier2_orderbook_allowed(ctx: CollectorContext) -> tuple[bool, str]:
+    """지금 tier2 호가를 한 건 쏴도 되는가. (허용?, 거절 사유) 를 돌려준다.
+
+    tier2 호가는 **가장 먼저 희생되는** 수집이다 — 예산 압박(측정 사용률이 목표의
+    `TIER2_ORDERBOOK_HEADROOM` 초과)이나 429 직후 쿨다운이면 건너뛴다. 스킵은 조용히
+    지나가지 않고 카운터로 드러난다 (`tier2_orderbook_skipped_*`).
+    """
+    now = ctx.clock.now_ms()
+    seen429 = int(ctx.budget.rate_limited.get(GROUP_MARKET_DATA, 0))
+    if seen429 > ctx._tier2_book_429_seen:
+        ctx._tier2_book_429_seen = seen429
+        ctx._tier2_book_cooldown_ms = now + TIER2_ORDERBOOK_COOLDOWN_MS
+    if now < ctx._tier2_book_cooldown_ms:
+        return False, "429"
+    target = ctx.budget.target(GROUP_MARKET_DATA)
+    if target > 0 and ctx.budget.measured_rate(GROUP_MARKET_DATA) >= \
+            target * TIER2_ORDERBOOK_HEADROOM:
+        return False, "rate"
+    return True, ""
+
+
+async def run_tier2_orderbook(client: TossClient, store: Store, cfg: Config, *,
+                              ctx: CollectorContext | None = None,
+                              cycles: int | None = None) -> None:
+    """tier2 멤버를 라운드로빈으로 돌며 심볼당 `tier2_orderbook_s` 주기로 호가 1건.
+
+    왜 필요한가 (W5 에스컬레이션): 호가가 tier3 승격 **이후**에만 수집돼 승격 전후
+    스프레드 궤적을 원리상 측정할 수 없었다 — "유동성이 몰릴 때 스프레드가 좁아지는가"
+    (진입창 설계)와 주문 크기별 비용(감사 A3)이 여기 걸려 있다.
+
+    tier3 멤버는 제외한다 (`members(2)`) — 이미 `tier3_orderbook_s`(16s)로 조밀하게
+    받고 있어 중복 호출이 될 뿐이다. 주기가 0/미설정이면 루프 자체가 즉시 끝난다.
+    """
+    ctx = ctx or CollectorContext.create(client, store, cfg)
+    period = float(getattr(cfg.require_polling(), "tier2_orderbook_s", 0) or 0)
+    disabled = period <= 0                       # 설정 한 줄로 되돌린다
+    if disabled:
+        ctx.notifier.info("tier2 orderbook: disabled (polling.tier2_orderbook_s=0)")
+    cursor = 0
+    done = 0
+    while ctx.running() and (cycles is None or done < cycles):
+        done += 1
+        if disabled:
+            # ⚠️ 여기서 return 하면 안 된다 — run_all 이 FIRST_COMPLETED 로 기다리므로
+            # 이 task 가 끝나면 **수집 전체가 내려간다.** 비활성일 때는 쉬기만 한다.
+            await ctx.clock.sleep(IDLE_SLEEP_S)
+            continue
+        symbols = sorted(ctx.tiers.members(2))   # tier3 는 자기 루프가 조밀하게 본다
+        if not ctx.collecting() or not symbols:
+            await ctx.clock.sleep(IDLE_SLEEP_S)
+            continue
+        cursor %= len(symbols)
+        symbol = symbols[cursor]
+        cursor += 1
+        ok, why = tier2_orderbook_allowed(ctx)
+        if ok:
+            await _guarded(ctx, f"tier2book:{symbol}",
+                           _poll_orderbook(ctx, symbol, tier2=True), GROUP_MARKET_DATA)
+        else:
+            ctx.bump(f"tier2_orderbook_skipped_{why}")
+        await ctx.clock.sleep(period / len(symbols))
 
 
 # --------------------------------------------------------------------------- #
@@ -1624,6 +1714,9 @@ async def run_all(ctx: CollectorContext, *, cycles: int | None = None) -> None:
                                             cycles=cycles), name="tier3"),
         asyncio.create_task(run_tier2_candles(ctx.client, ctx.store, cfg, ctx=ctx,
                                               cycles=cycles), name="tier2"),
+        # 비활성(주기 0/미설정)이면 즉시 끝나는 task 다 — 켜져 있을 때만 일한다.
+        asyncio.create_task(run_tier2_orderbook(ctx.client, ctx.store, cfg, ctx=ctx,
+                                                cycles=cycles), name="tier2book"),
     ]
     stopper = asyncio.create_task(ctx.stop.wait(), name="stop")
     try:
@@ -1645,6 +1738,7 @@ __all__ = [
     "CANDLE_ADJUSTED", "CollectorContext", "RANKING_TYPES", "RankingBuffer", "SymbolBuffer",
     "candle_adjusted", "candles_frame", "rankings_once", "reconfigure_tiers", "run_all",
     "run_rankings",
-    "run_session_watch", "run_tier1_price_sweep", "run_tier2_candles", "run_tier3_micro",
+    "run_session_watch", "run_tier1_price_sweep", "run_tier2_candles",
+    "run_tier2_orderbook", "run_tier3_micro", "tier2_orderbook_allowed",
     "tape_stats", "tier1_sweep_once", "tier2_symbol_once",
 ]
