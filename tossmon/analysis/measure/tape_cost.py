@@ -84,6 +84,9 @@ MIN_N_FOR_VERDICT = 30
 #: 종목 내 대조에 쓰려면 그 종목이 두 구간 모두에서 이만큼은 있어야 한다.
 MIN_TRADES_PER_SYMBOL_BUCKET = 3
 
+#: 진입 시각 정합 창. 진입 전후 이 시간 안의 체결만 "진입 순간의 비용"으로 본다.
+ENTRY_WINDOW_S = 120
+
 OUT_DIR = D.OUT_DIR
 
 #: docs/23 §10-R 이 싣는 칸의 필드 전체. 가드가 **동일 집합**으로 대조한다.
@@ -382,6 +385,99 @@ def tape_vs_walk_the_book(realized: list[dict], walk: dict) -> list[dict]:
     return out
 
 
+def entry_moments(conn) -> pd.DataFrame:
+    """우리 진입 시각 목록 — `design_b` 와 **같은 진입 정의**를 쓴다(재정의 금지)."""
+    # 랭킹이 없는 DB 도 정상 입력이다 — 진입이 **없을 뿐** 터지지 않는다.
+    try:
+        days = D.load_days(conn)
+    except Exception:
+        return pd.DataFrame()
+    rows = []
+    for day in days:
+        rk = D.load_day_rank(conn, day)
+        if rk.empty:
+            continue
+        for e in D.tag_entries(D.collect_entries(rk), day):
+            fill = int(e["signal_ms"]) + D.ENTRY_DELAY_S * 1000
+            rows.append({"entry_idx": e["entry_idx"], "symbol": e["symbol"],
+                         "entry_ms": fill, "session": SS.session_of(fill)})
+    return pd.DataFrame(rows)
+
+
+def entry_aligned_cost(aligned: pd.DataFrame, entries: pd.DataFrame, *,
+                       window_s: int = ENTRY_WINDOW_S,
+                       band: str | None = HEADLINE_BAND) -> dict:
+    """**우리 진입 순간의 비용**을 평상시와 비교한다.
+
+    지금까지의 유효 스프레드는 **아무 체결**에서 잰 값이다. 그런데 우리 진입은
+    **10분 고점 대비 5% 급락 직후**이고, 그 순간은 스프레드가 벌어져 있을 공산이 크다.
+    그래서 진입 시각 +-`window_s` 창의 체결만으로 다시 재고, **같은 종목의 창 밖 체결**을
+    기준선으로 삼는다(종목 구성 차이를 상쇄하기 위해 종목 내 대조가 정본이다).
+    """
+    if aligned is None or aligned.empty or entries is None or entries.empty:
+        return {"available": False, "reason": "no aligned trades or no entries"}
+    d = aligned if band is None else aligned[aligned["band"] == band]
+    if d.empty:
+        return {"available": False, "reason": f"no aligned trades in band {band}"}
+    win = window_s * 1000
+    by_sym: dict[str, list] = {}
+    for e in entries.itertuples(index=False):
+        by_sym.setdefault(e.symbol, []).append(int(e.entry_ms))
+    flags = []
+    for r in d.itertuples(index=False):
+        ts_list = by_sym.get(r.symbol)
+        flags.append(bool(ts_list) and any(abs(r.ts_ms - t0) <= win for t0 in ts_list))
+    d = d.assign(near_entry=flags)
+    out = {"available": True, "window_s": window_s,
+           "n_entries": int(len(entries)),
+           "n_entry_symbols_with_trades": int(
+               d.loc[d["near_entry"], "symbol"].nunique()),
+           "by_session": {}}
+    for sess in SS.SESSIONS:
+        s = d[d["session"] == sess]
+        near = pd.to_numeric(s.loc[s["near_entry"], "eff_spread"],
+                             errors="coerce").dropna()
+        away = pd.to_numeric(s.loc[~s["near_entry"], "eff_spread"],
+                             errors="coerce").dropna()
+        # 종목 내 대조 — 같은 종목에서 창 안 / 창 밖 중앙값을 짝짓는다.
+        pairs = []
+        for sym, g in s.groupby("symbol"):
+            a = pd.to_numeric(g.loc[g["near_entry"], "eff_spread"],
+                              errors="coerce").dropna()
+            b = pd.to_numeric(g.loc[~g["near_entry"], "eff_spread"],
+                              errors="coerce").dropna()
+            if len(a) >= MIN_TRADES_PER_SYMBOL_BUCKET and len(b) >= MIN_TRADES_PER_SYMBOL_BUCKET:
+                pairs.append(float(a.median() - b.median()))
+        out["by_session"][sess] = {
+            "n_near": int(len(near)), "n_away": int(len(away)),
+            "median_near": float(near.median()) if len(near) else float("nan"),
+            "median_away": float(away.median()) if len(away) else float("nan"),
+            "ratio": (float(near.median() / away.median())
+                      if len(near) and len(away) and away.median() > 0 else float("nan")),
+            "n_symbols_paired": len(pairs),
+            "median_within_symbol_delta": (float(np.median(pairs)) if pairs
+                                           else float("nan")),
+            "powered": bool(len(near) >= MIN_N_FOR_VERDICT),
+        }
+    return out
+
+
+def entry_cost_days_needed(entry_cost: dict, n_cycle_dates: int) -> dict:
+    """진입 정합 표본이 모자란 세션은 **며칠 더** 필요한가 (도달률 역산)."""
+    out = {}
+    for sess, v in (entry_cost.get("by_session", {}) or {}).items():
+        if v.get("powered"):
+            out[sess] = {"reachable": True, "days_needed": 0}
+            continue
+        per_day = (v["n_near"] / n_cycle_dates) if n_cycle_dates else 0.0
+        out[sess] = (
+            {"reachable": True, "days_needed": int(np.ceil(MIN_N_FOR_VERDICT / per_day)),
+             "near_per_day": per_day}
+            if per_day > 0 else
+            {"reachable": False, "reason": "no entry-aligned trades at all"})
+    return out
+
+
 def build_report(conn) -> dict:
     """§10-R 의 표를 한 자료구조로. `main()` 과 테스트가 같은 함수를 쓴다."""
     tape, l1 = load_tape(conn), load_l1(conn)
@@ -389,7 +485,17 @@ def build_report(conn) -> dict:
     aligned = add_pre_trade_volatility(al["aligned"], l1)
     walk = D.session_clip_costs(D.book_rows(conn))
     realized = realized_cost_table(aligned)
+    ents = entry_moments(conn)
+    ec = entry_aligned_cost(aligned, ents)
+    n_cycles = (len({SS.session_date(int(m)) for m in ents["entry_ms"]})
+                if len(ents) else 0)
     return {
+        "entry_aligned": ec,
+        "entry_cost_days_needed": entry_cost_days_needed(ec, n_cycles),
+        "entry_cost_caveat": (
+            "effective spread is conditional on trades that EXECUTED - the price of "
+            "an order that never filled is not captured, so this is a LOWER BOUND; "
+            "whether our order fills at all is still unmeasured (D-2)"),
         "band": HEADLINE_BAND,
         "effective_spread_factor": EFFECTIVE_SPREAD_FACTOR,
         "alignment": {k: v for k, v in al.items() if k != "aligned"},
@@ -455,6 +561,28 @@ def main(db: Path, *, out_dir: Path | None = None) -> int:
                   f"(pre-trade vol delta {v['median_pre_trade_vol_delta']:+.4f}){tag}")
         print("  pre-trade vol delta > 0 means the large trades also happened in more "
               "volatile moments - do NOT read the spread delta as pure size cost.")
+
+    print("\n=== [docs/23 sec 10-R.6] ENTRY-ALIGNED COST - what WE would pay")
+    ec = rep["entry_aligned"]
+    if ec.get("available"):
+        print(f"  entries {ec['n_entries']}, window +-{ec['window_s']}s, "
+              f"{ec['n_entry_symbols_with_trades']} entry symbols have aligned trades")
+        print(f"{'session':<9}{'n near':>8}{'n away':>8}{'near':>9}{'away':>9}"
+              f"{'ratio':>8}{'syms':>6}{'within-sym':>12}")
+        for sess, v in ec["by_session"].items():
+            if not v["n_near"] and not v["n_away"]:
+                continue
+            tag = "" if v["powered"] else "  (n<30, no verdict)"
+            print(f"{sess:<9}{v['n_near']:>8}{v['n_away']:>8}"
+                  f"{v['median_near']:>9.4f}{v['median_away']:>9.4f}"
+                  f"{v['ratio']:>8.2f}{v['n_symbols_paired']:>6}"
+                  f"{v['median_within_symbol_delta']:>12.4f}{tag}")
+        for sess, dn in rep["entry_cost_days_needed"].items():
+            if dn and not dn.get("days_needed") == 0:
+                print(f"    {sess}: {dn}")
+    else:
+        print(f"  unavailable: {ec.get('reason')}")
+    print(f"  !! {rep['entry_cost_caveat']}")
 
     print("\n=== [docs/23 sec 10-R.4] L1 DEPLETION / REFILL (next snapshot vs prior)")
     for r in rep["refill"]:
