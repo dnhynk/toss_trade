@@ -109,6 +109,14 @@ CURVE_NONE_TTL_MS = 5 * MIN_MS
 #: `/stocks` 예산 그룹 (계약 C-3 스펙의 STOCK 그룹).
 GROUP_STOCK = "STOCK"
 
+#: 테이프 포화(50건 상한 + 구간 결손) 로 인정하는 유효기간 — 이 안에 다시 포화하지 않으면
+#: 평상 주기로 돌아간다.
+TAPE_SATURATION_TTL_MS = 2 * MIN_MS
+#: 빠른 레인(절반 주기)에 동시에 둘 수 있는 최대 종목 수. 실측상 포화는 3~4종목에 집중된다.
+TAPE_FAST_LANE_MAX = 4
+#: 한산한 종목 주기의 상한 배수 — 되돌려 받는 대가로도 이보다 늦추지는 않는다.
+TAPE_SLOW_MAX_MULT = 2.0
+
 #: tier2 호가는 **여유가 있을 때만** 수집한다 — 측정 MARKET_DATA 사용률이 목표의 이 비율을
 #: 넘으면 그 폴을 건너뛴다. tier3 테이프(4s)·호가(16s)·랭킹·캔들을 절대 밀어내지 않기
 #: 위한 "1순위 희생" 규칙이다 (W5 에스컬레이션 2026-08-03).
@@ -345,6 +353,11 @@ class CollectorContext:
     #: tier2 호가 양보 판정용 — 관측한 429 고수위와 쿨다운 종료 시각.
     _tier2_book_429_seen: int = 0
     _tier2_book_cooldown_ms: int = 0
+    #: 티어 전이 구간 요약용 고수위 (개별 줄은 DEBUG, 사람은 이 델타를 본다).
+    _last_promotions: int = 0
+    _last_demotions: int = 0
+    #: 테이프 포화(50건 상한 + 구간 결손) 관측 시각 — 적응형 폴링 주기의 입력.
+    tape_saturated_ms: dict[str, int] = field(default_factory=dict)
     #: 유니버스 거부를 이미 로그한 심볼 (같은 심볼이 12초마다 로그를 도배하지 않게).
     _universe_logged: set[str] = field(default_factory=set)
     #: 재시작 시 복원한 심볼별 마지막 봉 시각 (백필 시작점 힌트).
@@ -598,6 +611,9 @@ class CollectorContext:
             "events": int(self.counters.get("events", 0)),
             "promotions": int(self.counters.get("promotions", 0)),
             "tape_gaps": int(self.counters.get("tape_gaps", 0)),
+            # 지금 50건 상한에 걸려 있는 종목 수 — 0 이 아니면 그 종목은 적응형
+            # 빠른 레인으로 옮겨져 있다 (예산 중립 재배분).
+            "tape_saturated": len(self.tape_saturated_ms),
             "api_errors": int(self.counters.get("api_errors", 0)),
             # ↓ "조용히 죽거나 나빠지는" 사각을 드러내는 최소 집합 (워치독 5분 판독용).
             # 인증 실패(별도 노출), 광역 catch 로 삼켜지던 것들, 쓰기 실패, 수집 건강도.
@@ -632,6 +648,12 @@ class CollectorContext:
             return None
         self._last_telemetry_ms = now
         data = self.telemetry()
+        # 티어 전이는 개별 줄(DEBUG) 대신 **구간 요약**으로 사람에게 보인다.
+        promo = int(self.counters.get("promotions", 0))
+        demo = int(self.counters.get("demotions", 0))
+        data["promotions_delta"] = promo - self._last_promotions
+        data["demotions_delta"] = demo - self._last_demotions
+        self._last_promotions, self._last_demotions = promo, demo
         self.notifier.info("telemetry " + " ".join(f"{k}={v}" for k, v in data.items())
                            + " | " + self.budget.describe())
         self._check_precision_drift()
@@ -1144,7 +1166,8 @@ def _ranking_triggers(ctx: CollectorContext, page: RankingPage, snap_ms: int) ->
         if sym not in ctx.watchlist:
             continue                     # 유니버스 게이트 또는 tier1 정원에 걸렸다
         if toss and ctx.tiers.tier_of(sym) < 2:
-            if ctx.tiers.force(sym, 2, "ranking_entry", 0.0, snap_ms) is not None:
+            if ctx.tiers.force(sym, 2, "ranking_entry", 0.0, snap_ms,
+                               compete=False) is not None:
                 ctx.bump("ranking_promotions")
     ctx.flush_changes()
 
@@ -1225,7 +1248,11 @@ def _on_price(ctx: CollectorContext, price: Price, now_ms: int) -> None:
         reason = "price_activity"
     else:
         return
-    if ctx.tiers.force(price.symbol, 2, reason, score, now_ms) is not None:
+    # 활동 신호는 **빈자리에만** 들어간다 (compete=False). activity_score 는 정상 거래
+    # 종목이면 거의 1.000 이라 변별력이 없어, 경쟁시키면 매 스윕마다 최약체를 축출해
+    # 1↔2 왕복이 영구히 돈다 (2026-08-03 정규장 실측: 승격 분당 136회, 종목당 평균 12.4회).
+    if ctx.tiers.force(price.symbol, 2, reason, score, now_ms,
+                       compete=False) is not None:
         ctx.bump(f"promote_{reason}")
 
 
@@ -1526,12 +1553,21 @@ async def run_tier3_micro(client: TossClient, store: Store, cfg: Config, *,
         for key in [k for k in due if k[0] not in set(members)]:
             due.pop(key, None)
 
+        # 포화 종목은 절반 주기, 그만큼 한산한 종목을 늦춰 **총 호출률은 그대로** 둔다.
+        saturated = {s for s, t in ctx.tape_saturated_ms.items()
+                     if now - t <= TAPE_SATURATION_TTL_MS}
+        for stale_sym in [s for s in ctx.tape_saturated_ms
+                          if now - ctx.tape_saturated_ms[s] > TAPE_SATURATION_TTL_MS]:
+            ctx.tape_saturated_ms.pop(stale_sym, None)
+        intervals = tier3_trades_intervals(members, saturated, trades_s)
+
         ready = sorted((k for k, t in due.items() if t <= now), key=lambda k: due[k])
         for symbol, what in ready:
             if what == "trades":
                 await _guarded(ctx, f"tier3:trades:{symbol}", _poll_trades(ctx, symbol),
                                GROUP_MARKET_DATA)
-                due[(symbol, what)] = ctx.clock.now_ms() + int(trades_s * 1000)
+                due[(symbol, what)] = ctx.clock.now_ms() + int(
+                    intervals.get(symbol, trades_s) * 1000)
             else:
                 await _guarded(ctx, f"tier3:book:{symbol}", _poll_orderbook(ctx, symbol),
                                GROUP_MARKET_DATA)
@@ -1557,11 +1593,58 @@ async def _poll_trades(ctx: CollectorContext, symbol: str) -> int:
     prev_max = ctx.last_trade_ms.get(symbol)
     if prev_max is not None and int(stats["min_ts_ms"]) > prev_max:
         ctx.bump("tape_gaps")
+        # 50건 상한에 걸린 채 구간이 비면 **폴링이 체결 속도를 못 따라간 것**이다
+        # (2026-08-03 실측: 결손 190건 전부 n=50, ZEO/FUSE/CIGL/PUSA 4종목 집중).
+        # 그 종목만 적응형으로 더 자주 본다 — 예산은 tier3_trades_intervals 가 지킨다.
+        if int(stats["n"]) >= TRADES_COUNT:
+            ctx.tape_saturated_ms[symbol] = ctx.clock.now_ms()
+            ctx.bump("tape_saturated_polls")
         ctx.notifier.warn(
             f"tape gap {symbol}: prev_max={prev_max} < this_min={stats['min_ts_ms']} "
             f"(n={stats['n']}) — 표본 사이 체결 누락")
     ctx.last_trade_ms[symbol] = max(prev_max or 0, int(stats["max_ts_ms"]))
     return stored
+
+
+def tier3_trades_intervals(members: Sequence[str], saturated: set[str], base_s: float,
+                           *, fast_max: int = TAPE_FAST_LANE_MAX,
+                           slow_max_mult: float = TAPE_SLOW_MAX_MULT) -> dict[str, float]:
+    """심볼별 `/trades` 폴링 주기(초). **총 호출률은 기존과 같다 (예산 중립).**
+
+    포화 종목(50건 상한 + 구간 결손)은 절반 주기로 자주 보고, 그만큼을 한산한 종목에서
+    **되돌려 받는다** — 예산을 더 쓰지 않고 밀도를 필요한 곳으로 옮기는 재배분이다.
+    한산한 종목은 n<50 이라 이미 전 체결을 받고 있으므로 주기를 늦춰도 잃는 것이 없다.
+
+    총 허용률 = `len(members)/base_s` (지금 계획과 동일). 이 상한을 만족할 때까지
+    빠른 레인 인원을 줄이므로, 어떤 입력에도 예산을 넘지 않는다.
+    """
+    syms = list(members)
+    if not syms or base_s <= 0:
+        return {}
+    budget = len(syms) / base_s                   # 유지할 총 req/s
+    fast_s = base_s / 2.0
+    cand = [s for s in syms if s in saturated]
+    n_fast = min(len(cand), fast_max, len(syms))
+    slow_s = base_s
+    while n_fast > 0:
+        n_slow = len(syms) - n_fast
+        rate_fast = n_fast / fast_s
+        if n_slow == 0:
+            if rate_fast <= budget:
+                break
+            n_fast -= 1
+            continue
+        rate_slow = budget - rate_fast
+        if rate_slow > 0:
+            candidate_slow = n_slow / rate_slow
+            if candidate_slow <= base_s * slow_max_mult:
+                slow_s = candidate_slow
+                break
+        n_fast -= 1                                # 예산·한산주기 상한을 못 지키면 축소
+    fast = set(cand[:n_fast])
+    if not fast:
+        return {s: base_s for s in syms}
+    return {s: (fast_s if s in fast else slow_s) for s in syms}
 
 
 async def _poll_orderbook(ctx: CollectorContext, symbol: str, *,
@@ -1741,4 +1824,5 @@ __all__ = [
     "run_session_watch", "run_tier1_price_sweep", "run_tier2_candles",
     "run_tier2_orderbook", "run_tier3_micro", "tier2_orderbook_allowed",
     "tape_stats", "tier1_sweep_once", "tier2_symbol_once",
+    "tier3_trades_intervals",
 ]

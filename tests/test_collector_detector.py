@@ -461,3 +461,81 @@ def test_event_record_puts_extra_labels_into_meta_json():
     assert "NaN" not in rec["meta_json"]
     assert meta["realtime"] is True and meta["score_path"] == "confirm"
     assert "symbol" not in meta                               # 중복 저장 안 함
+
+
+# --------------------------------------------------------------------------- #
+# 티어 요동 (2026-08-03 정규장 실측: 승격 분당 136회, 1→2/2→1 이 1:1 로 왕복)
+# --------------------------------------------------------------------------- #
+def test_activity_promotion_never_evicts_an_existing_member():
+    """활동 신호(compete=False)는 **빈자리에만** 들어간다 — 최약체를 밀어내지 않는다.
+
+    `activity_score` 는 정상 거래 종목이면 거의 1.000 이라 변별력이 없다. 경쟁시키면
+    매 스윕마다 축출이 일어나 1↔2 왕복이 영구히 돈다 (라이브 실측).
+    """
+    sm = machine(tier2_max=2)
+    sm.force("AAA", 2, "score", 0.40, 0)                  # 정원 2 를 채운다
+    sm.force("BBB", 2, "score", 0.40, 0)
+    sm.drain_changes()
+    assert sorted(sm.members(2)) == ["AAA", "BBB"]
+
+    # 활동 신호 1.000 이 들어오려 해도 자리가 없으면 못 들어간다
+    assert sm.force("HOT", 2, "price_activity", 1.000, 1000, compete=False) is None
+    assert sm.tier_of("HOT") == 1
+    assert sorted(sm.members(2)) == ["AAA", "BBB"]         # 축출 0
+    assert sm.drain_changes() == []
+
+
+def test_activity_promotion_does_not_poison_the_score_channel():
+    """비경쟁 승격은 st.score 를 올리지 않는다 — 진짜 표적(0.3~0.6)이 최약체가 되면 안 된다."""
+    sm = machine(tier2_max=5)
+    assert sm.force("HOT", 2, "price_activity", 1.000, 0, compete=False) == 2
+    assert sm.score_of("HOT") == 0.0                       # 스코어 채널 오염 없음
+    # 기록(promotions 테이블)에는 실제 트리거 강도가 남는다 — 관측은 잃지 않는다
+    ch = sm.drain_changes()[0]
+    assert ch.reason == "price_activity" and ch.score == pytest.approx(1.0)
+
+
+def test_activity_promotion_takes_a_free_slot():
+    """자리가 있으면 정상적으로 들어간다 (기능을 죽이는 게 아니라 축출만 막는다)."""
+    sm = machine(tier2_max=2)
+    assert sm.force("AAA", 2, "first_print", 1.0, 0, compete=False) == 2
+    assert sm.tier_of("AAA") == 2
+
+
+def test_eviction_does_not_target_a_symbol_still_in_dwell():
+    """방금 티어가 바뀐 심볼은 축출 대상이 아니다 — 축출↔재승격 핑퐁의 씨앗."""
+    sm = machine(tier2_max=1)
+    sm.on_new_data("WEAK", 0.40, 0)                        # tier2 (방금 변경)
+    sm.drain_changes()
+    # 훨씬 높은 실스코어라도 dwell 중인 최약체는 밀어내지 못한다
+    assert sm.on_new_data("STRONG", 0.95, 1000) is None
+    assert sm.tier_of("WEAK") == 2 and sm.tier_of("STRONG") == 1
+    # dwell 이 지나면 정상적으로 교체된다
+    assert sm.on_new_data("STRONG", 0.95, HYST_MS + 2000) == 2
+    assert sm.tier_of("WEAK") == 1
+
+
+def test_churn_collapses_when_activity_promotions_stop_competing():
+    """정량 회귀: 같은 시장 입력에서 전이 수가 급감한다 (수정 전/후 대조).
+
+    라이브 재현 — 정원보다 훨씬 많은 종목이 매 스윕 activity_score 1.000 을 낸다.
+    """
+    def run(compete: bool) -> int:
+        sm = TierStateMachine(HYST_S, tier2_max=10, tier3_max=2)
+        # 정원을 채운 **진짜 표적** 10 종목 — 봉 기반 실제 검출 스코어 0.40
+        for i in range(10):
+            sm.force(f"REAL{i}", 2, "seed", 0.40, 0)
+        sm.drain_changes()
+        changes = 0
+        for sweep in range(1, 21):                         # 45초 스윕 20회
+            ts = sweep * 45_000
+            for i in range(10):                            # 멤버는 실스코어를 계속 받는다
+                sm.on_new_data(f"REAL{i}", 0.40, ts)
+            for i in range(40):                            # 정상 거래 40 종목이 1.000
+                sm.force(f"ACT{i}", 2, "price_activity", 1.000, ts, compete=compete)
+            changes += len(sm.drain_changes())
+        return changes
+
+    old, new = run(True), run(False)
+    assert old >= 20, f"재현 실패: 경쟁 승격의 축출이 관측되지 않았다 ({old})"
+    assert new == 0, f"수정 후에도 축출이 남았다 ({new})"   # 빈자리가 없으니 전이 0
