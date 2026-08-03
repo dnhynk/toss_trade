@@ -24,7 +24,7 @@ TESTS_DIR = Path(__file__).resolve().parent
 if str(TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(TESTS_DIR))
 
-from test_api_support import mock_server  # noqa: E402,F401
+from tests.test_api_support import mock_server  # noqa: E402,F401
 
 
 @pytest.fixture

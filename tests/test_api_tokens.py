@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from test_api_support import mock_server  # noqa: F401
+from tests.test_api_support import mock_server  # noqa: F401
 from tossmon.api.tokens import MOCK_TOKEN, REFRESH_MARGIN_MS, TokenManager
 
 

@@ -31,7 +31,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from test_api_support import LIMITS, make_client, mock_server  # noqa: F401
+from tests.test_api_support import LIMITS, make_client, mock_server  # noqa: F401
 from tossmon.api import endpoints, limiter as limiter_mod
 from tossmon.api.errors import (
     AuthExpired,

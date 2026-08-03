@@ -3,7 +3,11 @@
 conftest.py 는 W1 소유 경로가 아니므로(배치표: `tests/test_api_*.py`) 공용 픽스처를
 이 모듈에 두고 각 테스트 모듈이 이름을 import 해 쓴다:
 
-    from test_api_support import mock_server, client   # noqa: F401
+    from tests.test_api_support import mock_server, client   # noqa: F401
+
+형제 모듈은 **반드시 `tests.` 를 붙여** 가져온다 (감사 4차 C4). bare `from test_api_support
+import ...` 는 `tests/__init__.py` 가 생긴 뒤로는 동작하지 않는다 — 패키지가 되면서 pytest 가
+sys.path 에 넣는 것이 `tests/` 가 아니라 리포 루트로 바뀌었기 때문이다.
 """
 from __future__ import annotations
 

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from test_api_support import client, mock_server  # noqa: F401
+from tests.test_api_support import client, mock_server  # noqa: F401
 from tossmon.api import endpoints
 from tossmon.api.errors import ForbiddenEndpoint
 
