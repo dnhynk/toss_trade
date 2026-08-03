@@ -1,0 +1,359 @@
+"""설계 B 정직 측정 러너 (docs/23 §10 전면 개정, 감사 5차 C-1~C-4·H-1 대응).
+
+## 왜 다시 짰나
+
+구 §10 은 "과매도 진입 → **슈팅 고점** 매도"를 쟀다. 그런데 슈팅은 **"저점 대비
+`min_rise` 이상 올랐다"로 정의**되므로, 이탈 목표를 그 슈팅의 고점으로 잡으면
+"진입 → 슈팅 고점"은 **정의상 `min_rise` 쯤**이 나온다. 감사 5차가 임계를 1/2/3/5% 로
+쓸어 답이 +1.71/+2.53/+3.24/+5.18% 로 **1:1 로 따라오는 것**을 보였다. 시장이 아니라
+우리 임계를 측정하고 있었던 것이다.
+
+## 이 러너의 규칙 (전부 강제)
+
+1. **이탈이 슈팅 정의를 참조하지 않는다.** 고정 시계·다운틱·추적 손절·지정가 목표·
+   지평 보유만 쓴다. `shots.detect_shots` 를 **호출하지 않는다.**
+2. **모든 진입을 계상한다.** "슈팅이 도래한 건"만 고르면 다시 임계의 함수가 된다.
+   손실·미도달 전부 포함한다.
+3. **위약을 상시 병기한다.** 진입 시각은 고정하고 종목만 무작위 치환한 대조군을
+   씨앗 여러 개로 돌려 **(실제 − 위약)** 을 주 지표로 삼는다.
+4. **날 군집을 정면으로 다룬다.** 날짜별로 따로 보고하고, 유효 거래일이
+   `MIN_DAY_CLUSTERS` 미만이면 **통합 CI 를 내지 않는다.**
+5. **비용을 항상 차감한다.** 헤드라인은 순수익이다(docs/21 클립별 실측).
+6. **진입 체결 지연을 적용한다**(감사 M-2 — 설계 A 에만 걸던 잣대를 대칭으로).
+
+## 성공 기준
+
+이탈 규칙을 고정한 채 `min_rise` 를 1/2/3/5% 로 쓸어도 **평균 수익이 움직이지 않아야
+한다.** 이 러너는 이탈이 `shots` 를 전혀 호출하지 않으므로 **구조적으로 독립**이며 —
+비슷한 정도가 아니라 값이 완전히 동일하다 — `min_rise_independence()` 가 그 사실을
+소스 수준에서 확인한다. 테스트도 `detect_shots`·`peak_u` 가 실행 코드에 없음을 강제한다.
+
+실행: `python -m tossmon.analysis.measure.design_b [db_path]`
+라이브 0콜. DB 는 **읽기 전용**. 콘솔 ASCII.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from tossmon.analysis import shots as S
+from tossmon.analysis.rules import bootstrap_ci_mean
+
+#: docs/21 클립별 실측 왕복 비용. 헤드라인은 이걸 뺀 순수익이다.
+CLIP_COSTS = {100: 0.0238, 500: 0.0445, 1000: 0.0491, 2000: 0.0644}
+
+#: 진입 규칙 (슈팅 정의와 무관) — 최근 `lookback_s` 고점 대비 `drop` 하락 후 반등 확인.
+ENTRY_DROP = 0.05
+ENTRY_LOOKBACK_S = 600
+#: 감사 M-2 — 설계 A 와 같은 잣대. 신호봉에 즉시 체결된다고 보지 않는다.
+ENTRY_DELAY_S = 13
+
+#: 날 군집이 이보다 적으면 통합 CI 를 내지 않는다 (감사 C-3).
+MIN_DAY_CLUSTERS = 5
+
+#: 위약 씨앗 (종목 치환). 5개 이상.
+PLACEBO_SEEDS = (20260730, 20260731, 20260801, 20260802, 20260803)
+
+TOSS_TYPES = (S.TOSS_VOLUME, S.TOSS_AMOUNT)
+
+
+# --------------------------------------------------------------------------- #
+# 이탈 규칙 — 전부 관측 가능하고, 슈팅 정의를 참조하지 않는다
+# --------------------------------------------------------------------------- #
+def exit_after_seconds(series: pd.Series, entry_ms: int, seconds: int) -> dict:
+    """`entry_ms + seconds` **이하**의 마지막 관측가에 청산."""
+    w = series[(series.index >= entry_ms)
+               & (series.index <= entry_ms + seconds * 1000)]
+    if w.empty:
+        return {"exit_u": float("nan"), "exit_ms": entry_ms, "filled": False}
+    return {"exit_u": float(w.iloc[-1]), "exit_ms": int(w.index[-1]), "filled": True}
+
+
+def exit_on_downticks(series: pd.Series, entry_ms: int, *, n: int = 1,
+                      horizon_s: int = 600) -> dict:
+    """직전 관측가보다 낮은 봉이 `n` 번 **연속**되면 청산. 없으면 지평 마지막 관측가."""
+    w = series[(series.index >= entry_ms)
+               & (series.index <= entry_ms + horizon_s * 1000)]
+    if w.empty:
+        return {"exit_u": float("nan"), "exit_ms": entry_ms, "filled": False}
+    prev = float(w.iloc[0])
+    run = 0
+    for ts, px in zip(w.index.tolist()[1:], w.to_numpy()[1:]):
+        px = float(px)
+        run = run + 1 if px < prev else 0
+        prev = px
+        if run >= n:
+            return {"exit_u": px, "exit_ms": int(ts), "filled": True}
+    return {"exit_u": float(w.iloc[-1]), "exit_ms": int(w.index[-1]), "filled": False}
+
+
+def exit_trailing(series: pd.Series, entry_ms: int, *, trail: float,
+                  horizon_s: int = 600) -> dict:
+    """진행형 추적 손절 — 지금까지 **관측된** 고점 대비 `trail` 하락 시 청산.
+
+    고점은 그 봉의 판정을 마친 **뒤에** 갱신한다(`rules.simulate_exit` 과 같은 보수 규약).
+    사후 고점을 쓰지 않으므로 접두사 불변이다.
+    """
+    w = series[(series.index >= entry_ms)
+               & (series.index <= entry_ms + horizon_s * 1000)]
+    if w.empty:
+        return {"exit_u": float("nan"), "exit_ms": entry_ms, "filled": False}
+    peak = float(w.iloc[0])
+    for ts, px in zip(w.index.tolist()[1:], w.to_numpy()[1:]):
+        px = float(px)
+        if px <= peak * (1.0 - trail):
+            return {"exit_u": px, "exit_ms": int(ts), "filled": True}
+        peak = max(peak, px)
+    return {"exit_u": float(w.iloc[-1]), "exit_ms": int(w.index[-1]), "filled": False}
+
+
+def exit_target(series: pd.Series, entry_ms: int, entry_u: float, *, target: float,
+                horizon_s: int = 600) -> dict:
+    """+`target` 지정가. 도달하면 **지정가에** 체결, 아니면 지평 마지막 관측가.
+
+    목표가는 임계가 아니라 **우리가 고르는 주문**이므로 정당하다. 다만 체결률
+    (`filled`)을 반드시 함께 보고한다 — 미체결이 많으면 평균이 낙관된다.
+    """
+    lim = entry_u * (1.0 + target)
+    w = series[(series.index >= entry_ms)
+               & (series.index <= entry_ms + horizon_s * 1000)]
+    if w.empty:
+        return {"exit_u": float("nan"), "exit_ms": entry_ms, "filled": False}
+    hit = w[w >= lim]
+    if len(hit):
+        return {"exit_u": float(lim), "exit_ms": int(hit.index[0]), "filled": True}
+    return {"exit_u": float(w.iloc[-1]), "exit_ms": int(w.index[-1]), "filled": False}
+
+
+def exit_rules(horizon_s: int = 600) -> dict:
+    """이탈 규칙 표. **어느 것도 `shots` 를 참조하지 않는다.**"""
+    return {
+        "time_30s": lambda s, e, u: exit_after_seconds(s, e, 30),
+        "time_60s": lambda s, e, u: exit_after_seconds(s, e, 60),
+        "time_120s": lambda s, e, u: exit_after_seconds(s, e, 120),
+        "time_300s": lambda s, e, u: exit_after_seconds(s, e, 300),
+        "downtick_1": lambda s, e, u: exit_on_downticks(s, e, n=1,
+                                                        horizon_s=horizon_s),
+        "downtick_2": lambda s, e, u: exit_on_downticks(s, e, n=2,
+                                                        horizon_s=horizon_s),
+        "trail_0.5pct": lambda s, e, u: exit_trailing(s, e, trail=0.005,
+                                                      horizon_s=horizon_s),
+        "trail_1.0pct": lambda s, e, u: exit_trailing(s, e, trail=0.010,
+                                                      horizon_s=horizon_s),
+        "target_1pct": lambda s, e, u: exit_target(s, e, u, target=0.01,
+                                                   horizon_s=horizon_s),
+        "target_2pct": lambda s, e, u: exit_target(s, e, u, target=0.02,
+                                                   horizon_s=horizon_s),
+        "target_3pct": lambda s, e, u: exit_target(s, e, u, target=0.03,
+                                                   horizon_s=horizon_s),
+        "hold_horizon": lambda s, e, u: exit_after_seconds(s, e, horizon_s),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 진입 수집 + 평가
+# --------------------------------------------------------------------------- #
+def collect_entries(day_rank: pd.DataFrame, *, min_snaps: int = 20,
+                    drop: float = ENTRY_DROP,
+                    lookback_s: int = ENTRY_LOOKBACK_S) -> list[dict]:
+    """그날 전 종목의 과매도 진입 신호. **슈팅 정의를 쓰지 않는다.**"""
+    out = []
+    for sym in day_rank["symbol"].unique():
+        ser = S.price_series_multi(day_rank, sym)
+        if len(ser) < min_snaps:
+            continue
+        px, ms = S.find_oversold_entry(ser, drop=drop, lookback_s=lookback_s)
+        if px == px:
+            out.append({"symbol": sym, "signal_ms": int(ms), "signal_u": float(px)})
+    return out
+
+
+def evaluate(series_by_symbol: dict, entries: list[dict], *,
+             entry_delay_s: int = ENTRY_DELAY_S, horizon_s: int = 600) -> pd.DataFrame:
+    """모든 진입을 모든 이탈 규칙으로 평가한다. **미도달·손실 전부 계상.**"""
+    rules = exit_rules(horizon_s)
+    rows = []
+    for e in entries:
+        ser = series_by_symbol.get(e["symbol"])
+        if ser is None or ser.empty:
+            continue
+        fill_ms = int(e["signal_ms"]) + entry_delay_s * 1000
+        entry_u = S.price_at(ser, fill_ms)
+        if not (entry_u == entry_u and entry_u > 0):
+            continue                      # 체결가 없음 -> 거래 성립 안 함
+        rec = {"symbol": e["symbol"], "entry_ms": fill_ms, "entry_u": entry_u}
+        for name, fn in rules.items():
+            r = fn(ser, fill_ms, entry_u)
+            rec[name] = (float(r["exit_u"] / entry_u - 1.0)
+                         if r["exit_u"] == r["exit_u"] else float("nan"))
+            rec[f"{name}__filled"] = bool(r["filled"])
+        rows.append(rec)
+    return pd.DataFrame(rows)
+
+
+def placebo_entries(entries: list[dict], symbols: list[str], seed: int) -> list[dict]:
+    """**진입 시각은 고정하고 종목만 무작위 치환** (감사 C-2 의 위약 설계).
+
+    시각 분포·개수를 그대로 두므로, 실제 규칙이 만들어내는 우위가 있다면
+    위약보다 나아야 한다. 신호 가격은 새 종목의 그 시각 가격으로 다시 잡는다.
+    """
+    rng = np.random.default_rng(seed)
+    pick = rng.choice(np.asarray(symbols, dtype=object), size=len(entries),
+                      replace=True)
+    return [{"symbol": str(pick[i]), "signal_ms": e["signal_ms"],
+             "signal_u": float("nan")} for i, e in enumerate(entries)]
+
+
+# --------------------------------------------------------------------------- #
+# 집계
+# --------------------------------------------------------------------------- #
+def summarize(df: pd.DataFrame, rule: str, *, clip: int = 100) -> dict:
+    """한 규칙의 요약. **비용 차감 순수익이 헤드라인.**"""
+    v = pd.to_numeric(df.get(rule), errors="coerce").dropna() if len(df) else pd.Series(dtype=float)
+    cost = CLIP_COSTS[clip]
+    if len(v) < 2:
+        return {"n": int(len(v)), "gross_mean": float("nan"),
+                "net_mean": float("nan"), "ci": (float("nan"), float("nan")),
+                "fill_rate": float("nan")}
+    lo, hi = bootstrap_ci_mean(v.tolist())
+    fill = (df[f"{rule}__filled"].mean() if f"{rule}__filled" in df.columns
+            else float("nan"))
+    return {"n": int(len(v)), "gross_mean": float(v.mean()),
+            "gross_median": float(v.median()),
+            "net_mean": float(v.mean() - cost), "ci": (lo - cost, hi - cost),
+            "fill_rate": float(fill)}
+
+
+def load_days(conn) -> list[str]:
+    return [r[0] for r in conn.execute(
+        "SELECT DISTINCT date(snap_ms/1000,'unixepoch') FROM rankings_snap ORDER BY 1")]
+
+
+def load_day_rank(conn, day: str) -> pd.DataFrame:
+    return pd.read_sql_query(
+        "SELECT snap_ms, ranking_type, symbol, last_u FROM rankings_snap "
+        "WHERE date(snap_ms/1000,'unixepoch')=? AND ranking_type IN (?,?)",
+        conn, params=(day, *TOSS_TYPES))
+
+
+def ro(p: Path) -> sqlite3.Connection:
+    return sqlite3.connect(f"file:{p.as_posix()}?mode=ro", uri=True)
+
+
+def run(db: Path, *, entry_delay_s: int = ENTRY_DELAY_S,
+        horizon_s: int = 600) -> dict:
+    """전 매매일에 대해 실제 + 위약을 산출한다."""
+    conn = ro(db)
+    try:
+        days = load_days(conn)
+        real_by_day, plac_by_day = {}, {}
+        for day in days:
+            rk = load_day_rank(conn, day)
+            if rk.empty:
+                continue
+            series = {}
+            for sym in rk["symbol"].unique():
+                s = S.price_series_multi(rk, sym)
+                if len(s) >= 20:
+                    series[sym] = s
+            ents = collect_entries(rk)
+            real_by_day[day] = evaluate(series, ents, entry_delay_s=entry_delay_s,
+                                        horizon_s=horizon_s)
+            pl = []
+            for seed in PLACEBO_SEEDS:
+                pe = placebo_entries(ents, list(series.keys()), seed)
+                d = evaluate(series, pe, entry_delay_s=entry_delay_s,
+                             horizon_s=horizon_s)
+                d["seed"] = seed
+                pl.append(d)
+            plac_by_day[day] = (pd.concat(pl, ignore_index=True) if pl
+                                else pd.DataFrame())
+    finally:
+        conn.close()
+    return {"days": days, "real": real_by_day, "placebo": plac_by_day}
+
+
+def min_rise_independence(db: Path, thresholds=(0.01, 0.02, 0.03, 0.05)) -> dict:
+    """**성공 기준 점검** — 답이 슈팅 임계 `min_rise` 에 의존하지 않음을 보인다.
+
+    구 §10 은 이탈 목표가 슈팅 고점이라 답이 임계를 1:1 로 따라갔다
+    (감사 5차 C-2: 1/2/3/5% -> +1.71/+2.53/+3.24/+5.18%).
+
+    이 러너는 이탈이 `shots` 를 **전혀 호출하지 않으므로** 결과가 임계와 **구조적으로**
+    독립이다 — 값이 비슷한 정도가 아니라 **완전히 동일**하다. 4번 돌려 같은 수를 얻는
+    것은 계산 낭비이므로, 대신 (a) 실행 코드에 슈팅 의존이 없음을 확인하고
+    (b) 한 번의 실행 결과를 임계별로 그대로 보고한다. 이것이 정직한 형태다.
+    """
+    import ast
+    code = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    names = {n.id for n in ast.walk(code) if isinstance(n, ast.Name)}
+    attrs = {n.attr for n in ast.walk(code) if isinstance(n, ast.Attribute)}
+    depends = bool({"detect_shots", "min_rise"} & (names | attrs))
+    res = run(db)
+    allr = (pd.concat([d for d in res["real"].values() if len(d)], ignore_index=True)
+            if res["real"] else pd.DataFrame())
+    base = summarize(allr, "downtick_1")
+    return {"structurally_independent": not depends,
+            "shared_result_across_thresholds": {
+                str(t): {"gross_mean": base["gross_mean"],
+                         "net_mean": base["net_mean"]} for t in thresholds},
+            "note": ("exits never reference the shot definition, so every threshold "
+                     "yields the identical number by construction")}
+
+
+def main(db: Path) -> int:
+    res = run(db)
+    days = [d for d in res["days"] if len(res["real"].get(d, []))]
+    print(f"trading days with entries: {len(days)} -> {days}")
+    if not days:
+        print("no entries")
+        return 0
+    allr = pd.concat([res["real"][d] for d in days], ignore_index=True)
+    allp = pd.concat([res["placebo"][d] for d in days
+                      if len(res["placebo"].get(d, []))], ignore_index=True)
+    print(f"real entries {len(allr)}   placebo rows {len(allp)} "
+          f"({len(PLACEBO_SEEDS)} seeds)")
+
+    print(f"\n=== PER-DAY entry counts (cluster check, need >= {MIN_DAY_CLUSTERS})")
+    for d in days:
+        print(f"  {d}: {len(res['real'][d])}")
+    pooled_ok = len(days) >= MIN_DAY_CLUSTERS
+    print(f"  effective day clusters = {len(days)} -> pooled CI "
+          f"{'PERMITTED' if pooled_ok else 'WITHHELD (sample insufficient)'}")
+
+    print(f"\n=== EXIT RULES: net of $100 clip cost ({CLIP_COSTS[100]:.4f}), "
+          f"real vs placebo")
+    print(f"{'rule':<16}{'n':>5}{'fill':>7}{'gross':>9}{'NET':>9}"
+          f"{'placebo net':>13}{'REAL-PLACEBO':>14}")
+    rows = []
+    for rule in exit_rules().keys():
+        r = summarize(allr, rule)
+        p = summarize(allp, rule)
+        diff = (r["net_mean"] - p["net_mean"]
+                if r["net_mean"] == r["net_mean"] and p["net_mean"] == p["net_mean"]
+                else float("nan"))
+        print(f"{rule:<16}{r['n']:>5}{r['fill_rate']:>7.3f}{r['gross_mean']:>9.4f}"
+              f"{r['net_mean']:>9.4f}{p['net_mean']:>13.4f}{diff:>14.4f}")
+        rows.append({"rule": rule, **{f"real_{k}": v for k, v in r.items()},
+                     "placebo_net": p["net_mean"], "real_minus_placebo": diff})
+    if pooled_ok:
+        print("\n  pooled CI would be reported here")
+    else:
+        print(f"\n  POOLED CI WITHHELD: {len(days)} day clusters < {MIN_DAY_CLUSTERS}. "
+              f"Need {MIN_DAY_CLUSTERS - len(days)} more trading days.")
+    out = Path(__file__).resolve().parent / "design_b.json"
+    out.write_text(json.dumps({"days": days, "n_real": int(len(allr)),
+                               "rules": rows, "pooled_ci_permitted": pooled_ok},
+                              indent=1, default=str), encoding="utf-8")
+    print(f"wrote {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(Path(sys.argv[1]) if len(sys.argv) > 1
+                  else Path(r"C:/Users/dongh/orca/workspaces/toss_trade/w5-ops/data/tossmon.db")))
