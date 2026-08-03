@@ -356,20 +356,30 @@ class TierStateMachine:
         return None
 
     def force(self, symbol: str, tier: int, reason: str, score: float,
-              ts_ms: int) -> int | None:
+              ts_ms: int, *, compete: bool = True) -> int | None:
         """스코어와 무관한 승격 (A2 §3 `first_print`). 강등에는 쓰지 않는다.
 
         dwell 은 **우회하지 않는다** (감사 H-7/J-1): 랭킹 스냅샷은 12초마다 오므로
         여기가 dwell 을 건너뛰면 "강등 1ms 뒤 재승격" 왕복이 영구히 돈다.
         방금 강등된 심볼은 `hysteresis_s` 가 지나야 다시 올라올 수 있다.
+
+        `compete=False` (활동 신호 유래 승격 — 2026-08-03 라이브 진단):
+        **빈자리에만 들어가고 기존 멤버를 밀어내지 않으며, 스코어 채널도 오염시키지
+        않는다.** `activity_score` 는 정상 거래 중인 종목이면 거의 전부 1.000 이 나오는
+        비변별 신호라(정규장 실측: 1,167 종목이 14,497회 승격, 종목당 평균 12.4회),
+        경쟁시키면 (a) 매 스윕마다 최약체를 축출해 1→2/2→1 왕복이 1:1 로 돌고
+        (b) st.score 가 1.000 으로 굳어 **실제 검출 스코어(0.3~0.6) 를 가진 진짜 표적이
+        영구히 최약체가 되어 축출된다.** 랭킹 진입(H-7)에서 이미 같은 결함을 고쳤다.
         """
         st = self.states.setdefault(symbol, _SymbolState())
-        st.score = max(st.score, float(score))
+        if compete:
+            st.score = max(st.score, float(score))
         st.last_ts_ms = int(ts_ms)
         if tier <= st.tier:
             return None
         st.below_since_ms = None
-        return self._change(symbol, st, int(tier), reason, ts_ms)
+        return self._change(symbol, st, int(tier), reason, ts_ms,
+                            may_evict=compete, record_score=float(score))
 
     # ---- 유지보수 -------------------------------------------------------
 
@@ -437,32 +447,46 @@ class TierStateMachine:
         return self._change(symbol, st, max(target, st.tier - 1), "score_decay", ts_ms)
 
     def _change(self, symbol: str, st: _SymbolState, new_tier: int, reason: str,
-                ts_ms: int, *, ignore_dwell: bool = False) -> int | None:
+                ts_ms: int, *, ignore_dwell: bool = False, may_evict: bool = True,
+                record_score: float | None = None) -> int | None:
         if new_tier == st.tier:
             return None
         if not ignore_dwell and st.changed_ms is not None and \
                 ts_ms - st.changed_ms < self.hysteresis_s * 1000:
             return None                                   # dwell — 아직 못 움직인다
-        if new_tier > st.tier and not self._make_room(symbol, new_tier, st.score, ts_ms):
+        if new_tier > st.tier and not self._make_room(symbol, new_tier, st.score, ts_ms,
+                                                      may_evict=may_evict):
             return None
+        # 기록용 스코어: 비경쟁 승격은 st.score 를 올리지 않으므로(스코어 채널 보호)
+        # promotions 테이블에는 실제 트리거 강도를 남긴다 — 관측을 잃지 않는다.
         change = TierChange(symbol=symbol, from_tier=st.tier, to_tier=new_tier,
-                            reason=reason, score=st.score, ts_ms=int(ts_ms))
+                            reason=reason,
+                            score=st.score if record_score is None else record_score,
+                            ts_ms=int(ts_ms))
         st.tier = new_tier
         st.changed_ms = int(ts_ms)
         st.reason = reason
         self.pending.append(change)
         return new_tier
 
-    def _make_room(self, symbol: str, tier: int, score: float, ts_ms: int) -> bool:
+    def _make_room(self, symbol: str, tier: int, score: float, ts_ms: int, *,
+                   may_evict: bool = True) -> bool:
         cap = self.capacity.get(tier)
         if cap is None:
             return True
         members = [s for s in self.members(tier) if s != symbol]
         if len(members) < cap:
             return True
+        if not may_evict:
+            return False            # 활동 신호 유래 승격은 빈자리에만 들어간다 (축출 금지)
         weakest = min(members, key=lambda s: self.states[s].score)
         if self.states[weakest].score + EVICTION_MARGIN >= score:
             return False                                  # 밀어낼 만큼 강하지 않다
+        # 방금 티어가 바뀐 심볼은 밀어내지 않는다 — 축출↔재승격 왕복(핑퐁)의 씨앗이다.
+        victim = self.states[weakest]
+        if victim.changed_ms is not None and \
+                ts_ms - victim.changed_ms < self.hysteresis_s * 1000:
+            return False
         st = self.states[weakest]
         self.pending.append(TierChange(symbol=weakest, from_tier=st.tier,
                                        to_tier=st.tier - 1, reason="evicted",

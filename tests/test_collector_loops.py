@@ -1406,3 +1406,128 @@ def test_tier2_orderbook_disabled_by_default_and_never_ends_the_task(tmp_path):
             assert ctx.counters.get("tier2_orderbook_snaps", 0) == 0
         finally:
             ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 테이프 결손 (2026-08-03 실측: 결손 190건 전부 n=50 — /trades 50건 상한)
+# --------------------------------------------------------------------------- #
+def test_trades_intervals_never_exceed_the_existing_budget():
+    """불변식: 어떤 입력에도 총 호출률이 기존(len/base)을 넘지 않는다 (예산 중립)."""
+    base = 4.0
+    for n_members in (1, 2, 4, 8, 20, 50):
+        members = [f"S{i}" for i in range(n_members)]
+        for n_sat in range(0, n_members + 1):
+            sat = set(members[:n_sat])
+            iv = loops.tier3_trades_intervals(members, sat, base)
+            assert set(iv) == set(members)
+            total = sum(1.0 / v for v in iv.values())
+            budget = n_members / base
+            assert total <= budget + 1e-9, (n_members, n_sat, total, budget)
+            assert all(v > 0 for v in iv.values())
+
+
+def test_trades_intervals_speed_up_saturated_and_slow_down_calm():
+    """포화 종목은 절반 주기, 그 대가는 한산한 종목에서 되돌려 받는다."""
+    members = [f"S{i}" for i in range(20)]
+    iv = loops.tier3_trades_intervals(members, {"S0", "S1", "S2"}, 4.0)
+    assert iv["S0"] == iv["S1"] == iv["S2"] == 2.0          # 빠른 레인 = base/2
+    calm = [iv[s] for s in members if s not in {"S0", "S1", "S2"}]
+    assert all(c > 4.0 for c in calm)                       # 한산은 늦춰서 되돌려준다
+    assert sum(1.0 / v for v in iv.values()) == pytest.approx(20 / 4.0)   # 총량 동일
+
+
+def test_trades_intervals_unchanged_when_nothing_saturates():
+    members = [f"S{i}" for i in range(6)]
+    iv = loops.tier3_trades_intervals(members, set(), 4.0)
+    assert set(iv.values()) == {4.0}                        # 평시엔 아무것도 안 바꾼다
+
+
+def test_trades_intervals_fast_lane_is_capped():
+    """포화가 많아도 빠른 레인은 상한이 있다 (예산·한산주기 상한을 함께 지킨다)."""
+    members = [f"S{i}" for i in range(20)]
+    iv = loops.tier3_trades_intervals(members, set(members), 4.0)
+    assert sum(1 for v in iv.values() if v == 2.0) <= loops.TAPE_FAST_LANE_MAX
+    assert sum(1.0 / v for v in iv.values()) <= 20 / 4.0 + 1e-9
+
+
+class TapeClient(StubClient):
+    """지정한 체결 목록을 돌려주는 스텁 (n=50 상한 재현용)."""
+
+    def __init__(self, batches):
+        super().__init__({})
+        self.batches = list(batches)
+        self.calls = 0
+
+    async def get_trades(self, symbol, count=50):
+        self.calls += 1
+        out = self.batches.pop(0) if self.batches else []
+        return out
+
+
+def _trade(ts_ms, symbol="HOT"):
+    return Trade(symbol=symbol, ts_ms=ts_ms, price_u=1_000_000, qty_u=1_000_000)
+
+
+def test_saturated_gap_marks_the_symbol_for_the_fast_lane(tmp_path):
+    """50건 상한 + 구간 결손이면 포화로 표시한다 — 적응형 주기의 입력."""
+    base = DAY0
+    full = [_trade(base + i * 10) for i in range(loops.TRADES_COUNT)]      # n=50
+    later = [_trade(base + 100_000 + i * 10) for i in range(loops.TRADES_COUNT)]
+    client = TapeClient([full, later])
+    ctx, _ = build_ctx(tmp_path, client)
+    try:
+        asyncio.run(loops._poll_trades(ctx, "HOT"))        # 기준선
+        assert ctx.tape_saturated_ms == {}
+        asyncio.run(loops._poll_trades(ctx, "HOT"))        # 구간 결손 + n=50
+        assert ctx.counters["tape_gaps"] == 1
+        assert "HOT" in ctx.tape_saturated_ms              # 빠른 레인 대상
+        assert ctx.telemetry()["tape_saturated"] == 1
+    finally:
+        ctx.store.close()
+
+
+def test_unsaturated_gap_is_not_treated_as_a_polling_shortfall(tmp_path):
+    """n<50 인 결손은 폴링이 느려서가 아니다 — 빠른 레인으로 옮기지 않는다."""
+    base = DAY0
+    client = TapeClient([[_trade(base)], [_trade(base + 100_000)]])
+    ctx, _ = build_ctx(tmp_path, client)
+    try:
+        asyncio.run(loops._poll_trades(ctx, "SLOW"))
+        asyncio.run(loops._poll_trades(ctx, "SLOW"))
+        assert ctx.counters["tape_gaps"] == 1              # 결손은 기록하되
+        assert ctx.tape_saturated_ms == {}                 # 주기는 건드리지 않는다
+    finally:
+        ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 로그 소음 — 티어 전이는 개별 줄이 아니라 구간 요약으로 본다
+# --------------------------------------------------------------------------- #
+def test_tier_transitions_do_not_flood_the_info_log(tmp_path):
+    """실측: 최근 1,000줄 중 978줄이 티어 줄이라 워치독 탐지가 무력화됐다."""
+    ctx, _ = build_ctx(tmp_path, StubClient({}))
+    try:
+        before = ctx.notifier.counters["info"]
+        for i in range(50):
+            ctx.tiers.force(f"S{i}", 2, "price_activity", 1.0, 0, compete=False)
+        ctx.flush_changes()
+        assert ctx.counters["promotions"] == 50            # 전이는 실제로 일어났고
+        assert ctx.notifier.counters["info"] == before     # INFO 줄은 하나도 안 늘었다
+    finally:
+        ctx.store.close()
+
+
+def test_telemetry_reports_tier_transition_deltas(tmp_path):
+    """사람이 읽는 채널은 구간 요약이다 — 승격/강등 델타가 텔레메트리에 실린다."""
+    ctx, _ = build_ctx(tmp_path, StubClient({}))
+    try:
+        for i in range(3):
+            ctx.tiers.force(f"S{i}", 2, "price_activity", 1.0, 0, compete=False)
+        ctx.flush_changes()
+        data = ctx.report_telemetry(force=True)
+        assert data["promotions_delta"] == 3
+        ctx.clock.advance(loops.TELEMETRY_EVERY_S + 1)
+        data2 = ctx.report_telemetry()
+        assert data2["promotions_delta"] == 0              # 구간 델타지 누적이 아니다
+    finally:
+        ctx.store.close()

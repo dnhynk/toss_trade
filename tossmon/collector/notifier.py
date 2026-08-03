@@ -91,9 +91,16 @@ class Notifier:
 
     def promotion(self, symbol: str, from_tier: int, to_tier: int, reason: str,
                   score: float) -> None:
+        """티어 전이 1건 — **DEBUG** 다.
+
+        개별 줄이 초당 수십 개면 로그가 아니라 소음이다 (2026-08-03 실측: 최근 1,000줄
+        중 978줄이 티어 줄이라 워치독의 텔레메트리 탐지가 무력화됐다). 사람이 읽는 채널은
+        주기 텔레메트리의 요약(`promotions_delta`/`demotions_delta`)이고, 개별 전이의
+        영구 기록은 `promotions` 테이블이다 — 여기서 INFO 로 흘릴 이유가 없다.
+        """
         arrow = "↑" if to_tier > from_tier else "↓"
-        self.info(f"tier {arrow} {symbol}: {from_tier}→{to_tier} "
-                  f"reason={reason} score={score:.3f}")
+        self.debug(f"tier {arrow} {symbol}: {from_tier}→{to_tier} "
+                   f"reason={reason} score={score:.3f}")
 
     def event(self, symbol: str, t0_ms: int, kind: str, extra: str = "") -> None:
         self.alert(f"EVENT {symbol} kind={kind} t0_ms={t0_ms} {extra}".rstrip())
