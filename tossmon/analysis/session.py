@@ -56,6 +56,33 @@ CYCLE_START_MIN = DAY_START
 SESSIONS = ("day", "pre", "regular", "after", "closed")
 
 
+#: **홀드아웃 봉인 구간** (docs/12 §6.1). §6.2-4: "홀드아웃 기간 데이터는 기술통계·
+#: 튜닝·탐색 **어디에도 등장하면 안 된다.**" 랭킹 스냅은 07-31 부터라 문제가 없지만
+#: `candles_1m` 은 **백필이라 07-27~07-29 를 담고 있다** — 그대로 쓰면 봉인을 깬다.
+#: 그래서 필터를 라이브러리에 두고 러너가 반드시 지나가게 한다.
+HOLDOUT_START = "2026-05-01"
+HOLDOUT_END = "2026-07-29"
+
+
+def is_holdout(ts_ms: int) -> bool:
+    """그 시각이 봉인 구간에 속하나 (**세션 사이클 날짜** 기준)."""
+    return HOLDOUT_START <= session_date(ts_ms) <= HOLDOUT_END
+
+
+def drop_holdout(df: pd.DataFrame, ts_col: str = "ts_ms") -> dict:
+    """봉인 구간 행을 **버리고 몇 개 버렸는지 돌려준다.**
+
+    조용히 거르지 않는다 — 버린 수를 산출물에 실어야 다음 사람이 봉인이 지켜졌는지
+    확인할 수 있다.
+    """
+    if df is None or len(df) == 0:
+        return {"kept": df, "n_dropped": 0, "n_kept": 0}
+    mask = pd.to_numeric(df[ts_col], errors="coerce").map(
+        lambda m: is_holdout(int(m)) if m == m else False)
+    return {"kept": df[~mask].copy(), "n_dropped": int(mask.sum()),
+            "n_kept": int((~mask).sum())}
+
+
 def kst_minute_of_day(ts_ms: int) -> int:
     """epoch ms -> KST 자정 기준 분."""
     return int(((int(ts_ms) + KST_OFFSET_MS) // MIN_MS) % DAY_MIN)
