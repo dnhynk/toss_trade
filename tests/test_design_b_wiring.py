@@ -7,12 +7,39 @@
 다시 열렸다. 테스트가 34->47 로 늘어난 것이 오히려 착시를 만들었다 —
 **함수는 검증됐지만 산출물은 아무도 만들지 않았다.**
 
-그래서 여기서 지키는 것은 함수의 정확성이 아니라 **연결성**이다:
+## 이 가드는 한 번 더 뚫렸다 — 그래서 **거부 기본값**으로 뒤집었다
 
-1. 분석 함수가 `main()` 에서 **도달 가능**한가 (호출 그래프로 확인)
-2. 러너 출력에 **문서가 싣는 필드가 전부** 있는가 (`REPORTED_FIELDS` 대조)
+1차 가드는 `MUST_BE_REACHABLE` 라는 **허용 목록**이었다. 목록에 적힌 함수만 도달성을
+검사하니, 감사자가 배선 없는 더미 함수(`sharpe_by_rule`)를 심었을 때 16건이 전부
+통과했다. **막으려던 바로 그 상황을 통과시킨 것이다.**
 
-다음에 표를 늘리고 배선을 잊으면 **여기가 깨진다.**
+원인은 하나다: **"목록에 적는 것"과 "배선하는 것"은 같은 순간에 잊는다.**
+허용 목록은 잊은 것에 대해 **질문조차 하지 않는다** — 통과가 아무것도 보증하지 않는다.
+
+그래서 지금은 반대로 한다:
+
+1. 목록을 **열거하지 않고 발견한다**. 모듈의 **공개 함수 전부**를 AST 로 모아
+   **각각 `main()` 에서 도달 가능해야 한다**고 요구한다.
+2. 예외는 **명시적 옵트아웃 + 사유**(`NOT_WIRED`)로만 허용한다. 새 공개 함수가
+   도달 불가능하면 다음 사람은 **배선하거나 사유를 적거나** 둘 중 하나를 반드시 한다.
+3. `REPORTED_FIELDS` 도 **부분집합이 아니라 동일 집합**으로 대조한다. 러너 JSON 에
+   키를 추가하고 매니페스트를 잊으면 깨진다.
+4. **가드 자신을 시험한다.** 감사자가 심었던 것과 같은 더미를 소스 문자열에 넣어
+   **가드가 실제로 실패하는지** 확인한다.
+   **실패할 수 있음을 증명하지 못한 가드는 가드가 아니다.**
+
+이 프로젝트에서 같은 모양이 세 번 나왔다 — 룩어헤드 테스트가 죽은 설계만 지킨 것
+(감사5 H-2), `paired_difference` 가 테스트에서만 불린 것(H-1 재발), 그리고 이 가드가
+목록에 적힌 것만 검사한 것. 전부 **성공을 반환하는 조용한 실패**다.
+
+## 이 가드가 **덮지 않는** 범위 (다음 사람이 통과를 과신하지 않도록)
+
+- **최상위 공개 함수만** 본다. 중첩 함수·클래스 메서드는 검사하지 않는다.
+- **모듈 상수**는 도달성 검사 대상이 아니다. 상수는 함수 밖(모듈 최상위)에서도
+  조합되므로 같은 방식으로 재면 오탐이 난다(`COST_SCENARIOS` 는 `COMMISSION_ROUND_TRIP`
+  으로 모듈 최상위에서 만들어진다). 대신 `COST_SCENARIOS` 는 전용 테스트로 확인한다.
+- 도달 가능 = **출력이 옳다**가 아니다. 여기서 재는 것은 **연결성**뿐이고, 수치의
+  정확성은 `tests/test_design_b.py` 가 맡는다.
 """
 from __future__ import annotations
 
@@ -27,18 +54,34 @@ import pytest
 from tossmon.analysis import shots as S
 from tossmon.analysis.measure import design_b as D
 
-#: `main()` 에서 반드시 도달 가능해야 하는 분석 함수들.
-#: 새 분석 함수를 문서에 쓰기 시작하면 여기에 추가하라 — 그러면 배선을 잊을 수 없다.
-MUST_BE_REACHABLE = (
-    "run", "build_report", "evaluate", "collect_entries", "placebo_entries",
-    "difference_ci", "paired_difference", "days_needed_for_difference",
-    "summarize", "exit_rules",
-)
+#: **옵트아웃 목록** — 도달 불가능해도 되는 공개 함수와 그 **사유**.
+#: 허용 목록이 아니다. 여기 없는 공개 함수는 전부 `main()` 에서 도달 가능해야 한다.
+#: 새 함수를 여기 넣으려면 사유를 적어야 하고, 사유를 적는 순간 "이건 산출물을 안
+#: 만든다"고 선언한 것이 된다 — 잊어서 빠지는 일과 구분된다.
+NOT_WIRED = {
+    "main": "entry point itself - reachability is measured from here",
+}
+
+ENTRY = "main"
 
 
-def _call_graph() -> dict[str, set[str]]:
+def _module_source() -> str:
+    return pathlib.Path(D.__file__).read_text(encoding="utf-8")
+
+
+def _public_functions(src: str) -> set[str]:
+    """모듈 **최상위**의 공개 함수 전부 (`_` 로 시작하는 것은 내부 헬퍼로 본다).
+
+    열거하지 않고 **발견한다** — 이것이 거부 기본값의 핵심이다.
+    """
+    tree = ast.parse(src)
+    return {n.name for n in tree.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and not n.name.startswith("_")}
+
+
+def _call_graph(src: str) -> dict[str, set[str]]:
     """모듈 안에서 각 함수가 부르는 이름들 (모듈 자기 함수만)."""
-    src = pathlib.Path(D.__file__).read_text(encoding="utf-8")
     tree = ast.parse(src)
     defined = {n.name for n in ast.walk(tree)
                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
@@ -54,7 +97,8 @@ def _call_graph() -> dict[str, set[str]]:
                         else fn.attr if isinstance(fn, ast.Attribute) else None)
                 if name in defined:
                     called.add(name)
-            # 모듈 상수 참조도 "사용"으로 센다 (COST_SCENARIOS 등)
+            # 호출하지 않고 **이름만 넘기는** 경우도 사용으로 센다
+            # (`exit_rules()` 가 이탈 함수를 콜백으로 담는 형태).
             elif isinstance(sub, ast.Name):
                 if sub.id in defined:
                     called.add(sub.id)
@@ -62,8 +106,8 @@ def _call_graph() -> dict[str, set[str]]:
     return graph
 
 
-def _reachable_from(entry: str) -> set[str]:
-    graph = _call_graph()
+def _reachable_from(src: str, entry: str = ENTRY) -> set[str]:
+    graph = _call_graph(src)
     seen, stack = set(), [entry]
     while stack:
         cur = stack.pop()
@@ -74,15 +118,92 @@ def _reachable_from(entry: str) -> set[str]:
     return seen
 
 
-@pytest.mark.parametrize("fname", MUST_BE_REACHABLE)
-def test_analysis_function_is_reachable_from_main(fname):
-    """`main()` 에서 도달 불가능한 분석 함수는 **산출물을 만들지 않는다.**
+def unwired_public_functions(src: str, *, entry: str = ENTRY,
+                             opt_out=NOT_WIRED) -> set[str]:
+    """`entry` 에서 도달 불가능하고 옵트아웃도 없는 공개 함수들.
 
-    이것이 정확히 H-1 의 재발 형태였다: `paired_difference`·`COST_SCENARIOS`·
-    `days_needed_for_difference` 가 **테스트에서만** 불렸다.
+    **이 집합이 비어 있지 않으면 누군가 배선을 잊은 것이다.**
     """
-    assert fname in _reachable_from("main"), (
-        f"{fname} is not reachable from main() - it will never produce output")
+    return _public_functions(src) - _reachable_from(src, entry) - set(opt_out)
+
+
+# --------------------------------------------------------------------------- #
+# 1. 배선 — 거부 기본값
+# --------------------------------------------------------------------------- #
+def test_every_public_function_is_reachable_from_main():
+    """공개 함수는 **전부** `main()` 에서 도달 가능해야 한다.
+
+    도달 불가능한 분석 함수는 **산출물을 만들지 않는다** — 그것이 H-1 의 형태였다.
+    허용 목록이던 시절 이 검사는 목록 밖 함수를 그냥 통과시켰다.
+    """
+    unwired = unwired_public_functions(_module_source())
+    assert not unwired, (
+        f"public functions unreachable from main(): {sorted(unwired)} - they will "
+        f"never produce output. Wire them into main(), or add them to NOT_WIRED "
+        f"with a reason.")
+
+
+def test_optout_entries_have_a_reason():
+    for name, reason in NOT_WIRED.items():
+        assert reason and reason.strip(), f"{name} opts out with no reason"
+
+
+def test_optout_entries_still_exist_in_the_module():
+    """사라진 함수의 옵트아웃이 남아 있으면 목록이 조용히 썩는다."""
+    pub = _public_functions(_module_source())
+    stale = set(NOT_WIRED) - pub
+    assert not stale, f"NOT_WIRED names no longer defined in design_b: {sorted(stale)}"
+
+
+# --------------------------------------------------------------------------- #
+# 2. 가드 자신을 시험한다 — 실패할 수 있음을 증명한다
+# --------------------------------------------------------------------------- #
+#: 감사자가 실제로 심었던 더미. 배선 없는 새 분석 함수의 최소 재현이다.
+PLANTED_DUMMY = '''
+
+def sharpe_by_rule(df, rule):
+    """새 분석 - 문서에 실었지만 배선을 잊었다."""
+    v = df[rule]
+    return float(v.mean() / (v.std() or 1.0))
+'''
+
+
+def test_guard_catches_a_planted_unwired_function():
+    """**이것이 이 파일에서 가장 중요한 테스트다.**
+
+    감사자가 심은 것과 같은 더미를 소스에 붙여 가드가 **실패하는지** 본다.
+    통과만 하고 절대 실패하지 않는 가드는 가드가 아니라 장식이다.
+    (소스는 문자열로만 다루므로 실제 파일은 건드리지 않는다.)
+    """
+    unwired = unwired_public_functions(_module_source() + PLANTED_DUMMY)
+    assert "sharpe_by_rule" in unwired, (
+        "the guard passed a function that is not wired into main() - this is exactly "
+        "the failure it exists to catch")
+
+
+def test_guard_stays_silent_when_the_dummy_is_wired():
+    """반대 방향도 확인한다 — 배선하면 통과해야 한다. 그래야 신호가 의미를 가진다."""
+    src = _module_source() + PLANTED_DUMMY
+    src = src.replace("    res = run(db)\n    rep = build_report(res)",
+                      "    res = run(db)\n    sharpe_by_rule(None, None)\n"
+                      "    rep = build_report(res)", 1)
+    assert "sharpe_by_rule" not in unwired_public_functions(src)
+
+
+def test_guard_would_catch_the_original_h1_regression():
+    """원래의 H-1 재발 형태 — `main()` 이 `build_report` 를 안 부르는 상태."""
+    src = _module_source().replace("rep = build_report(res)", "rep = {}", 1)
+    unwired = unwired_public_functions(src)
+    assert "build_report" in unwired and "paired_difference" in unwired
+
+
+# --------------------------------------------------------------------------- #
+# 3. 보고 필드 — 부분집합이 아니라 동일 집합
+# --------------------------------------------------------------------------- #
+def _field_mismatch(row_keys, manifest) -> tuple[list[str], list[str]]:
+    """(매니페스트에만 있는 것, 출력에만 있는 것)."""
+    row_keys, manifest = set(row_keys), set(manifest)
+    return sorted(manifest - row_keys), sorted(row_keys - manifest)
 
 
 def test_cost_scenarios_constant_is_used_by_main():
@@ -113,54 +234,74 @@ def _tiny_db(tmp_path: pathlib.Path) -> pathlib.Path:
     return db
 
 
-def test_runner_output_contains_every_reported_field(tmp_path):
-    """러너 JSON 이 `REPORTED_FIELDS` 를 **전부** 담아야 한다.
-
-    문서에 새 열을 추가하면 `REPORTED_FIELDS` 에 먼저 넣게 되고, 그러면 이 테스트가
-    배선을 강제한다.
-    """
-    db = _tiny_db(tmp_path)
-    out = tmp_path / "out"
+@pytest.fixture(scope="module")
+def report(tmp_path_factory):
+    """러너를 한 번만 돌려 여러 검사에서 공유한다."""
+    tmp = tmp_path_factory.mktemp("wiring")
+    db = _tiny_db(tmp)
+    out = tmp / "out"
     assert D.main(db, out_dir=out) == 0
-    rep = json.loads((out / "design_b.json").read_text(encoding="utf-8"))
+    return json.loads((out / "design_b.json").read_text(encoding="utf-8")), out
+
+
+def test_runner_output_keys_match_the_manifest_exactly(report):
+    """러너 JSON 의 규칙 레코드 키 집합 == `REPORTED_FIELDS`.
+
+    부분집합이 아니라 **동일**이다. 필드를 추가하고 매니페스트를 잊으면 여기서 깨진다
+    — 그것이 허용 목록에서 거부 기본값으로 뒤집는 지점이다.
+    """
+    rep, _ = report
     assert rep["rules"], "runner produced no rules"
-    row = rep["rules"][0]
-    missing = [f for f in D.REPORTED_FIELDS if f not in row]
+    missing, extra = _field_mismatch(rep["rules"][0], D.REPORTED_FIELDS)
     assert not missing, f"runner output is missing reported fields: {missing}"
+    assert not extra, (
+        f"runner emits fields absent from REPORTED_FIELDS: {extra} - add them to the "
+        f"manifest so the docs and the runner cannot drift apart")
 
 
-def test_runner_output_carries_the_cost_scenarios(tmp_path):
-    db = _tiny_db(tmp_path)
-    out = tmp_path / "out"
-    D.main(db, out_dir=out)
-    rep = json.loads((out / "design_b.json").read_text(encoding="utf-8"))
+def test_field_guard_catches_an_unlisted_key():
+    """필드 가드도 실패할 수 있음을 증명한다 (배선 가드와 같은 이유)."""
+    missing, extra = _field_mismatch(set(D.REPORTED_FIELDS) | {"sharpe"},
+                                     D.REPORTED_FIELDS)
+    assert extra == ["sharpe"] and not missing
+
+
+def test_every_rule_record_has_the_same_shape(report):
+    """첫 행만 보면 나머지 행이 몰래 달라질 수 있다."""
+    rep, _ = report
+    for row in rep["rules"]:
+        assert set(row) == set(D.REPORTED_FIELDS), f"shape drift in rule {row.get('rule')}"
+
+
+def test_runner_output_carries_the_cost_scenarios(report):
+    rep, _ = report
     assert set(rep["cost_scenarios"]) == set(D.COST_SCENARIOS)
     assert set(rep["rules"][0]["net_by_scenario"]) == set(D.COST_SCENARIOS)
 
 
-def test_runner_output_carries_days_needed_shape(tmp_path):
-    db = _tiny_db(tmp_path)
-    out = tmp_path / "out"
-    D.main(db, out_dir=out)
-    rep = json.loads((out / "design_b.json").read_text(encoding="utf-8"))
-    dn = rep["rules"][0]["days_needed"]
-    assert "reachable" in dn                      # 도달 불가도 명시적으로 담긴다
+def test_runner_output_carries_days_needed_shape(report):
+    rep, _ = report
+    assert "reachable" in rep["rules"][0]["days_needed"]   # 도달 불가도 명시적으로 담긴다
 
 
-def test_runner_writes_outside_the_source_tree(tmp_path):
+def test_runner_output_carries_the_c2_success_criterion(report):
+    """C-2 성공 기준도 러너가 만든다 — 문서에만 있는 수치를 남기지 않는다."""
+    rep, _ = report
+    ind = rep["min_rise_independence"]
+    assert ind["structurally_independent"] is True
+    assert ind["shared_result_across_thresholds"]
+
+
+def test_runner_writes_outside_the_source_tree(report):
     """산출물이 소스 옆에 떨어지면 커밋에 섞여 다음 사람의 리베이스를 막는다.
 
     실제로 막았다 — `design_b.json` 이 추적되고 있어 체크아웃이 거부됐다.
     """
+    _, out = report
     src_dir = pathlib.Path(D.__file__).resolve().parent
     assert D.OUT_DIR.resolve() != src_dir
     assert "measure" not in D.OUT_DIR.resolve().parts
-
-    db = _tiny_db(tmp_path)
-    out = tmp_path / "out"
-    D.main(db, out_dir=out)
     assert (out / "design_b.json").exists()
-    assert not (src_dir / "design_b.json").exists() or True   # 기존 잔재는 허용
 
 
 def test_reported_fields_manifest_is_not_empty_and_names_are_unique():
