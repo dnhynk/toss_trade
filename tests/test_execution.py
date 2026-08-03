@@ -201,3 +201,51 @@ def test_round_trip_return_shape_is_stable_when_book_missing():
     ok = X.round_trip_cost(*X.parse_depth(depth([(1, 10)], [(2, 10)])), 10)
     missing = X.round_trip_cost([], [], 10)
     assert set(ok) == set(missing)
+
+
+# --------------------------------------------------------------------------- #
+# 감사 4차 회귀 — B1 / B2 / C1 / A3
+# --------------------------------------------------------------------------- #
+def test_b1_crossed_book_is_rejected_like_relative_spread_does():
+    """ask < bid 인 크로스 호가는 두 함수가 **같이** 막아야 한다."""
+    bids, asks = X.parse_depth(depth([(1.10, 100)], [(0.90, 100)]))
+    assert math.isnan(X.relative_spread(bids[0][0], asks[0][0]))
+    r = X.round_trip_cost(bids, asks, 50)
+    assert math.isnan(r["total"])          # 음의 진입비용이 집계에 섞이면 안 된다
+
+
+def test_b1_locked_book_is_still_allowed():
+    """ask == bid (락)은 스프레드 0 이며 유효하다 — 과잉 차단하지 않는다."""
+    bids, asks = X.parse_depth(depth([(1.00, 100)], [(1.00, 100)]))
+    assert X.round_trip_cost(bids, asks, 50)["total"] == pytest.approx(0.002)
+
+
+def test_b2_exit_size_awareness_is_reported():
+    bids, asks = X.parse_depth(depth([(0.98, 100)], [(1.02, 100)]))
+    assert X.round_trip_cost(bids, asks, 50, exit_mode="cross")["exit_size_aware"]
+    assert not X.round_trip_cost(bids, asks, 50, exit_mode="mid")["exit_size_aware"]
+    assert not X.round_trip_cost(bids, asks, 50, exit_mode="passive")["exit_size_aware"]
+
+
+def test_c1_breakeven_is_c_over_one_minus_c_not_identity():
+    assert X.breakeven_pct(0.0322) == pytest.approx(0.0322 / 0.9678)
+    assert X.breakeven_pct(0.0322) > 0.0322            # 항등함수가 아니다
+    assert X.breakeven_pct(0.0694) - 0.0694 == pytest.approx(0.0052, abs=1e-4)
+    assert math.isnan(X.breakeven_pct(float("nan")))
+    assert math.isnan(X.breakeven_pct(1.0))            # 비용 100% 는 회수 불가
+
+
+def test_a3_size_cost_curve_reports_unmeasurable_rather_than_a_constant():
+    """1레벨짜리 얇은 호가창에서는 크기 효과가 **측정 불가**임을 드러내야 한다."""
+    thin = [{"depth_json": depth([(0.98, 40)], [(1.02, 40)])}]   # ask 측 약 $40
+    c = X.size_cost_curve(thin, notionals=(100, 1000))
+    assert (c["n_usable"] == 0).all()
+    assert (~c["measurable"]).all()
+    assert c["median_round_trip"].isna().all()          # 상수 곡선을 지어내지 않는다
+
+
+def test_a3_size_cost_curve_measures_when_the_book_is_deep_enough():
+    deep = [{"depth_json": depth([(0.98, 100000)], [(1.02, 100000)])}]
+    c = X.size_cost_curve(deep, notionals=(100, 1000))
+    assert (c["n_usable"] == 1).all() and c["measurable"].all()
+    assert c["median_round_trip"].notna().all()
