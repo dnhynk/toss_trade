@@ -383,7 +383,7 @@ def evaluate_all(series_by_symbol: dict, ctx_by_symbol: dict, entries: list[dict
             continue
         ctx = ctx_by_symbol.get(e["symbol"], {})
         rec = {"symbol": e["symbol"], "entry_ms": fill_ms, "entry_u": entry_u,
-               "entry_idx": int(e.get("entry_idx", -1))}
+               "entry_idx": e.get("entry_idx", -1)}
         for name, fn in price_rules.items():
             r = fn(ser, fill_ms, entry_u)
             rec[name] = (float(r["exit_u"] / entry_u - 1.0)
@@ -436,6 +436,194 @@ def days_needed_for_n(available_per_day: float, *,
             "days_needed": int(np.ceil(days))}
 
 
+# --------------------------------------------------------------------------- #
+# 7. 통제된 위약 — **상한 우위가 변동성 선택 효과인가**
+# --------------------------------------------------------------------------- #
+#: 정합 허용 오차 — 진입 직전 실현변동성이 ±20% 안이면 "비슷한 종목"으로 본다.
+VOL_MATCH_TOL = 0.20
+
+#: 자기 종목 위약이 실제 진입과 겹치지 않도록 띄우는 최소 간격.
+SELF_PLACEBO_MIN_GAP_S = 600
+
+#: 통제 비교 개수(본페로니) — 3개 통제군 × 3개 지표.
+N_CONTROL_COMPARISONS = 9
+
+
+def realized_volatility(ts: np.ndarray, px: np.ndarray, end_ms: int, *,
+                        window_s: int) -> float:
+    """`end_ms` **이하** `window_s` 구간의 로그수익률 표준편차.
+
+    진입 직전 창을 쓰면 **미래를 보지 않는다** — 정합 기준이 사전 관측만으로
+    만들어져야 통제가 성립한다.
+    """
+    if ts is None or len(ts) < 3:
+        return float("nan")
+    lo = np.searchsorted(ts, end_ms - window_s * 1000, side="right")
+    hi = np.searchsorted(ts, end_ms, side="right")
+    w = px[lo:hi]
+    w = w[w > 0]
+    if len(w) < 3:
+        return float("nan")
+    return float(np.std(np.diff(np.log(w)), ddof=1))
+
+
+def numpy_view(series_by_symbol: dict) -> dict:
+    """종목별 (시각, 가격) 배열. 정합 풀 계산이 pandas 슬라이싱이면 너무 느리다."""
+    return {s: (ser.index.to_numpy(), ser.to_numpy())
+            for s, ser in series_by_symbol.items() if len(ser)}
+
+
+def volatility_match_pools(entries: list[dict], series_by_symbol: dict, *,
+                           tol: float = VOL_MATCH_TOL,
+                           lookback_s: int = D.ENTRY_LOOKBACK_S) -> dict:
+    """진입별 **변동성 정합 후보 풀**. 씨앗과 무관하므로 한 번만 만든다.
+
+    상한은 최댓값이므로 변동성만 커져도 커진다. 무작위 종목 위약은 대개 덜 움직이는
+    종목이라, 상한 격차가 **"우리가 변동성 큰 종목을 골랐다"** 로 설명될 수 있다.
+    그래서 **진입 직전 실현변동성이 ±`tol` 안**인 종목만 후보로 둔다.
+    """
+    view = numpy_view(series_by_symbol)
+    pools: dict[int, list[str]] = {}
+    base_rv: dict[int, float] = {}
+    for e in entries:
+        i = e.get("entry_idx", -1)
+        ts = int(e["signal_ms"])
+        own = view.get(e["symbol"])
+        rv0 = (realized_volatility(own[0], own[1], ts, window_s=lookback_s)
+               if own else float("nan"))
+        base_rv[i] = rv0
+        if not (rv0 == rv0 and rv0 > 0):
+            pools[i] = []
+            continue
+        lo, hi = rv0 * (1.0 - tol), rv0 * (1.0 + tol)
+        cand = []
+        for sym, (a, p) in view.items():
+            if sym == e["symbol"]:
+                continue
+            rv = realized_volatility(a, p, ts, window_s=lookback_s)
+            if rv == rv and lo <= rv <= hi:
+                cand.append(sym)
+        pools[i] = cand
+    return {"pools": pools, "base_rv": base_rv}
+
+
+def volatility_matched_placebo(entries: list[dict], match: dict,
+                               seed: int) -> list[dict]:
+    """정합 풀에서 한 종목씩 뽑는다. **풀이 비면 그 진입은 짝을 잃는다**(세어 보고)."""
+    rng = np.random.default_rng(seed)
+    pools = match["pools"]
+    out = []
+    for e in entries:
+        i = e.get("entry_idx", -1)
+        cand = pools.get(i) or []
+        if not cand:
+            continue
+        pick = cand[int(rng.integers(0, len(cand)))]
+        out.append({"symbol": pick, "signal_ms": e["signal_ms"],
+                    "signal_u": float("nan"), "entry_idx": i})
+    return out
+
+
+def self_symbol_placebo(entries: list[dict], series_by_symbol: dict, seed: int, *,
+                        entry_delay_s: int = D.ENTRY_DELAY_S,
+                        horizon_s: int = HORIZON_S,
+                        min_gap_s: int = SELF_PLACEBO_MIN_GAP_S) -> list[dict]:
+    """**같은 종목·같은 날·무작위 시각.** 가장 깨끗한 통제군.
+
+    종목 고유 변동성이 **완전히 상쇄**되므로, 남는 차이는 오직 **"그 순간을 고른 것"**
+    의 값어치다. 실제 진입과 `min_gap_s` 이상 떨어뜨려 구간이 겹치지 않게 한다.
+    """
+    rng = np.random.default_rng(seed)
+    out = []
+    for e in entries:
+        ser = series_by_symbol.get(e["symbol"])
+        if ser is None or len(ser) < 3:
+            continue
+        ts = ser.index.to_numpy()
+        need = (entry_delay_s + horizon_s) * 1000
+        ok = ts[(ts + need <= ts[-1])
+                & (np.abs(ts - int(e["signal_ms"])) >= min_gap_s * 1000)]
+        if len(ok) == 0:
+            continue
+        out.append({"symbol": e["symbol"],
+                    "signal_ms": int(ok[int(rng.integers(0, len(ok)))]),
+                    "signal_u": float("nan"),
+                    "entry_idx": e.get("entry_idx", -1)})
+    return out
+
+
+def ceiling_arm(series_by_symbol: dict, entries: list[dict], *,
+                entry_delay_s: int = D.ENTRY_DELAY_S, horizon_s: int = HORIZON_S,
+                lookback_s: int = D.ENTRY_LOOKBACK_S) -> pd.DataFrame:
+    """한 팔(arm)의 상한 + 변동성 정규화 상한.
+
+    - `ceiling_per_pre_rv` — **사전** 변동성으로 나눈다(미래를 보지 않는 정규화).
+    - `ceiling_per_horizon_rv` — 구간 내 변동성으로 나눈다. **서술용이며 사후값**이라
+      거래 가능한 양이 아니다. 실제·위약에 **동일하게** 적용하므로 비교로는 성립한다.
+    """
+    view = numpy_view(series_by_symbol)
+    rows = []
+    for e in entries:
+        ser = series_by_symbol.get(e["symbol"])
+        if ser is None or ser.empty:
+            continue
+        fill_ms = int(e["signal_ms"]) + entry_delay_s * 1000
+        entry_u = S.price_at(ser, fill_ms)
+        if not (entry_u == entry_u and entry_u > 0):
+            continue
+        r = ceiling_perfect_foresight(ser, fill_ms, entry_u, horizon_s=horizon_s)
+        if not r["available"]:
+            continue
+        a, p = view[e["symbol"]]
+        pre = realized_volatility(a, p, fill_ms, window_s=lookback_s)
+        hor = realized_volatility(a, p, fill_ms + horizon_s * 1000,
+                                  window_s=horizon_s)
+        ceil = float(r["exit_u"] / entry_u - 1.0)
+        rows.append({
+            "entry_idx": e.get("entry_idx", -1), "symbol": e["symbol"],
+            "ceiling": ceil, "pre_rv": pre, "horizon_rv": hor,
+            "ceiling_per_pre_rv": (ceil / pre if pre == pre and pre > 0
+                                   else float("nan")),
+            "ceiling_per_horizon_rv": (ceil / hor if hor == hor and hor > 0
+                                       else float("nan"))})
+    return pd.DataFrame(rows)
+
+
+#: 통제에서 비교하는 지표 3종.
+CONTROL_METRICS = ("ceiling", "ceiling_per_pre_rv", "ceiling_per_horizon_rv")
+
+
+def control_difference(real_arm: pd.DataFrame, ctrl_arm: pd.DataFrame) -> dict:
+    """실제 − 통제군, 지표별 쌍체 CI. 본페로니는 통제 비교 9건 기준."""
+    out = {}
+    for m in CONTROL_METRICS:
+        out[m] = D.difference_ci(real_arm, ctrl_arm, m,
+                                 n_rules=N_CONTROL_COMPARISONS)
+    return out
+
+
+def build_controls(real_arm: pd.DataFrame, arms: dict, matched: dict) -> dict:
+    """§10-P.7 의 통제 표. **하나라도 우위가 사라지면 클레임을 내려 써야 한다.**"""
+    out = {"n_real": int(len(real_arm)),
+           "real_means": {m: float(pd.to_numeric(real_arm[m], errors="coerce")
+                                   .dropna().mean()) if len(real_arm) else float("nan")
+                          for m in CONTROL_METRICS},
+           "matching": matched, "arms": {}}
+    for name, arm in arms.items():
+        diffs = control_difference(real_arm, arm)
+        out["arms"][name] = {
+            "n_rows": int(len(arm)),
+            "means": {m: (float(pd.to_numeric(arm[m], errors="coerce").dropna().mean())
+                          if len(arm) else float("nan")) for m in CONTROL_METRICS},
+            "difference": diffs,
+            "survives": {m: diffs[m]["verdict"] == "above_zero"
+                         for m in CONTROL_METRICS},
+        }
+    out["claim_survives_every_control"] = all(
+        a["survives"]["ceiling"] for a in out["arms"].values()) if out["arms"] else False
+    return out
+
+
 def run(db: Path, *, entry_delay_s: int = D.ENTRY_DELAY_S,
         horizon_s: int = HORIZON_S) -> dict:
     """전 매매일 × (실제 + 위약). 진입 정의는 `design_b` 와 **완전히 같다**."""
@@ -443,6 +631,9 @@ def run(db: Path, *, entry_delay_s: int = D.ENTRY_DELAY_S,
     try:
         days = D.load_days(conn)
         real_by_day, plac_by_day, cover = {}, {}, {}
+        ctrl_real, ctrl_arms, match_stats = [], {"random_symbol": [],
+                                                 "vol_matched": [],
+                                                 "self_symbol": []}, []
         for day in days:
             rk = D.load_day_rank(conn, day)
             if rk.empty:
@@ -455,7 +646,7 @@ def run(db: Path, *, entry_delay_s: int = D.ENTRY_DELAY_S,
             ctx = build_contexts(load_day_signals(conn, day),
                                  load_day_orderbook(conn, day),
                                  load_day_tape(conn, day))
-            ents = D.collect_entries(rk)
+            ents = D.tag_entries(D.collect_entries(rk), day)
             real_by_day[day] = evaluate_all(series, ctx, ents,
                                             entry_delay_s=entry_delay_s,
                                             horizon_s=horizon_s)
@@ -469,10 +660,32 @@ def run(db: Path, *, entry_delay_s: int = D.ENTRY_DELAY_S,
                 pl.append(d)
             plac_by_day[day] = (pd.concat(pl, ignore_index=True) if pl
                                 else pd.DataFrame())
+
+            # ---- 통제된 위약 (상한만 계산한다) ----
+            # 관측 가능 20종은 이미 전부 차이 CI 가 0 을 교차하므로, 통제를 더 세게
+            # 걸어도 주장 가능해질 수 없다. 통제가 시험하는 것은 **상한 우위**뿐이다.
+            ckw = dict(entry_delay_s=entry_delay_s, horizon_s=horizon_s)
+            ctrl_real.append(ceiling_arm(series, ents, **ckw))
+            match = volatility_match_pools(ents, series)
+            n_pool = sum(1 for v in match["pools"].values() if v)
+            match_stats.append({"day": day, "entries": len(ents),
+                                "with_vol_match": int(n_pool)})
+            for seed in D.PLACEBO_SEEDS:
+                ctrl_arms["random_symbol"].append(ceiling_arm(
+                    series, D.placebo_entries(ents, list(series.keys()), seed), **ckw))
+                ctrl_arms["vol_matched"].append(ceiling_arm(
+                    series, volatility_matched_placebo(ents, match, seed), **ckw))
+                ctrl_arms["self_symbol"].append(ceiling_arm(
+                    series, self_symbol_placebo(ents, series, seed, **ckw), **ckw))
     finally:
         conn.close()
+    cat = lambda fs: (pd.concat([f for f in fs if len(f)], ignore_index=True)
+                      if any(len(f) for f in fs) else pd.DataFrame())
     return {"days": days, "real": real_by_day, "placebo": plac_by_day,
-            "per_day_counts": cover}
+            "per_day_counts": cover,
+            "control_real": cat(ctrl_real),
+            "control_arms": {k: cat(v) for k, v in ctrl_arms.items()},
+            "control_matching": match_stats}
 
 
 def build_report(res: dict) -> dict:
@@ -544,6 +757,10 @@ def build_report(res: dict) -> dict:
             "warning": ("CEILING is perfect-foresight and UNACHIEVABLE - it is a "
                         "measuring stick for the gap, never a strategy return"),
         },
+        # 상한 우위가 **변동성 선택 효과**인지 가리는 통제군 (§10-P.7).
+        "controls": build_controls(res.get("control_real", pd.DataFrame()),
+                                   res.get("control_arms", {}),
+                                   res.get("control_matching", [])),
         "rules": rules,
     }
 
@@ -619,6 +836,33 @@ def main(db: Path, *, out_dir: Path | None = None) -> int:
               f"{MIN_N_FOR_VERDICT}) -> {tag}")
     print("  NOTE rules listed here get NO verdict. Tier-2 orderbook and tape only "
           "began accumulating recently.")
+
+    ct = rep["controls"]
+    print("\n=== [docs/23 sec 10-P.7] CONTROLLED PLACEBOS - is the ceiling edge just "
+          "volatility selection?")
+    print("  A ceiling is a MAXIMUM, so it grows with volatility alone. Our entries "
+          "are selected for a 5pct drawdown,")
+    print("  so a random-symbol placebo is a WEAKER-MOVING sample by construction. "
+          "These arms remove that.")
+    for m in ct["matching"]:
+        print(f"  {m['day']}: {m['with_vol_match']}/{m['entries']} entries had a "
+              f"volatility-matched candidate (+-{VOL_MATCH_TOL:.0%})")
+    print(f"  real n={ct['n_real']}   real means "
+          + "  ".join(f"{k}={v:+.4f}" for k, v in ct["real_means"].items()))
+    print(f"\n{'control arm':<16}{'metric':<24}{'ctrl mean':>11}{'diff':>10}"
+          f"{'CI low':>10}{'CI high':>10}{'pair n':>8}{'verdict':>15}")
+    for name, a in ct["arms"].items():
+        for m in CONTROL_METRICS:
+            d = a["difference"][m]
+            print(f"{name:<16}{m:<24}{a['means'][m]:>11.4f}{d['mean']:>10.4f}"
+                  f"{d['ci'][0]:>10.4f}{d['ci'][1]:>10.4f}{d['n']:>8}"
+                  f"{d['verdict']:>15}")
+    print(f"\n  ceiling edge survives EVERY control: "
+          f"{ct['claim_survives_every_control']}")
+    print("  self_symbol is the cleanest arm - same symbol, same day, random time - "
+          "so symbol volatility cancels entirely.")
+    print("  NOTE 'room exists' and 'room is reachable' are different claims. No "
+          "observable rule captures it (all 20 cross zero).")
 
     out = (out_dir or OUT_DIR)
     out.mkdir(parents=True, exist_ok=True)

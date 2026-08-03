@@ -193,6 +193,18 @@ def collect_entries(day_rank: pd.DataFrame, *, min_snaps: int = 20,
     return out
 
 
+def tag_entries(entries: list[dict], day: str) -> list[dict]:
+    """진입 키에 **날짜 접두사**를 박아 전역 고유로 만든다.
+
+    `collect_entries` 는 날마다 0 부터 센다. 여러 날을 이어 붙인 뒤 `entry_idx` 로
+    쌍체를 맺으면 **다른 날 진입끼리 짝이 맺힌다** — 라벨이 중복되면 pandas 가
+    조용히 브로드캐스트해서 오류도 나지 않고 짝 수만 늘어난다. 실제로 그렇게 됐고,
+    통제군 짝 수가 정합 성공 건수보다 많아진 것으로 발각됐다.
+    """
+    return [dict(e, entry_idx=f"{day}#{int(e.get('entry_idx', i))}")
+            for i, e in enumerate(entries)]
+
+
 def evaluate(series_by_symbol: dict, entries: list[dict], *,
              entry_delay_s: int = ENTRY_DELAY_S, horizon_s: int = 600) -> pd.DataFrame:
     """모든 진입을 모든 이탈 규칙으로 평가한다. **미도달·손실 전부 계상.**"""
@@ -209,7 +221,9 @@ def evaluate(series_by_symbol: dict, entries: list[dict], *,
         rec = {"symbol": e["symbol"], "entry_ms": fill_ms, "entry_u": entry_u,
                # 쌍체 비교의 키. 실제와 위약이 **같은 진입 시각**을 공유하므로
                # 이 인덱스로 짝지어야 한다(씨앗을 독립 표본으로 세면 안 된다).
-               "entry_idx": int(e.get("entry_idx", -1))}
+               # 쌍체 키. **날짜 접두사가 붙은 전역 고유 키**여야 한다 —
+               # 날마다 0 부터 다시 세면 다른 날 진입끼리 짝이 맺힌다.
+               "entry_idx": e.get("entry_idx", -1)}
         for name, fn in rules.items():
             r = fn(ser, fill_ms, entry_u)
             rec[name] = (float(r["exit_u"] / entry_u - 1.0)
@@ -228,8 +242,10 @@ def placebo_entries(entries: list[dict], symbols: list[str], seed: int) -> list[
     rng = np.random.default_rng(seed)
     pick = rng.choice(np.asarray(symbols, dtype=object), size=len(entries),
                       replace=True)
+    # 진입의 **원래 키를 그대로 물려준다.** 위치 번호로 다시 매기면 날짜 접두사가
+    # 사라져 쌍체가 어긋난다.
     return [{"symbol": str(pick[i]), "signal_ms": e["signal_ms"],
-             "signal_u": float("nan"), "entry_idx": i}
+             "signal_u": float("nan"), "entry_idx": e.get("entry_idx", i)}
             for i, e in enumerate(entries)]
 
 
@@ -358,7 +374,7 @@ def run(db: Path, *, entry_delay_s: int = ENTRY_DELAY_S,
                 s = S.price_series_multi(rk, sym)
                 if len(s) >= 20:
                     series[sym] = s
-            ents = collect_entries(rk)
+            ents = tag_entries(collect_entries(rk), day)
             real_by_day[day] = evaluate(series, ents, entry_delay_s=entry_delay_s,
                                         horizon_s=horizon_s)
             pl = []
