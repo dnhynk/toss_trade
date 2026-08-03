@@ -235,3 +235,60 @@ def test_symbols_without_share_data_are_not_guessed():
 def test_target_band_boundaries_are_half_open():
     assert S.symbol_stratum(2.00, 20_000_000 * 1_000_000) == "target"
     assert S.symbol_stratum(5.00, 20_000_000 * 1_000_000) == "sec27_other_price"
+
+
+# --------------------------------------------------------------------------- #
+# 다계열 병합 — 슈팅 이중계산 금지
+# --------------------------------------------------------------------------- #
+def ranks2(rows):
+    """(snap_ms, ranking_type, symbol, price$) 목록."""
+    return pd.DataFrame({"snap_ms": [r[0] for r in rows],
+                         "ranking_type": [r[1] for r in rows],
+                         "symbol": [r[2] for r in rows],
+                         "last_u": [int(r[3] * 1_000_000) for r in rows]})
+
+
+def test_multi_series_unions_snapshots_from_both_rankings():
+    rk = ranks2([(0, S.TOSS_VOLUME, "A", 1.00), (S12, S.TOSS_AMOUNT, "A", 1.05)])
+    s = S.price_series_multi(rk, "A")
+    assert list(s.index) == [0, S12]
+    assert s.attrs["n_by_type"][S.TOSS_VOLUME] == 1
+    assert s.attrs["n_by_type"][S.TOSS_AMOUNT] == 1
+
+
+def test_multi_series_collapses_a_duplicated_snapshot_to_one_value():
+    """같은 시각이 두 랭킹에 있으면 한 값만 남아야 한다 — 안 그러면 슈팅을 두 번 센다."""
+    rk = ranks2([(0, S.TOSS_VOLUME, "A", 1.00), (0, S.TOSS_AMOUNT, "A", 1.00)])
+    s = S.price_series_multi(rk, "A")
+    assert len(s) == 1 and s.attrs["conflicts"] == 0
+
+
+def test_multi_series_counts_conflicting_prices_rather_than_hiding_them():
+    rk = ranks2([(0, S.TOSS_VOLUME, "A", 1.00), (0, S.TOSS_AMOUNT, "A", 1.20)])
+    s = S.price_series_multi(rk, "A")
+    assert len(s) == 1
+    assert s.attrs["conflicts"] == 1
+    assert s.iloc[0] == pytest.approx(1.10 * 1_000_000)      # 중앙값
+
+
+def test_multi_series_does_not_double_count_shots():
+    """두 계열에 동일 계열이 통째로 중복돼도 슈팅 수가 늘면 안 된다."""
+    px = [1.00, 1.05, 1.02, 1.02, 1.02, 1.09]
+    rows = []
+    for i, p in enumerate(px):
+        rows.append((i * S12, S.TOSS_VOLUME, "A", p))
+        rows.append((i * S12, S.TOSS_AMOUNT, "A", p))
+    merged = S.price_series_multi(ranks2(rows), "A")
+    single = S.price_series(ranks2([r for r in rows
+                                    if r[1] == S.TOSS_VOLUME]), "A", S.TOSS_VOLUME)
+    assert len(S.detect_shots(merged)) == len(S.detect_shots(single))
+
+
+def test_multi_series_empty_and_unknown_symbol():
+    assert S.price_series_multi(pd.DataFrame(), "A").empty
+    rk = ranks2([(0, S.TOSS_VOLUME, "A", 1.0)])
+    assert S.price_series_multi(rk, "ZZ").empty
+
+
+def test_volume_ranking_is_the_default_primary_series():
+    assert S.DEFAULT_RANKING_TYPES[0] == S.TOSS_VOLUME
