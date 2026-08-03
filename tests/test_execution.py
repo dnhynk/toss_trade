@@ -249,3 +249,15 @@ def test_a3_size_cost_curve_measures_when_the_book_is_deep_enough():
     c = X.size_cost_curve(deep, notionals=(100, 1000))
     assert (c["n_usable"] == 1).all() and c["measurable"].all()
     assert c["median_round_trip"].notna().all()
+
+
+def test_c5_dust_level_is_skipped_not_treated_as_the_end_of_the_book():
+    """금액이 0 으로 내림되는 먼지 호가에서 멈추면 그 위 호가를 못 본다 (감사 4차 C5)."""
+    dust = {"price_u": 1, "qty_u": 1}                 # 1e-6 USD x 1e-6 shares -> 0
+    real = {"price_u": 1 * MICRO, "qty_u": 1000 * MICRO}
+    j = json.dumps({"bids": [], "asks": [dust, real]})
+    _b, asks = X.parse_depth(j)
+    w = X.walk_book(asks, 100)
+    assert not w["exhausted"]
+    assert w["filled_usd"] == pytest.approx(100.0)     # 먼지를 건너뛰고 진짜 호가에서 채움
+    assert w["levels_used"] == 1                       # 먼지는 사용 단계로 세지 않는다

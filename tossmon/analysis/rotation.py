@@ -40,6 +40,14 @@ _NAN = float("nan")
 #: 프린트 = 거래량이 있는 1분봉. 무체결 분은 **행 자체가 없다**(0 으로 채우지 않는다).
 PRINT_MIN_VOL_QU = 1
 
+#: **단위 규약** (감사 4차 B10). `amount_u12` = `close_u × vol_qu`
+#: = 마이크로달러 × 마이크로주 = **USD × 1e12**. 나누지 않은 원시 곱이다.
+#: `execution.level_notional_u` 는 `// MICRO` 를 해서 **마이크로달러**를 만든다 —
+#: 두 모듈의 단위가 다르므로 컬럼 이름에 단위를 박아 혼동을 원천 차단한다.
+#: 이 모듈 안에서는 `share`(비율)로만 쓰여 단위가 약분되지만, 프레임이 밖으로 나가면
+#: 그 보호가 사라진다(3차 감사의 `vol_qu/10000` 과 같은 계열의 잠재 결함).
+AMOUNT_PER_USD = 10 ** 12
+
 #: 사건 시간 통계의 기본 블록 크기 (프린트 개수 단위 — 분 단위가 아니다).
 DEFAULT_RECENT_PRINTS = 5
 DEFAULT_BASELINE_PRINTS = 20
@@ -52,7 +60,8 @@ DEFAULT_MIN_COHORT = 10
 #: 회전 검출 임계 — 동료 대비 상위 백분위.
 DEFAULT_ROTATION_THRESHOLD = 0.90
 
-ROTATION_COLUMNS = ("symbol", "n_prints", "n_prints_prev", "amount", "amount_prev",
+ROTATION_COLUMNS = ("symbol", "n_prints", "n_prints_prev", "amount_u12",
+                    "amount_u12_prev",
                     "share", "share_prev", "share_delta", "share_delta_pct",
                     "rank_now", "rank_prev", "rank_delta", "rank_delta_pct")
 
@@ -67,7 +76,7 @@ def print_frame(df_1m: pd.DataFrame, *, t_from: int | None = None,
     `t_to` 는 **배타적**이다 — 엄격 컷오프(`ts_ms < t0_ms`, A1 §1)를 그대로 따른다.
     """
     if df_1m is None or len(df_1m) == 0 or "ts_ms" not in df_1m.columns:
-        return pd.DataFrame(columns=["ts_ms", "vol_qu", "close_u", "amount"])
+        return pd.DataFrame(columns=["ts_ms", "vol_qu", "close_u", "amount_u12"])
     d = df_1m
     if t_from is not None:
         d = d[d["ts_ms"] >= t_from]
@@ -76,11 +85,19 @@ def print_frame(df_1m: pd.DataFrame, *, t_from: int | None = None,
     vol = pd.to_numeric(d.get("vol_qu"), errors="coerce")
     d = d[vol.reindex(d.index).fillna(0) >= PRINT_MIN_VOL_QU]
     if len(d) == 0:
-        return pd.DataFrame(columns=["ts_ms", "vol_qu", "close_u", "amount"])
+        return pd.DataFrame(columns=["ts_ms", "vol_qu", "close_u", "amount_u12"])
     out = d[["ts_ms", "vol_qu", "close_u"]].copy().sort_values("ts_ms")
-    out["amount"] = [int(c) * int(v) for c, v in
+    out["amount_u12"] = [int(c) * int(v) for c, v in
                      zip(out["close_u"].tolist(), out["vol_qu"].tolist())]
     return out.reset_index(drop=True)
+
+
+def amount_usd(amount_u12) -> float:
+    """`amount_u12`(USD × 1e12) → 달러. 단위를 밖으로 내보낼 때 반드시 통과시킨다."""
+    try:
+        return float(amount_u12) / AMOUNT_PER_USD
+    except (TypeError, ValueError):
+        return _NAN
 
 
 def inter_print_gaps_min(ts_ms) -> np.ndarray:
@@ -171,12 +188,12 @@ def _window_stats(day_bars: pd.DataFrame, lo: int, hi: int) -> pd.DataFrame:
     vol = pd.to_numeric(d["vol_qu"], errors="coerce").fillna(0)
     d = d[vol.reindex(d.index) >= PRINT_MIN_VOL_QU]
     if len(d) == 0:
-        return pd.DataFrame(columns=["symbol", "n_prints", "amount"])
+        return pd.DataFrame(columns=["symbol", "n_prints", "amount_u12"])
     amt = [int(c) * int(v) for c, v in
            zip(d["close_u"].tolist(), d["vol_qu"].tolist())]
-    tmp = pd.DataFrame({"symbol": d["symbol"].tolist(), "amount": amt})
-    g = tmp.groupby("symbol", sort=False).agg(n_prints=("amount", "size"),
-                                              amount=("amount", "sum"))
+    tmp = pd.DataFrame({"symbol": d["symbol"].tolist(), "amount_u12": amt})
+    g = tmp.groupby("symbol", sort=False).agg(n_prints=("amount_u12", "size"),
+                                              amount_u12=("amount_u12", "sum"))
     return g.reset_index()
 
 
@@ -210,18 +227,18 @@ def rotation_scores(day_bars: pd.DataFrame, t_ms: int, *,
     if len(m) < min_cohort:
         return pd.DataFrame(columns=list(ROTATION_COLUMNS))
 
-    tot_now = float(sum(int(x) for x in m["amount"].tolist()))
-    tot_prev = float(sum(int(x) for x in m["amount_prev"].tolist()))
+    tot_now = float(sum(int(x) for x in m["amount_u12"].tolist()))
+    tot_prev = float(sum(int(x) for x in m["amount_u12_prev"].tolist()))
     if not (tot_now > 0 and tot_prev > 0):
         return pd.DataFrame(columns=list(ROTATION_COLUMNS))
 
     m = m.copy()
-    m["share"] = [int(x) / tot_now for x in m["amount"].tolist()]
-    m["share_prev"] = [int(x) / tot_prev for x in m["amount_prev"].tolist()]
+    m["share"] = [int(x) / tot_now for x in m["amount_u12"].tolist()]
+    m["share_prev"] = [int(x) / tot_prev for x in m["amount_u12_prev"].tolist()]
     m["share_delta"] = m["share"] - m["share_prev"]
     # 순위는 거래대금 큰 쪽이 1위. 개선(상승)이 양수가 되도록 prev - now.
-    m["rank_now"] = m["amount"].rank(ascending=False, method="average")
-    m["rank_prev"] = m["amount_prev"].rank(ascending=False, method="average")
+    m["rank_now"] = m["amount_u12"].rank(ascending=False, method="average")
+    m["rank_prev"] = m["amount_u12_prev"].rank(ascending=False, method="average")
     m["rank_delta"] = m["rank_prev"] - m["rank_now"]
     m["share_delta_pct"] = m["share_delta"].rank(pct=True, method="average")
     m["rank_delta_pct"] = m["rank_delta"].rank(pct=True, method="average")
@@ -327,6 +344,35 @@ def rotation_handoffs(changes: pd.DataFrame, *, within_s: int = 120) -> pd.DataF
     return pd.DataFrame(rows, columns=cols)
 
 
+def _relative_spread_series(d: pd.DataFrame) -> pd.Series:
+    """호가 프레임 → 상대 스프레드 시계열. **크로스 호가(ask < bid)는 `NaN`** (감사 4차 B11).
+
+    `execution.relative_spread` 와 **같은 조건**을 쓴다 — 한 리포에서 한 모듈은 막고
+    다른 모듈은 음수를 중앙값에 섞는 상태가 결함이었다. 락 호가(ask == bid)는 스프레드
+    0 으로 유효하다.
+    """
+    from tossmon.analysis.execution import relative_spread
+    return pd.Series(
+        [relative_spread(b, a) for b, a in zip(d["bid1_u"], d["ask1_u"])],
+        index=d.index, dtype="float64")
+
+
+def crossed_book_count(d: pd.DataFrame) -> int:
+    """크로스 호가 스냅 수 — 버리는 것을 **세어서** 보고하기 위한 것(금지 규칙 3)."""
+    if d is None or len(d) == 0:
+        return 0
+    n = 0
+    for b, a in zip(d["bid1_u"], d["ask1_u"]):
+        # NaN 은 파이썬에서 truthy 라 `if b and a` 로는 걸러지지 않는다 (실데이터에서 발현).
+        try:
+            bi, ai = int(b), int(a)
+        except (TypeError, ValueError):
+            continue
+        if bi > 0 and ai > 0 and ai < bi:
+            n += 1
+    return n
+
+
 def spread_compression_event_time(orderbook: pd.DataFrame, symbol: str, t_ms: int, *,
                                   recent_snaps: int = 5,
                                   baseline_snaps: int = 20) -> float:
@@ -345,10 +391,7 @@ def spread_compression_event_time(orderbook: pd.DataFrame, symbol: str, t_ms: in
                   & (orderbook["snap_ms"] < t_ms)].sort_values("snap_ms")
     if len(d) < recent_snaps + baseline_snaps:
         return _NAN
-    bid = pd.to_numeric(d["bid1_u"], errors="coerce")
-    ask = pd.to_numeric(d["ask1_u"], errors="coerce")
-    mid = (bid + ask) / 2.0
-    rel = ((ask - bid) / mid).where(mid > 0)
+    rel = _relative_spread_series(d)          # B11: 크로스 호가는 NaN (execution 과 동일)
     n = len(rel)
     rec = rel.iloc[n - recent_snaps:].dropna()
     base = rel.iloc[n - recent_snaps - baseline_snaps:n - recent_snaps].dropna()
@@ -375,10 +418,7 @@ def spread_compression(orderbook: pd.DataFrame, symbol: str, t_ms: int, *,
                   & (orderbook["snap_ms"] < t_ms)]
     if len(d) < 2 * min_snaps:
         return _NAN
-    bid = pd.to_numeric(d["bid1_u"], errors="coerce")
-    ask = pd.to_numeric(d["ask1_u"], errors="coerce")
-    mid = (bid + ask) / 2.0
-    rel = ((ask - bid) / mid).where(mid > 0)
+    rel = _relative_spread_series(d)          # B11: 크로스 호가는 NaN (execution 과 동일)
     rec = rel[d["snap_ms"] >= t_ms - w].dropna()
     base = rel[d["snap_ms"] < t_ms - w].dropna()
     if len(rec) < min_snaps or len(base) < min_snaps:
