@@ -53,6 +53,7 @@ import pytest
 
 from tossmon.analysis import shots as S
 from tossmon.analysis.measure import design_b as D
+from tossmon.analysis.measure import exit_value as V
 
 #: **옵트아웃 목록** — 도달 불가능해도 되는 공개 함수와 그 **사유**.
 #: 허용 목록이 아니다. 여기 없는 공개 함수는 전부 `main()` 에서 도달 가능해야 한다.
@@ -64,9 +65,15 @@ NOT_WIRED = {
 
 ENTRY = "main"
 
+#: **가드가 지키는 러너 전부.** 새 측정 모듈을 만들면 여기 추가한다 — 이것만은
+#: 열거일 수밖에 없지만(모듈은 저장소 어디에나 있을 수 있다), 모듈 **안쪽**은
+#: 전부 발견 기반이다. 목록에 넣는 것을 잊어도 새 모듈의 `main()` 이 문서 수치를
+#: 만들지 않으면 그 모듈 자체 테스트가 먼저 깨진다.
+GUARDED_MODULES = (D, V)
 
-def _module_source() -> str:
-    return pathlib.Path(D.__file__).read_text(encoding="utf-8")
+
+def _module_source(mod=D) -> str:
+    return pathlib.Path(mod.__file__).read_text(encoding="utf-8")
 
 
 def _public_functions(src: str) -> set[str]:
@@ -130,17 +137,18 @@ def unwired_public_functions(src: str, *, entry: str = ENTRY,
 # --------------------------------------------------------------------------- #
 # 1. 배선 — 거부 기본값
 # --------------------------------------------------------------------------- #
-def test_every_public_function_is_reachable_from_main():
+@pytest.mark.parametrize("mod", GUARDED_MODULES, ids=lambda m: m.__name__.split(".")[-1])
+def test_every_public_function_is_reachable_from_main(mod):
     """공개 함수는 **전부** `main()` 에서 도달 가능해야 한다.
 
     도달 불가능한 분석 함수는 **산출물을 만들지 않는다** — 그것이 H-1 의 형태였다.
     허용 목록이던 시절 이 검사는 목록 밖 함수를 그냥 통과시켰다.
     """
-    unwired = unwired_public_functions(_module_source())
+    unwired = unwired_public_functions(_module_source(mod))
     assert not unwired, (
-        f"public functions unreachable from main(): {sorted(unwired)} - they will "
-        f"never produce output. Wire them into main(), or add them to NOT_WIRED "
-        f"with a reason.")
+        f"{mod.__name__}: public functions unreachable from main(): "
+        f"{sorted(unwired)} - they will never produce output. Wire them into main(), "
+        f"or add them to NOT_WIRED with a reason.")
 
 
 def test_optout_entries_have_a_reason():
@@ -148,11 +156,11 @@ def test_optout_entries_have_a_reason():
         assert reason and reason.strip(), f"{name} opts out with no reason"
 
 
-def test_optout_entries_still_exist_in_the_module():
+@pytest.mark.parametrize("mod", GUARDED_MODULES, ids=lambda m: m.__name__.split(".")[-1])
+def test_optout_entries_still_exist_in_the_module(mod):
     """사라진 함수의 옵트아웃이 남아 있으면 목록이 조용히 썩는다."""
-    pub = _public_functions(_module_source())
-    stale = set(NOT_WIRED) - pub
-    assert not stale, f"NOT_WIRED names no longer defined in design_b: {sorted(stale)}"
+    stale = set(NOT_WIRED) - _public_functions(_module_source(mod))
+    assert not stale, f"{mod.__name__}: NOT_WIRED names no longer defined: {sorted(stale)}"
 
 
 # --------------------------------------------------------------------------- #
