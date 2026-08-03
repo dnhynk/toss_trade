@@ -1,0 +1,178 @@
+{
+ "days": [
+  "2026-07-31",
+  "2026-08-03"
+ ],
+ "n_real": 185,
+ "rules": [
+  {
+   "rule": "time_30s",
+   "real_n": 182,
+   "real_gross_mean": 0.0036757374110561207,
+   "real_gross_median": 0.0,
+   "real_net_mean": -0.02012426258894388,
+   "real_ci": [
+    -0.025594572924393502,
+    -0.01394682285938249
+   ],
+   "real_fill_rate": 0.9837837837837838,
+   "placebo_net": -0.02403022686057044,
+   "real_minus_placebo": 0.0039059642716265594
+  },
+  {
+   "rule": "time_60s",
+   "real_n": 182,
+   "real_gross_mean": 0.0011522623267984122,
+   "real_gross_median": 0.0,
+   "real_net_mean": -0.02264773767320159,
+   "real_ci": [
+    -0.027914861127548547,
+    -0.01736993254025416
+   ],
+   "real_fill_rate": 0.9837837837837838,
+   "placebo_net": -0.02401844779101058,
+   "real_minus_placebo": 0.001370710117808989
+  },
+  {
+   "rule": "time_120s",
+   "real_n": 182,
+   "real_gross_mean": 0.0005275951427272096,
+   "real_gross_median": 0.0,
+   "real_net_mean": -0.02327240485727279,
+   "real_ci": [
+    -0.03220745154929263,
+    -0.013846283241275282
+   ],
+   "real_fill_rate": 0.9837837837837838,
+   "placebo_net": -0.02119702911543437,
+   "real_minus_placebo": -0.0020753757418384214
+  },
+  {
+   "rule": "time_300s",
+   "real_n": 182,
+   "real_gross_mean": -0.0014430980053534805,
+   "real_gross_median": 0.0,
+   "real_net_mean": -0.025243098005353484,
+   "real_ci": [
+    -0.03599476342652784,
+    -0.013918239087133306
+   ],
+   "real_fill_rate": 0.9837837837837838,
+   "placebo_net": -0.02198192348122545,
+   "real_minus_placebo": -0.0032611745241280347
+  },
+  {
+   "rule": "downtick_1",
+   "real_n": 182,
+   "real_gross_mean": 0.0051201024910716994,
+   "real_gross_median": -0.0003514062398108919,
+   "real_net_mean": -0.018679897508928303,
+   "real_ci": [
+    -0.025422503464720237,
+    -0.01097323561398614
+   ],
+   "real_fill_rate": 0.918918918918919,
+   "placebo_net": -0.024155677763827568,
+   "real_minus_placebo": 0.005475780254899264
+  },
+  {
+   "rule": "downtick_2",
+   "real_n": 182,
+   "real_gross_mean": 0.005170801380622125,
+   "real_gross_median": 0.0,
+   "real_net_mean": -0.018629198619377875,
+   "real_ci": [
+    -0.027634164566817145,
+    -0.009062581133528425
+   ],
+   "real_fill_rate": 0.5837837837837838,
+   "placebo_net": -0.024081144731690877,
+   "real_minus_placebo": 0.005451946112313002
+  },
+  {
+   "rule": "trail_0.5pct",
+   "real_n": 182,
+   "real_gross_mean": 0.004449062972107159,
+   "real_gross_median": -0.0012735015982627274,
+   "real_net_mean": -0.019350937027892843,
+   "real_ci": [
+    -0.02621063744418006,
+    -0.011593837538099082
+   ],
+   "real_fill_rate": 0.8918918918918919,
+   "placebo_net": -0.02489489881698372,
+   "real_minus_placebo": 0.005543961789090876
+  },
+  {
+   "rule": "trail_1.0pct",
+   "real_n": 182,
+   "real_gross_mean": 0.004886406683852407,
+   "real_gross_median": -0.0012735015982627274,
+   "real_net_mean": -0.018913593316147594,
+   "real_ci": [
+    -0.026036678986410468,
+    -0.010885519928039622
+   ],
+   "real_fill_rate": 0.8702702702702703,
+   "placebo_net": -0.024983035290487607,
+   "real_minus_placebo": 0.006069441974340013
+  },
+  {
+   "rule": "target_1pct",
+   "real_n": 182,
+   "real_gross_mean": -0.0007959080518025051,
+   "real_gross_median": 0.010000000000000009,
+   "real_net_mean": -0.024595908051802506,
+   "real_ci": [
+    -0.02852113204322962,
+    -0.021056510198650527
+   ],
+   "real_fill_rate": 0.7135135135135136,
+   "placebo_net": -0.025350363764029524,
+   "real_minus_placebo": 0.000754455712227018
+  },
+  {
+   "rule": "target_2pct",
+   "real_n": 182,
+   "real_gross_mean": 0.00014282621444589394,
+   "real_gross_median": 0.020000000000000018,
+   "real_net_mean": -0.023657173785554108,
+   "real_ci": [
+    -0.03036569304150659,
+    -0.01821509509172048
+   ],
+   "real_fill_rate": 0.5945945945945946,
+   "placebo_net": -0.02460051326966745,
+   "real_minus_placebo": 0.0009433394841133411
+  },
+  {
+   "rule": "target_3pct",
+   "real_n": 182,
+   "real_gross_mean": 0.0007612956977700408,
+   "real_gross_median": 0.020147342867517515,
+   "real_net_mean": -0.02303870430222996,
+   "real_ci": [
+    -0.030131652974737272,
+    -0.016898823838745407
+   ],
+   "real_fill_rate": 0.4702702702702703,
+   "placebo_net": -0.023736278358204754,
+   "real_minus_placebo": 0.0006975740559747937
+  },
+  {
+   "rule": "hold_horizon",
+   "real_n": 182,
+   "real_gross_mean": 0.00453098619174633,
+   "real_gross_median": -0.0012735015982627274,
+   "real_net_mean": -0.019269013808253674,
+   "real_ci": [
+    -0.03604673126929364,
+    -0.000599497709298135
+   ],
+   "real_fill_rate": 0.9837837837837838,
+   "placebo_net": -0.02426504713745713,
+   "real_minus_placebo": 0.004996033329203457
+  }
+ ],
+ "pooled_ci_permitted": false
+}
