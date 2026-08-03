@@ -79,7 +79,8 @@ def log_amount_rate_ratio(prints: pd.DataFrame, *, recent_prints: int = 10,
     >0 이면 유입이 가속. 척도 불변(거래대금 단위·종목 규모에 불변)이라
     희소 테이프와 활발한 테이프를 같은 잣대로 볼 수 있다.
 
-    입력은 `rotation.print_frame` 이 만든 **프린트만 있는 프레임**이다 —
+    입력은 `rotation.print_frame` 이 만든 **프린트만 있는 프레임**이다
+    (`amount_u12` 컬럼 — USD × 1e12, 감사 4차 B10) —
     무체결 분은 애초에 없으므로 0 으로 세지 않는다(docs/17 금지 규칙 1).
     프린트가 모자라거나 구간 폭이 0 이면 `NaN`.
     """
@@ -94,7 +95,7 @@ def log_amount_rate_ratio(prints: pd.DataFrame, *, recent_prints: int = 10,
         span_min = (ts[-1] - ts[0]) / MIN_MS
         if span_min <= 0:
             return _NAN
-        total = float(sum(int(x) for x in block["amount"].tolist()))
+        total = float(sum(int(x) for x in block["amount_u12"].tolist()))
         return total / span_min if total > 0 else _NAN
 
     r_rec, r_base = rate(rec), rate(base)

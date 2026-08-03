@@ -109,8 +109,11 @@ def walk_book(levels: list[tuple[int, int]], notional_usd: float, *,
         avail_u = level_notional_u(price_u, qty_u)
         take_u = min(avail_u, target_u - spent_u)
         if take_u <= 0:
+            # C5(감사 4차): `p>0 ∧ q>0` 를 통과했어도 `p*q < 1e6` 이면 금액이 0 으로
+            # 내림된다(먼지 호가). 이때 **멈추지 말고 건너뛴다** — 멈추면 그 위의
+            # 유효한 호가를 못 보고 체결 가능액을 과소평가한다.
             used -= 1
-            break
+            continue
         # 금액 take_u 를 이 가격에 사면 몇 주인가
         take_qu = take_u * MICRO // int(price_u)
         spent_u += take_u

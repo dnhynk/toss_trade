@@ -47,7 +47,7 @@ def test_print_frame_amount_uses_python_ints_no_overflow():
     # int64 를 넘기는 크기 (구 VWAP 결함의 회귀)
     df = bars([0, 1], [10**12, 10**12], close_u=10**8)
     p = R.print_frame(df)
-    assert p["amount"].tolist() == [10**20, 10**20]
+    assert p["amount_u12"].tolist() == [10**20, 10**20]
 
 
 # --------------------------------------------------------------------------- #
@@ -298,3 +298,65 @@ def test_spread_compression_event_time_nan_when_too_few_snaps():
     assert math.isnan(R.spread_compression_event_time(ob, "A", 10_000,
                                                       recent_snaps=5,
                                                       baseline_snaps=20))
+
+
+# --------------------------------------------------------------------------- #
+# 감사 4차 회귀 — B10 / B11
+# --------------------------------------------------------------------------- #
+def test_b10_amount_column_carries_its_unit_in_the_name():
+    """`amount_u12` = USD x 1e12. 이름에 단위가 없으면 모듈 밖에서 오독된다."""
+    p = R.print_frame(bars([0], [2], close_u=6_996_000))
+    assert "amount_u12" in p.columns and "amount" not in p.columns
+    assert p["amount_u12"].iloc[0] == 6_996_000 * 2
+    assert R.amount_usd(p["amount_u12"].iloc[0]) == pytest.approx(
+        6.996 * 2 / 1_000_000)
+
+
+def test_b10_rotation_scores_expose_the_unit_suffixed_columns():
+    day = _cohort_day()
+    sc = R.rotation_scores(day, 60 * MIN_MS, window_min=30, min_prints=3,
+                           min_cohort=5)
+    assert "amount_u12" in sc.columns and "amount_u12_prev" in sc.columns
+    assert "amount" not in sc.columns
+
+
+def test_b10_amount_usd_is_nan_on_garbage():
+    assert math.isnan(R.amount_usd(None))
+
+
+def test_b11_crossed_book_is_nan_in_spread_compression_like_execution():
+    """한 모듈은 막고 다른 모듈은 음수를 통과시키던 불일치를 없앤다."""
+    from tossmon.analysis.execution import relative_spread
+    rows = [{"symbol": "A", "snap_ms": i * 16_000, "bid1_u": 11_000,
+             "ask1_u": 9_000} for i in range(40)]          # 전부 크로스
+    ob = pd.DataFrame(rows)
+    assert math.isnan(relative_spread(11_000, 9_000))
+    assert math.isnan(R.spread_compression_event_time(ob, "A", 40 * 16_000))
+    assert math.isnan(R.spread_compression(ob, "A", 40 * 60_000, window_min=20,
+                                           min_snaps=5))
+
+
+def test_b11_crossed_books_are_counted_not_silently_dropped():
+    ob = pd.DataFrame([{"symbol": "A", "snap_ms": 0, "bid1_u": 11_000,
+                        "ask1_u": 9_000},
+                       {"symbol": "A", "snap_ms": 1, "bid1_u": 9_000,
+                        "ask1_u": 11_000}])
+    assert R.crossed_book_count(ob) == 1
+    assert R.crossed_book_count(pd.DataFrame()) == 0
+
+
+def test_b11_locked_book_is_still_valid():
+    rows = [{"symbol": "A", "snap_ms": i * 16_000, "bid1_u": 10_000,
+             "ask1_u": 10_000} for i in range(20)]
+    rows += [{"symbol": "A", "snap_ms": (20 + i) * 16_000, "bid1_u": 10_000,
+              "ask1_u": 10_000} for i in range(5)]
+    ob = pd.DataFrame(rows)
+    # 스프레드 0 은 유효하나 최근 블록 중앙값이 0 이라 비를 낼 수 없다 -> NaN (0 나눗셈 아님)
+    assert math.isnan(R.spread_compression_event_time(ob, "A", 25 * 16_000))
+
+
+def test_b11_crossed_book_count_survives_missing_quotes():
+    """NaN 은 truthy 라 순진한 `if b and a` 가 통과시킨다 — 실 tier2 데이터에서 발현했다."""
+    ob = pd.DataFrame({"bid1_u": [float("nan"), 11_000, None, 9_000],
+                       "ask1_u": [10_000, 9_000, None, 11_000]})
+    assert R.crossed_book_count(ob) == 1        # 두 번째 행만 크로스

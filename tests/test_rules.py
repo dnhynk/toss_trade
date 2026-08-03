@@ -54,7 +54,7 @@ def test_cost_for_rejects_unknown_model():
 # --------------------------------------------------------------------------- #
 def _prints(ts_min, amounts):
     return pd.DataFrame({"ts_ms": [t * MIN_MS for t in ts_min],
-                         "amount": [int(a) for a in amounts]})
+                         "amount_u12": [int(a) for a in amounts]})
 
 
 def test_log_amount_rate_ratio_positive_when_flow_accelerates():
