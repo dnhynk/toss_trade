@@ -250,6 +250,38 @@ def simulate_shot_exit(series: pd.Series, entry_ms: int, entry_u: float,
             "n_shots_after": out_n}
 
 
+#: 사전등록 §2.7 유니버스 필터 (T0 시점 기준) — 가격·시총 대역.
+SEC27_PRICE_USD = (0.10, 20.00)
+SEC27_MCAP_USD = (10e6, 300e6)
+#: docs/18 이 유일하게 집행 가능하다고 본 가격대.
+TARGET_PRICE_USD = (2.00, 5.00)
+
+STRATA = ("target", "sec27_other_price", "univ_mcap_out", "not_in_universe",
+          "univ_no_shares")
+
+
+def symbol_stratum(price_usd: float, shares_outstanding_qu: float | None) -> str:
+    """심볼을 측정 층으로 분류한다 (docs/23 §8).
+
+    docs/23 v1 의 통계는 **랭킹 전체**에서 쟀는데, 랭킹 상위는 우리가 거래하지 않는
+    대형주가 지배한다 — docs/16 흐름 표에서 이미 한 번 밟은 함정이다(160배 오차).
+    이 함수는 그 구분을 **코드로 고정**해 같은 실수가 반복되지 않게 한다.
+
+    `shares_outstanding_qu` 가 없으면(= 우리 유니버스 테이블에 없는 심볼)
+    `"not_in_universe"` 다 — 시총을 모르므로 **추정하지 않는다**(금지 규칙 3).
+    """
+    if shares_outstanding_qu is None or not (shares_outstanding_qu == shares_outstanding_qu):
+        return "not_in_universe"
+    if not (shares_outstanding_qu > 0):
+        return "univ_no_shares"
+    mcap = (shares_outstanding_qu / 1_000_000.0) * float(price_usd)
+    if not (SEC27_MCAP_USD[0] <= mcap <= SEC27_MCAP_USD[1]):
+        return "univ_mcap_out"
+    if TARGET_PRICE_USD[0] <= price_usd < TARGET_PRICE_USD[1]:
+        return "target"
+    return "sec27_other_price"
+
+
 def required_days(shots_per_day: float, *, min_n: int = 30) -> dict:
     """판정에 필요한 수집일 — 슈팅 관측 빈도 기준의 단순 역산."""
     if not (shots_per_day > 0):
