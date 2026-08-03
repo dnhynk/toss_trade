@@ -636,6 +636,40 @@ if ($null -ne $tele) {
             "loop_errors rose by $dLoop in one cycle (threshold $LoopErrorSurge, total " +
             "$($cur['loop_errors'])) - something is throwing repeatedly inside the loops.") 3600 | Out-Null
     }
+    # tier2 orderbook (main 4e6e24b): the pre-promotion spread trajectory the strategy's
+    # exit design needs. Flat during an open session means we are silently NOT collecting
+    # it - the failure mode is invisible otherwise, because nothing errors.
+    if ($openSession -and $cur.ContainsKey("tier2_orderbook_snaps")) {
+        $dT2 = Delta "tier2_orderbook_snaps"
+        if ($null -ne $dT2 -and $dT2 -eq 0) {
+            $strk = (Get-Prop $state "t2book_flat_strikes" 0) + 1
+            Set-Prop $state "t2book_flat_strikes" $strk
+            if ($strk -ge 3) {
+                $problems += "tier2_orderbook_flat_x$strk"
+                Raise-Alert $state "tier2_orderbook_flat" "WARN" (
+                    "tier2_orderbook_snaps has not advanced for $strk cycles during session=" +
+                    "$session (total $($cur['tier2_orderbook_snaps'])). Either polling.tier2_orderbook_s " +
+                    "is 0/unset in the live config, or there are no tier2 members, or the loop " +
+                    "is stalled. This is silent - no error is logged when it happens.") 3600 | Out-Null
+            }
+        } else {
+            Set-Prop $state "t2book_flat_strikes" 0
+            Clear-AlertKey $state "tier2_orderbook_flat"
+        }
+    } else {
+        Set-Prop $state "t2book_flat_strikes" 0
+    }
+    # Budget yielding is by design (tier2 orderbook is the first thing sacrificed), so
+    # this is INFO - it explains a lower snap count rather than reporting a fault.
+    $dSkip = Delta "tier2_orderbook_skipped"
+    if ($null -ne $dSkip -and $dSkip -gt 0) {
+        Raise-Alert $state "tier2_orderbook_skipped" "INFO" (
+            "tier2_orderbook_skipped rose by $dSkip (total $($cur['tier2_orderbook_skipped'])) - " +
+            "the collector yielded tier2 orderbook polls under budget pressure or a 429 " +
+            "cooldown. This is the designed sacrifice order, not a fault. Sustained growth " +
+            "means the MARKET_DATA budget is tight; consider raising polling.tier2_orderbook_s.") 21600 | Out-Null
+    }
+
     if ($openSession -and $cur.ContainsKey("candles_1m")) {
         $dC = Delta "candles_1m"
         if ($null -ne $dC -and $dC -eq 0) {
@@ -829,7 +863,8 @@ if ($null -ne $tele) {
     $rsaTxt = "n/a"; if ($c2.ContainsKey("ranking_snap_age_s")) { $rsaTxt = [int]$c2["ranking_snap_age_s"] }
     $afTxt = "n/a"; if ($c2.ContainsKey("auth_failures")) { $afTxt = [int]$c2["auth_failures"] }
     $fsTxt = "n/a"; if ($c2.ContainsKey("fetch_success_pct")) { $fsTxt = $c2["fetch_success_pct"] }
-    $summary += " rank_age=$rsaTxt auth_fail=$afTxt fetch_pct=$fsTxt"
+    $t2Txt = "n/a"; if ($c2.ContainsKey("tier2_orderbook_snaps")) { $t2Txt = [int]$c2["tier2_orderbook_snaps"] }
+    $summary += " rank_age=$rsaTxt auth_fail=$afTxt fetch_pct=$fsTxt t2book=$t2Txt"
 }
 if ($problems.Count -gt 0) { $summary += " problems=" + ($problems -join ",") }
 else { $summary = "OK $summary" }
