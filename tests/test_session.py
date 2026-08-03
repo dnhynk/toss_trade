@@ -185,3 +185,23 @@ def test_missing_orderbook_table_yields_an_empty_model_not_a_crash():
     conn = sqlite3.connect(":memory:")
     assert D.book_rows(conn).empty
     conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# 6. 수집기 재시작 경계 — 표본 구성이 바뀐 지점
+# --------------------------------------------------------------------------- #
+def test_collector_restart_boundary_is_the_announced_instant():
+    """2026-08-04 00:07:28 KST. 이 뒤로 티어 승격 정책이 다르다."""
+    kst = pd.Timestamp(SS.COLLECTOR_RESTART_MS + SS.KST_OFFSET_MS, unit="ms")
+    assert kst.strftime("%Y-%m-%d %H:%M:%S") == "2026-08-04 00:07:28"
+
+
+def test_era_split_is_start_inclusive_on_the_post_side():
+    assert SS.collector_era(SS.COLLECTOR_RESTART_MS - 1) == "pre_restart"
+    assert SS.collector_era(SS.COLLECTOR_RESTART_MS) == "post_restart"
+
+
+def test_vectorised_era_matches_the_scalar_rule():
+    ts = pd.Series([SS.COLLECTOR_RESTART_MS - 60_000, SS.COLLECTOR_RESTART_MS,
+                    SS.COLLECTOR_RESTART_MS + 60_000])
+    assert SS.eras_of(ts).tolist() == [SS.collector_era(int(x)) for x in ts]

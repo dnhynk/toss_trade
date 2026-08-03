@@ -83,6 +83,29 @@ def drop_holdout(df: pd.DataFrame, ts_col: str = "ts_ms") -> dict:
             "n_kept": int((~mask).sum())}
 
 
+#: **수집기 재시작 경계** (2026-08-04 00:07:28 KST, 공백 34초). 이 시각 이후
+#: **티어 승격 정책이 달라져 어떤 종목이 조밀하게 수집되는지가 다르다**
+#: (승격률 110/분 -> 1/분 미만). `trades_snap` 기반 분석은 **이 경계를 넘어 뭉치면
+#: 안 된다** — 표본 구성이 바뀐 것을 시장 변화로 오독하게 된다.
+COLLECTOR_RESTART_MS = 1785769648000
+COLLECTOR_ERAS = ("pre_restart", "post_restart")
+
+
+def collector_era(ts_ms: int) -> str:
+    """수집기 재시작 **전/후**. 티어 승격 정책이 달라진 경계다."""
+    return "post_restart" if int(ts_ms) >= COLLECTOR_RESTART_MS else "pre_restart"
+
+
+def eras_of(ts) -> pd.Series:
+    """벡터화 판정."""
+    if ts is None or len(ts) == 0:
+        return pd.Series(dtype="object")
+    # 규칙은 `collector_era` 한 곳에만 둔다 — 두 군데면 언젠가 갈라진다.
+    v = pd.to_numeric(ts, errors="coerce")
+    return pd.Series([collector_era(int(x)) if x == x else "pre_restart" for x in v],
+                     index=ts.index, dtype="object")
+
+
 def kst_minute_of_day(ts_ms: int) -> int:
     """epoch ms -> KST 자정 기준 분."""
     return int(((int(ts_ms) + KST_OFFSET_MS) // MIN_MS) % DAY_MIN)

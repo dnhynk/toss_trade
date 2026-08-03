@@ -210,6 +210,9 @@ def align_trades_to_l1(tape: pd.DataFrame, l1: pd.DataFrame, *,
                      "ask1_qu_after": float(aq[i + 1]) if i + 1 < len(ts) else np.nan})
     df = pd.DataFrame(rows)
     if len(df):
+        # 수집기 재시작으로 **티어 승격 정책이 바뀌었다** — 표본 구성이 다르므로
+        # 경계를 넘어 뭉치지 않는다(coordinator 지시 2026-08-04).
+        df["era"] = SS.eras_of(df["ts_ms"])
         df["eff_spread"] = effective_spread(df["price_u"], df["mid_u"])
         df["direction"] = trade_direction(df["price_u"], df["mid_u"])
         df["impact"] = (df["direction"]
@@ -363,6 +366,29 @@ def l1_refill(aligned: pd.DataFrame) -> list[dict]:
     return rows
 
 
+def cost_by_collector_era(aligned: pd.DataFrame, *,
+                          band: str | None = HEADLINE_BAND) -> list[dict]:
+    """**수집기 재시작 전/후로 갈라서** 낸다.
+
+    재시작 뒤 티어 승격 정책이 달라져 **조밀하게 수집되는 종목 집합이 다르다**.
+    경계를 넘어 뭉치면 표본 구성 변화를 시장 변화로 오독한다.
+    """
+    if aligned is None or aligned.empty or "era" not in aligned.columns:
+        return []
+    d = aligned if band is None else aligned[aligned["band"] == band]
+    rows = []
+    for era in SS.COLLECTOR_ERAS:
+        for sess in SS.SESSIONS:
+            s = d[(d["era"] == era) & (d["session"] == sess)]
+            v = pd.to_numeric(s.get("eff_spread"), errors="coerce").dropna() if len(s) else pd.Series(dtype=float)
+            rows.append({"era": era, "session": sess, "n": int(len(v)),
+                         "n_symbols": int(s["symbol"].nunique()) if len(s) else 0,
+                         "effective_spread_median": (float(v.median()) if len(v)
+                                                     else float("nan")),
+                         "powered": bool(len(v) >= MIN_N_FOR_VERDICT)})
+    return rows
+
+
 def tape_vs_walk_the_book(realized: list[dict], walk: dict) -> list[dict]:
     """**실측 대 걸어 내려가기를 나란히.** 어느 쪽이 크든 그대로 낸다."""
     out = []
@@ -505,6 +531,8 @@ def build_report(conn) -> dict:
         "size_contrast": within_symbol_size_contrast(aligned),
         "refill": l1_refill(aligned),
         "comparison": tape_vs_walk_the_book(realized, walk),
+        "by_collector_era": cost_by_collector_era(aligned),
+        "collector_restart_ms": SS.COLLECTOR_RESTART_MS,
         "bias": ("trades_snap is dense only for tier3-promoted symbols, so these "
                  "costs describe symbols we already chose to watch; large-clip cost "
                  "for un-promoted symbols remains UNOBSERVED"),
@@ -592,6 +620,18 @@ def main(db: Path, *, out_dir: Path | None = None) -> int:
               f"{r['bid_qty_ratio_median']:.2f}  ask_qty_ratio "
               f"{r['ask_qty_ratio_median']:.2f}  depleted_rate {r['depleted_rate']:.2f}")
     print("  polling is ~16s, so anything faster than one snapshot is invisible here.")
+
+    print("\n=== [docs/23 sec 10-R.8] SPLIT AT THE COLLECTOR RESTART "
+          "(tier promotion policy changed)")
+    for r in rep["by_collector_era"]:
+        if not r["n"]:
+            continue
+        tag = "" if r["powered"] else "  (n<30, no verdict)"
+        print(f"  {r['era']:<13}{r['session']:<9} n={r['n']:>6} "
+              f"syms={r['n_symbols']:>4}  eff_spread "
+              f"{r['effective_spread_median']:.4f}{tag}")
+    print("  the densely-collected symbol set differs across this boundary - "
+          "do NOT pool across it.")
 
     print("\n=== [docs/23 sec 10-R.5] TAPE vs WALK-THE-BOOK round trip (commission included "
           "for tape)")

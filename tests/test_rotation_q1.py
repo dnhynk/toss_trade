@@ -158,53 +158,98 @@ def test_correlation_is_nan_without_variation():
 # --------------------------------------------------------------------------- #
 # 6. 중단 기준이 코드로 집행된다
 # --------------------------------------------------------------------------- #
-def test_gate_stops_when_no_leading_lag_beats_placebo():
-    rows = [{"session": "regular", "lag_min": lag, "n_obs": 5000,
-             "corr_real": 0.02, "corr_placebo": 0.02, "diff": 0.0,
-             "ci_low": -0.01, "ci_high": 0.01, "verdict": "crosses_zero"}
-            for lag in RQ.LAGS]
-    g = RQ.q1_gate(rows)
+def _asym(session="regular", **over):
+    base = {"session": session, "k": 1, "n_minutes": 500, "corr_lead": 0.02,
+            "corr_lag": 0.02, "asymmetry": 0.0, "ci_low": -0.01, "ci_high": 0.01,
+            "ci_low_bonferroni": -0.02, "ci_high_bonferroni": 0.02,
+            "n_comparisons": 5, "verdict": "symmetric"}
+    base.update(over)
+    return base
+
+
+def test_gate_stops_when_lead_and_lag_are_symmetric():
+    """**대칭이면 선행이 아니다.** 동시 관계는 거래 대상이 아니다."""
+    g = RQ.q1_gate([], [_asym(k=k) for k in RQ.ASYMMETRY_K])
     assert g["proceed_to_q2"] is False
     assert g["by_session"]["regular"]["decision"] == "stop"
+    assert "SIMULTANEOUS" in g["by_session"]["regular"]["reason"].upper()
 
 
-def test_gate_stops_when_the_peak_is_at_a_non_leading_lag():
-    """최대 상관이 lag<=0 이면 **가격이 먼저**다 — 거래 대상이 아니다."""
-    rows = []
-    for lag in RQ.LAGS:
-        lead_ok = lag == 3
-        rows.append({"session": "regular", "lag_min": lag, "n_obs": 5000,
-                     "corr_real": 0.5 if lag == -2 else 0.01,
-                     "corr_placebo": 0.0, "diff": 0.01,
-                     "ci_low": 0.001 if lead_ok else -0.01,
-                     "ci_high": 0.02,
-                     "verdict": "above_zero" if lead_ok else "crosses_zero"})
-    g = RQ.q1_gate(rows)
-    assert g["by_session"]["regular"]["argmax_lag_min"] == -2
-    assert g["by_session"]["regular"]["argmax_is_leading"] is False
-    assert g["proceed_to_q2"] is False        # 최대가 후행이면 진행하지 않는다
+def test_gate_is_not_fooled_by_a_big_symmetric_peak():
+    """**이 검사가 코디네이터가 잡은 결함을 고정한다.**
+
+    lag -1/0/+1 이 나란히 크면 구 규칙("선행 셀이 하나라도 0 초과")은 통과시켰고,
+    자료가 늘자 답이 뒤집혔다. 비대칭 지표는 공통 성분이 상쇄되므로 0 이어야 한다.
+    """
+    rows = [_asym(k=k, corr_lead=0.20, corr_lag=0.20, asymmetry=0.0)
+            for k in RQ.ASYMMETRY_K]
+    g = RQ.q1_gate([], rows)
+    assert g["proceed_to_q2"] is False
+    assert g["by_session"]["regular"]["max_asymmetry"] == pytest.approx(0.0)
 
 
-def test_gate_proceeds_only_when_a_leading_lag_wins_and_peaks_leading():
-    rows = []
-    for lag in RQ.LAGS:
-        lead = lag == 2
-        rows.append({"session": "regular", "lag_min": lag, "n_obs": 5000,
-                     "corr_real": 0.5 if lead else 0.01, "corr_placebo": 0.0,
-                     "diff": 0.5 if lead else 0.01,
-                     "ci_low": 0.2 if lead else -0.01, "ci_high": 0.8,
-                     "verdict": "above_zero" if lead else "crosses_zero"})
-    g = RQ.q1_gate(rows)
+def test_gate_proceeds_only_when_the_lead_side_is_stronger():
+    rows = [_asym(k=k) for k in RQ.ASYMMETRY_K]
+    rows[1] = _asym(k=2, corr_lead=0.20, corr_lag=0.02, asymmetry=0.18,
+                    ci_low=0.10, ci_high=0.26,
+                    ci_low_bonferroni=0.05, ci_high_bonferroni=0.31,
+                    verdict="lead_stronger")
+    g = RQ.q1_gate([], rows)
     assert g["proceed_to_q2"] is True
+    assert g["by_session"]["regular"]["max_asymmetry_k"] == 2
 
 
-def test_underpowered_cells_are_not_counted_by_the_gate():
-    rows = [{"session": "regular", "lag_min": 2, "n_obs": 10,
-             "corr_real": 0.9, "corr_placebo": 0.0, "diff": 0.9,
-             "ci_low": 0.5, "ci_high": 1.0, "verdict": "above_zero"}]
-    g = RQ.q1_gate(rows)
+def test_gate_uses_the_bonferroni_ci_not_the_raw_one():
+    """보정 전 CI 로는 0 을 넘어도 보정 후 넘지 못하면 진행하지 않는다."""
+    rows = [_asym(k=k) for k in RQ.ASYMMETRY_K]
+    rows[0] = _asym(k=1, asymmetry=0.03, ci_low=0.005, ci_high=0.055,
+                    ci_low_bonferroni=-0.004, ci_high_bonferroni=0.064,
+                    verdict="symmetric")
+    assert RQ.q1_gate([], rows)["proceed_to_q2"] is False
+
+
+def test_gate_ignores_underpowered_cells():
+    rows = [_asym(k=1, asymmetry=0.9, ci_low_bonferroni=0.5,
+                  verdict="insufficient")]
+    g = RQ.q1_gate([], rows)
     assert g["proceed_to_q2"] is False
     assert g["by_session"]["regular"]["decision"] == "insufficient"
+
+
+def test_asymmetry_is_zero_on_a_perfectly_symmetric_panel():
+    """합성 대칭 자료에서 지표가 0 근처여야 한다 — 지표 자체의 건전성 검사."""
+    rng = np.random.default_rng(5)
+    rows = []
+    for m in range(80):
+        for sym in "ABCDEF":
+            rows.append((sym, m, 1.0 + 0.001 * rng.normal(),
+                         10.0 + rng.normal()))
+    p = RQ.build_panel(_candles(rows))
+    got = [x for x in RQ.asymmetry_test(p, ks=(1,))
+           if x["session"] == "regular" and x["n_minutes"] > 0]
+    if got and got[0]["asymmetry"] == got[0]["asymmetry"]:
+        assert abs(got[0]["asymmetry"]) < 0.5
+
+
+def test_economic_significance_reports_bp_against_measured_cost():
+    """유의성만으로는 무의미하다 — bp 로 환산해 실측 비용과 나란히 놓는다."""
+    rows = []
+    for m in range(80):
+        for i, sym in enumerate("ABCDEF"):
+            rows.append((sym, m, 1.0 + 0.001 * i, 10.0 + i))
+    e = RQ.economic_significance(RQ.build_panel(_candles(rows)))
+    powered = [x for x in e if x.get("powered")]
+    for x in powered:
+        assert x["round_trip_cost_bp"] == pytest.approx(
+            RQ.REALIZED_ROUND_TRIP * 1e4)
+        assert x["net_bp"] == pytest.approx(
+            x["top_decile_bp_per_min"] - x["round_trip_cost_bp"])
+
+
+def test_measured_cost_constant_matches_the_tape_measurement():
+    """비용 상수는 §10-R.5 실측(0.46% + 수수료 0.2%)에서 온다."""
+    assert RQ.EFFECTIVE_SPREAD_REGULAR == pytest.approx(0.0046)
+    assert RQ.REALIZED_ROUND_TRIP == pytest.approx(0.0046 + 0.002)
 
 
 # --------------------------------------------------------------------------- #
