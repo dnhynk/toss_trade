@@ -53,8 +53,8 @@ from ..config import Config
 from ..store.writer import Store
 from ..universe.filters import market_cap_u, passes_tier0
 from .budget import GROUP_CHART, GROUP_MARKET_DATA, GROUP_RANKING, BudgetGuard, TierPlan
-from .detector import (EventDetector, PriceActivityTracker, TierChange, TierStateMachine,
-                       activity_score, build_curve)
+from .detector import (ACTIVITY_ENTRY_SCORE, EventDetector, PriceActivityTracker,
+                       TierChange, TierStateMachine, activity_score, build_curve)
 from .notifier import Notifier
 from .scheduler import (CLOSED, Clock, SessionScheduler, exclude_today_1d_cutoff,
                         session_window, trading_day_of)
@@ -1166,8 +1166,9 @@ def _ranking_triggers(ctx: CollectorContext, page: RankingPage, snap_ms: int) ->
         if sym not in ctx.watchlist:
             continue                     # 유니버스 게이트 또는 tier1 정원에 걸렸다
         if toss and ctx.tiers.tier_of(sym) < 2:
-            if ctx.tiers.force(sym, 2, "ranking_entry", 0.0, snap_ms,
-                               compete=False) is not None:
+            # 랭킹 진입도 고정 진입 점수로 **경쟁**한다 — 유지선 아래 점유자만 밀어낸다.
+            if ctx.tiers.force(sym, 2, "ranking_entry", ACTIVITY_ENTRY_SCORE,
+                               snap_ms, record_score=0.0) is not None:
                 ctx.bump("ranking_promotions")
     ctx.flush_changes()
 
@@ -1248,11 +1249,16 @@ def _on_price(ctx: CollectorContext, price: Price, now_ms: int) -> None:
         reason = "price_activity"
     else:
         return
-    # 활동 신호는 **빈자리에만** 들어간다 (compete=False). activity_score 는 정상 거래
-    # 종목이면 거의 1.000 이라 변별력이 없어, 경쟁시키면 매 스윕마다 최약체를 축출해
-    # 1↔2 왕복이 영구히 돈다 (2026-08-03 정규장 실측: 승격 분당 136회, 종목당 평균 12.4회).
-    if ctx.tiers.force(price.symbol, 2, reason, score, now_ms,
-                       compete=False) is not None:
+    # 활동 신호는 **고정 진입 점수(ACTIVITY_ENTRY_SCORE)** 로 경쟁한다.
+    #
+    # 원래 결함은 "경쟁" 자체가 아니라 **포화된 점수**였다: activity_score 는 정상 거래
+    # 종목이면 거의 1.000 이라 0.3~0.6 짜리 진짜 표적을 매 스윕 밀어냈다(8/03 요동).
+    # 그렇다고 빈자리만 쓰게 하면(compete=False) tier2 가 닫힌 집합이 되고, tier2 는
+    # tier3 의 유일한 진입로라 tier3 가 말라죽는다(8/04 실측: evicted=0, tier3 10->3).
+    # 고정 점수는 유지선(0.22) 아래 점유자만 재활용하고, 활동끼리는 동점이라 진동하지
+    # 않는다. 원래 활동 강도는 record_score 로 promotions 테이블에 그대로 남긴다.
+    if ctx.tiers.force(price.symbol, 2, reason, ACTIVITY_ENTRY_SCORE, now_ms,
+                       record_score=score) is not None:
         ctx.bump(f"promote_{reason}")
 
 

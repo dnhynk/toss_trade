@@ -16,7 +16,8 @@ from tossmon.analysis.features import extract_precursor_features, feature_names
 from tossmon.api.models import Price
 from tossmon.analysis.labeling import EventParams
 from tossmon.collector import detector as detector_module
-from tossmon.collector.detector import (DEFAULT_THRESHOLDS, EVENT_CORE_COLUMNS,
+from tossmon.collector.detector import (ACTIVITY_ENTRY_SCORE, DEFAULT_THRESHOLDS,
+                                        EVENT_CORE_COLUMNS,
                                         EventDetector, PriceActivityTracker,
                                         TierStateMachine, activity_score, confirm_score,
                                         event_record, label_hash, precursor_score,
@@ -515,27 +516,129 @@ def test_eviction_does_not_target_a_symbol_still_in_dwell():
     assert sm.tier_of("WEAK") == 1
 
 
-def test_churn_collapses_when_activity_promotions_stop_competing():
-    """정량 회귀: 같은 시장 입력에서 전이 수가 급감한다 (수정 전/후 대조).
+def test_tier3_refills_whenever_a_slot_is_free_and_a_symbol_qualifies():
+    """**구멍 메우기 회귀** (2026-08-04): tier3 에 빈자리가 있고 자격(>=0.60) 종목이
+    있으면 **반드시** 승격돼야 한다. 이 단언이 없어서 tier3 고사를 테스트가 못 잡았다."""
+    sm = machine(tier3_max=5)
+    sm.on_new_data("HOT", 0.90, 0)                         # 1 -> 2
+    sm.drain_changes()
+    assert sm.tier_of("HOT") == 2
+    assert sm.on_new_data("HOT", 0.90, HYST_MS + 1) == 3    # 2 -> 3 (빈자리 5)
+    assert sm.tier_of("HOT") == 3
+    assert len(sm.members(3)) == 1
 
-    라이브 재현 — 정원보다 훨씬 많은 종목이 매 스윕 activity_score 1.000 을 낸다.
+
+def test_full_tier2_of_failing_occupants_still_admits_a_new_candidate():
+    """tier2 가 닫힌 집합이 되면 안 된다 — tier2 는 tier3 의 **유일한 진입로**다.
+
+    2026-08-04 라이브: 활동 승격을 빈자리 전용으로 바꾸자 evicted=0 이 되고 tier2 가
+    고정 집합이 되면서 tier3 이 10 -> 3 으로 말라죽었다.
     """
-    def run(compete: bool) -> int:
-        sm = TierStateMachine(HYST_S, tier2_max=10, tier3_max=2)
-        # 정원을 채운 **진짜 표적** 10 종목 — 봉 기반 실제 검출 스코어 0.40
-        for i in range(10):
-            sm.force(f"REAL{i}", 2, "seed", 0.40, 0)
-        sm.drain_changes()
-        changes = 0
-        for sweep in range(1, 21):                         # 45초 스윕 20회
-            ts = sweep * 45_000
-            for i in range(10):                            # 멤버는 실스코어를 계속 받는다
-                sm.on_new_data(f"REAL{i}", 0.40, ts)
-            for i in range(40):                            # 정상 거래 40 종목이 1.000
-                sm.force(f"ACT{i}", 2, "price_activity", 1.000, ts, compete=compete)
-            changes += len(sm.drain_changes())
-        return changes
+    sm = machine(tier2_max=3)
+    for i in range(3):                                     # 정원을 채운다
+        sm.force(f"DUD{i}", 2, "price_activity", ACTIVITY_ENTRY_SCORE, 0)
+    sm.drain_changes()
+    for i in range(3):                                     # 봉 데이터로 약함이 드러난다
+        sm.on_new_data(f"DUD{i}", 0.05, HYST_MS + 1)
+    sm.drain_changes()
 
-    old, new = run(True), run(False)
-    assert old >= 20, f"재현 실패: 경쟁 승격의 축출이 관측되지 않았다 ({old})"
-    assert new == 0, f"수정 후에도 축출이 남았다 ({new})"   # 빈자리가 없으니 전이 0
+    ts = 3 * HYST_MS
+    assert sm.force("NEW", 2, "price_activity", ACTIVITY_ENTRY_SCORE, ts) == 2
+    assert sm.tier_of("NEW") == 2                          # 회전이 살아 있다
+    assert len(sm.members(2)) == 3                         # 정원은 지킨다
+
+
+def test_activity_entry_cannot_evict_a_promising_member():
+    """유지선(0.22) 이상 실스코어를 가진 표적은 활동 신호가 밀어내지 못한다 (8/03 결함)."""
+    sm = machine(tier2_max=1)
+    sm.on_new_data("REAL", 0.50, 0)                        # 진짜 표적이 자리를 잡는다
+    sm.drain_changes()
+    ts = 2 * HYST_MS
+    assert sm.force("ACT", 2, "price_activity", ACTIVITY_ENTRY_SCORE, ts) is None
+    assert sm.tier_of("REAL") == 2 and sm.tier_of("ACT") == 1
+
+
+def test_activity_entries_do_not_evict_each_other():
+    """활동 진입끼리는 동점 + 마진이라 서로 못 밀어낸다 — 진동의 씨앗을 없앤다."""
+    sm = machine(tier2_max=1)
+    sm.force("A", 2, "price_activity", ACTIVITY_ENTRY_SCORE, 0)
+    sm.drain_changes()
+    ts = 2 * HYST_MS
+    assert sm.force("B", 2, "price_activity", ACTIVITY_ENTRY_SCORE, ts) is None
+    assert sm.tier_of("A") == 2 and sm.tier_of("B") == 1
+
+
+def test_healthy_turnover_no_oscillation_and_real_promotions_happen():
+    """시뮬 성공 기준 재정의 (코디네이터 지시): **전이 0 은 성공이 아니다.**
+
+    건강한 시스템은 (1) 같은 종목이 왕복하지 않으면서 (2) 진짜 뜨거운 종목을 **여전히
+    승격시킨다**. 둘 다 확인한다 — 8/03 수정은 (1)만 보고 (2)를 잃어 tier3 를 죽였다.
+    """
+    from collections import Counter
+
+    sm = TierStateMachine(HYST_S, tier2_max=10, tier3_max=3)
+    ups: Counter = Counter()
+    downs: Counter = Counter()
+    for sweep in range(1, 21):                             # 45초 스윕 20회
+        ts = sweep * 45_000
+        # tier2 멤버는 봉 데이터로 실스코어를 받는다 — HOT 만 강하고 나머지는 약하다
+        for sym in list(sm.members(2)):
+            sm.on_new_data(sym, 0.90 if sym == "ACT0" else 0.05, ts)
+        # 정상 거래 중인 40 종목이 매 스윕 진입을 시도한다
+        for i in range(40):
+            sm.force(f"ACT{i}", 2, "price_activity", ACTIVITY_ENTRY_SCORE, ts)
+        for ch in sm.drain_changes():
+            (ups if ch.to_tier > ch.from_tier else downs)[ch.symbol] += 1
+
+    # (1) 진동 없음 — 어떤 종목도 왕복(승격+강등 반복)하지 않는다
+    round_trips = {s: min(ups[s], downs[s]) for s in set(ups) | set(downs)}
+    assert max(round_trips.values(), default=0) <= 1, f"진동 재발: {round_trips}"
+    # (2) 정당한 신규 승격이 실제로 일어난다 — 동결이 아니다
+    assert len(ups) >= 5, f"신규 승격이 사실상 없다 (동결 신호): {len(ups)}"
+    # (3) 진짜 뜨거운 종목은 tier3 까지 간다 — 파이프라인 전체가 살아 있다
+    assert sm.tier_of("ACT0") == 3, "뜨거운 종목이 tier3 에 도달하지 못했다"
+
+
+def test_proven_weak_symbol_is_not_immediately_resampled_by_activity():
+    """약함이 입증돼 내려온 종목은 쿨다운 동안 활동 신호로 다시 올라오지 않는다."""
+    sm = machine(tier2_max=1)
+    sm.force("W", 2, "price_activity", ACTIVITY_ENTRY_SCORE, 0)
+    sm.drain_changes()
+    t = HYST_MS + 1
+    sm.on_new_data("W", 0.05, t)                            # 하회 시작
+    assert sm.on_new_data("W", 0.05, t + HYST_MS + 1) == 1  # score_decay 로 강등
+    sm.drain_changes()
+    down_ms = t + HYST_MS + 1
+
+    # 쿨다운 중에는 활동 신호가 다시 못 올린다 (재표집 = 예산 낭비이자 진동)
+    assert sm.force("W", 2, "price_activity", ACTIVITY_ENTRY_SCORE,
+                    down_ms + 60_000) is None
+    assert sm.tier_of("W") == 1
+    # 쿨다운이 지나면 다시 표집 대상이다
+    later = down_ms + detector_module.ACTIVITY_REENTRY_COOLDOWN_S * 1000 + 1
+    assert sm.force("W", 2, "price_activity", ACTIVITY_ENTRY_SCORE, later) == 2
+
+
+def test_real_score_beats_the_reentry_cooldown():
+    """증거는 쿨다운을 이긴다 — 실제 검출 스코어 경로는 막히지 않는다."""
+    sm = machine(tier2_max=2)
+    sm.force("W", 2, "price_activity", ACTIVITY_ENTRY_SCORE, 0)
+    sm.drain_changes()
+    t = HYST_MS + 1
+    sm.on_new_data("W", 0.05, t)
+    sm.on_new_data("W", 0.05, t + HYST_MS + 1)              # 강등 (쿨다운 무장)
+    sm.drain_changes()
+    # 같은 종목이 진짜로 터지면 실스코어 경로로 즉시 다시 올라온다
+    assert sm.on_new_data("W", 0.90, t + 2 * HYST_MS + 2) == 2
+
+
+def test_stale_demotion_does_not_arm_the_reentry_cooldown():
+    """데이터가 없어서 내려온 것은 약함의 증거가 아니다 — 즉시 재표집 가능해야 한다."""
+    sm = machine(tier2_max=2, stale_demote_s=300)
+    sm.force("S", 2, "price_activity", ACTIVITY_ENTRY_SCORE, 0)
+    sm.drain_changes()
+    stale = sm.sweep(HYST_MS + 400_000)                     # 데이터 끊김 -> stale 강등
+    assert [c.reason for c in stale] == ["stale"]
+    sm.drain_changes()
+    ts = HYST_MS + 400_000 + HYST_MS + 1
+    assert sm.force("S", 2, "price_activity", ACTIVITY_ENTRY_SCORE, ts) == 2

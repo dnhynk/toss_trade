@@ -51,6 +51,27 @@ DEFAULT_THRESHOLDS: dict[int, tuple[float, float]] = {2: (0.35, 0.22), 3: (0.60,
 #: 티어 정원이 찼을 때, 최약체를 밀어내려면 이만큼 더 높아야 한다 (자리 뺏기 플래핑 방지).
 EVICTION_MARGIN = 0.08
 
+#: 활동·랭킹 유래 승격이 tier2 진입 경쟁에 들고 들어가는 **고정 점수** (2026-08-04).
+#:
+#: 임의값이 아니라 tier2 강등선(DEFAULT_THRESHOLDS[2][1]=0.22)에 EVICTION_MARGIN 을
+#: 더한 값이다. 이 한 상수가 세 가지를 동시에 만든다:
+#:   (a) **회전 복원** — 이미 유지선(0.22) 아래로 떨어진 점유자는 밀어낼 수 있다.
+#:       빈 슬롯만 기다리면 tier2 가 닫힌 집합이 되고, tier2 는 tier3 의 유일한 진입로라
+#:       tier3 가 말라죽는다 (2026-08-04 라이브: 배포 후 evicted=0, tier3 10->3).
+#:   (b) **진동 차단** — 활동 진입끼리는 동점이라 마진 때문에 서로 밀어내지 못한다.
+#:       (0.30 + 0.08 >= 0.30) 이것이 8/03 요동의 재발을 막는다.
+#:   (c) **진짜 표적 보호** — 실제 검출 스코어가 0.22 이상인 종목은 활동 신호가
+#:       건드리지 못한다. 포화된 activity_score(1.000)가 0.3~0.6 짜리 표적을 밀어내던
+#:       것이 원래 결함이었다.
+ACTIVITY_ENTRY_SCORE = 0.30
+
+#: 약함이 **입증되어** 내려온 종목(evicted/score_decay)을 활동 신호로 다시 올리기까지의
+#: 대기 시간(초). 봉 데이터로 이미 유지선 아래임이 확인된 종목을 몇 분 만에 재표집하는 것은
+#: 예산 낭비이자 진동이다(승격마다 이력 백필이 따라붙는다). 데이터가 없어서 내려온
+#: `stale` 에는 적용하지 않는다 — 그건 약함의 증거가 아니다.
+#: 실제 검출 스코어 경로(`on_new_data`)는 이 쿨다운을 무시한다 — 증거는 쿨다운을 이긴다.
+ACTIVITY_REENTRY_COOLDOWN_S = 600
+
 #: `first_print`(체결 개시) 는 A2 §3 의 1순위 트리거라 스코어와 무관하게 이 티어로 올린다.
 FIRST_PRINT_TIER = 2
 #: staleness 가 이 비율 이하로 급감하면 "깨어남" 으로 본다.
@@ -280,6 +301,8 @@ class _SymbolState:
     last_ts_ms: int | None = None
     changed_ms: int | None = None
     below_since_ms: int | None = None
+    #: 약함 입증으로 강등된 뒤 활동 신호 재승격을 막는 시각 (0 = 제한 없음).
+    reentry_block_ms: int = 0
     reason: str = "seed"
 
 
@@ -356,7 +379,8 @@ class TierStateMachine:
         return None
 
     def force(self, symbol: str, tier: int, reason: str, score: float,
-              ts_ms: int, *, compete: bool = True) -> int | None:
+              ts_ms: int, *, compete: bool = True,
+              record_score: float | None = None) -> int | None:
         """스코어와 무관한 승격 (A2 §3 `first_print`). 강등에는 쓰지 않는다.
 
         dwell 은 **우회하지 않는다** (감사 H-7/J-1): 랭킹 스냅샷은 12초마다 오므로
@@ -377,9 +401,13 @@ class TierStateMachine:
         st.last_ts_ms = int(ts_ms)
         if tier <= st.tier:
             return None
+        if ts_ms < st.reentry_block_ms:
+            return None            # 이미 약함이 입증된 종목 — 재표집 대기 중
         st.below_since_ms = None
         return self._change(symbol, st, int(tier), reason, ts_ms,
-                            may_evict=compete, record_score=float(score))
+                            may_evict=compete,
+                            record_score=float(score if record_score is None
+                                               else record_score))
 
     # ---- 유지보수 -------------------------------------------------------
 
@@ -463,6 +491,9 @@ class TierStateMachine:
                             reason=reason,
                             score=st.score if record_score is None else record_score,
                             ts_ms=int(ts_ms))
+        if new_tier < st.tier and reason in ("evicted", "score_decay"):
+            # 약함이 입증돼 내려간다 — 활동 신호의 즉시 재표집을 막는다.
+            st.reentry_block_ms = int(ts_ms) + ACTIVITY_REENTRY_COOLDOWN_S * 1000
         st.tier = new_tier
         st.changed_ms = int(ts_ms)
         st.reason = reason
@@ -493,6 +524,7 @@ class TierStateMachine:
                                        score=st.score, ts_ms=int(ts_ms)))
         st.tier -= 1
         st.changed_ms = int(ts_ms)
+        st.reentry_block_ms = int(ts_ms) + ACTIVITY_REENTRY_COOLDOWN_S * 1000
         st.reason = "evicted"
         return True
 
