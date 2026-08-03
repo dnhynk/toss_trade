@@ -69,8 +69,12 @@ OUT_DIR = Path(__file__).resolve().parents[3] / "out"
 #: 테스트가 그것을 강제한다. 문서에 표를 추가하면 **여기에 먼저 추가**해야 하고,
 #: 그러면 배선을 잊을 수 없다 — 감사 5차 H-1(문서 수치를 재실행할 방법이 없음)의
 #: 재발 방지 장치다. 1차에서 닫았다가 2차에서 다시 열렸으므로 이번엔 코드로 막는다.
+#: 러너가 규칙별로 내보내는 **필드 전체**. 가드는 이것을 **부분집합이 아니라 동일
+#: 집합**으로 대조한다 — 필드를 추가하고 여기 적기를 잊으면 테스트가 깨진다.
+#: (허용 목록이면 "잊은 것"은 검사되지 않는다. 감사 지적 참조.)
 REPORTED_FIELDS = (
     "rule",              # 공통
+    "n", "fill_rate",                                    # §10-N.9 좌측 열
     "gross_mean", "gross_ci", "net_by_scenario",        # §10-N.9
     "pair_n", "diff_mean", "diff_ci", "diff_ci_bonferroni", "diff_verdict",  # §10-N.8
     "days_needed",                                       # §10-N.10
@@ -371,7 +375,8 @@ def run(db: Path, *, entry_delay_s: int = ENTRY_DELAY_S,
     return {"days": days, "real": real_by_day, "placebo": plac_by_day}
 
 
-def min_rise_independence(db: Path, thresholds=(0.01, 0.02, 0.03, 0.05)) -> dict:
+def min_rise_independence(db: Path | None = None, thresholds=(0.01, 0.02, 0.03, 0.05),
+                          res: dict | None = None) -> dict:
     """**성공 기준 점검** — 답이 슈팅 임계 `min_rise` 에 의존하지 않음을 보인다.
 
     구 §10 은 이탈 목표가 슈팅 고점이라 답이 임계를 1:1 로 따라갔다
@@ -387,7 +392,10 @@ def min_rise_independence(db: Path, thresholds=(0.01, 0.02, 0.03, 0.05)) -> dict
     names = {n.id for n in ast.walk(code) if isinstance(n, ast.Name)}
     attrs = {n.attr for n in ast.walk(code) if isinstance(n, ast.Attribute)}
     depends = bool({"detect_shots", "min_rise"} & (names | attrs))
-    res = run(db)
+    # 이미 계산된 실행 결과가 있으면 재사용한다. `main()` 이 이 함수를 부르는데
+    # 여기서 `run` 을 다시 돌리면 전체 분석이 두 번 돌아간다.
+    if res is None:
+        res = run(db)
     allr = (pd.concat([d for d in res["real"].values() if len(d)], ignore_index=True)
             if res["real"] else pd.DataFrame())
     base = summarize(allr, "downtick_1")
@@ -438,6 +446,8 @@ def build_report(res: dict) -> dict:
         })
     return {"days": days, "n_real": int(len(allr)), "entries_per_day": epd,
             "cost_scenarios": dict(COST_SCENARIOS),
+            # C-2 성공 기준 점검도 러너가 만든다 — 문서에 싣는 수치가 여기를 지나야 한다.
+            "min_rise_independence": min_rise_independence(res=res),
             "pooled_ci_permitted": len(days) >= MIN_DAY_CLUSTERS,
             "per_day_counts": {d: int(len(res["real"][d])) for d in days},
             "rules": rules}
@@ -456,7 +466,8 @@ def main(db: Path, *, out_dir: Path | None = None) -> int:
     print(f"trading days with entries: {len(rep['days'])} -> {rep['days']}")
     print(f"real entries {rep['n_real']}   entries/day {rep['entries_per_day']:.1f}")
 
-    print(f"\n=== PER-DAY entry counts (cluster check, need >= {MIN_DAY_CLUSTERS})")
+    print(f"\n=== [docs/23 sec 10-N.5] PER-DAY entry counts "
+          f"(cluster check, need >= {MIN_DAY_CLUSTERS})")
     for d, n in rep["per_day_counts"].items():
         print(f"  {d}: {n}")
     print(f"  effective day clusters = {len(rep['days'])} -> pooled CI "
@@ -497,6 +508,15 @@ def main(db: Path, *, out_dir: Path | None = None) -> int:
         print(f"  {r['rule']:<16} diff {r['diff_mean']:+.4f} -> {tag}")
     print("  NOTE conditional on the point estimate being the true effect. Where the "
           "difference CI crosses zero, no number of days excludes zero.")
+
+    # ---- C-2 성공 기준 (이탈이 슈팅 임계에 의존하지 않는가) ----
+    ind = rep["min_rise_independence"]
+    print("\n=== [docs/23 sec 10-N.2] MIN_RISE INDEPENDENCE (C-2 success criterion)")
+    print(f"  structurally independent of the shot threshold: "
+          f"{ind['structurally_independent']}")
+    print(f"  {ind['note']}")
+    for t, v in ind["shared_result_across_thresholds"].items():
+        print(f"    min_rise={t}: gross {v['gross_mean']:+.4f}  net {v['net_mean']:+.4f}")
 
     out = (out_dir or OUT_DIR)
     out.mkdir(parents=True, exist_ok=True)
