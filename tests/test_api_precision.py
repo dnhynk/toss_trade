@@ -15,7 +15,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from test_api_support import make_client, mock_server  # noqa: F401
+from tests.test_api_support import make_client, mock_server  # noqa: F401
 from tossmon.api.errors import SchemaMismatch
 from tossmon.api.models import (
     dec_to_u,

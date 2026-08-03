@@ -8,7 +8,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from test_api_support import LIMITS, MockServer, client, make_client, mock_server  # noqa: F401
+from tests.test_api_support import LIMITS, MockServer, client, make_client, mock_server  # noqa: F401
 from tossmon.api.client import BATCH_MAX, TossClient
 from tossmon.api.errors import (
     AuthExpired,
