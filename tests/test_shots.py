@@ -205,3 +205,33 @@ def test_shot_exit_ignores_shots_before_entry():
 def test_required_days_inverts_the_observation_rate():
     assert S.required_days(10.0, min_n=30)["days_needed"] == 3
     assert S.required_days(0.0)["days_needed"] is None
+
+
+# --------------------------------------------------------------------------- #
+# 측정 층 분류 (docs/23 §8) — 모집단 오류 방지
+# --------------------------------------------------------------------------- #
+def test_target_stratum_is_price_2_to_5_with_section_2_7_mcap():
+    # $3.00 x 20M shares = $60M mcap -> section 2.7 band, price in $2-5
+    assert S.symbol_stratum(3.00, 20_000_000 * 1_000_000) == "target"
+
+
+def test_section_2_7_price_outside_the_target_band():
+    assert S.symbol_stratum(0.50, 100_000_000 * 1_000_000) == "sec27_other_price"
+    assert S.symbol_stratum(12.0, 5_000_000 * 1_000_000) == "sec27_other_price"
+
+
+def test_mcap_outside_section_2_7_is_split_out():
+    assert S.symbol_stratum(3.00, 1_000_000_000 * 1_000_000) == "univ_mcap_out"
+    assert S.symbol_stratum(3.00, 1_000_000 * 1_000_000) == "univ_mcap_out"
+
+
+def test_symbols_without_share_data_are_not_guessed():
+    """유니버스 테이블에 없으면 시총을 추정하지 않는다 — 대형주가 여기 들어온다."""
+    assert S.symbol_stratum(200.0, None) == "not_in_universe"
+    assert S.symbol_stratum(200.0, float("nan")) == "not_in_universe"
+    assert S.symbol_stratum(3.0, 0) == "univ_no_shares"
+
+
+def test_target_band_boundaries_are_half_open():
+    assert S.symbol_stratum(2.00, 20_000_000 * 1_000_000) == "target"
+    assert S.symbol_stratum(5.00, 20_000_000 * 1_000_000) == "sec27_other_price"
