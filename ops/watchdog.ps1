@@ -46,12 +46,22 @@ param(
 
     [double]$FreshCritMin = 15.0,
     [int]$FreezeStrikesToRestart = 2,
-    [double]$DiskWarnGB = 5.0,
-    [double]$DiskCritGB = 3.0,
+    [double]$DiskSurveyGB = 8.0,
+    [double]$DiskReclaimGB = 6.0,
+    [double]$DiskWarnGB = 7.0,
+    [double]$DiskCritGB = 5.0,
     [int]$RestartMax = 3,
     [int]$RestartWindowS = 7200,
     [double]$TokenGraceMin = 10.0,
     [int]$RuntimeErrorMin = 5,
+
+    # W4 watchdog contract (main 27abc3f) thresholds.
+    # ranking_snap_age_s is the HIGHEST-priority alarm: rankings cannot be fetched
+    # retroactively, so a silently stalled ranking loop is permanent data loss.
+    [int]$RankingSnapAgeCritS = 300,
+    [int]$AuthFailuresToRestart = 3,
+    [int]$LoopErrorSurge = 500,
+    [double]$FetchSuccessWarnPct = 90.0,
 
     [double]$WatchdogStaleS = 900,   # sentinel: watchdog heartbeat older -> alert
     [double]$SentinelStaleS = 4200,  # watchdog: sentinel heartbeat older -> alert
@@ -160,6 +170,18 @@ function Get-LastTelemetry {
     return $null
 }
 
+# Parse "k=v k=v ..." telemetry counters into a hashtable (W4 contract, main 27abc3f).
+# The budget section after "|" is skipped - it is a rate display, not a counter.
+function Parse-Counters([string]$counters) {
+    $out = @{}
+    if ($null -eq $counters) { return $out }
+    $head = ($counters -split "\|")[0]
+    foreach ($m in [regex]::Matches($head, "([a-z0-9_]+)=(-?[0-9]+(?:\.[0-9]+)?)")) {
+        $out[$m.Groups[1].Value] = [double]$m.Groups[2].Value
+    }
+    return $out
+}
+
 function Get-LogTail([int]$lines = 400) {
     if (-not (Test-Path $CollectorLog)) { return @() }
     $t = Get-Content $CollectorLog -Tail $lines -ErrorAction SilentlyContinue
@@ -186,6 +208,87 @@ function Get-FreeGB {
     $drive = [IO.Path]::GetPathRoot((Resolve-Path $DataDir).Path)
     $du = [IO.DriveInfo]::new($drive)
     return [math]::Round($du.AvailableFreeSpace / 1GB, 2)
+}
+
+# Bounded top-consumer survey. A full-drive walk every 5 minutes is far too expensive,
+# so this looks only where disk actually disappears on this machine: dynamically
+# expanding virtual disks (WSL / Claude VM - they grow and never shrink on their own),
+# agent scratchpads under Temp, and our own data dir.
+function Get-TopConsumers([int]$top = 8) {
+    $items = @()
+    $probeDirs = @(
+        (Join-Path $env:LOCALAPPDATA "wsl"),
+        (Join-Path $env:LOCALAPPDATA "Packages"),
+        (Join-Path $env:LOCALAPPDATA "Docker")
+    )
+    foreach ($d in $probeDirs) {
+        if (-not (Test-Path $d)) { continue }
+        try {
+            Get-ChildItem $d -Recurse -File -Force -Filter "*.vhdx" -ErrorAction SilentlyContinue |
+                ForEach-Object { $items += [PSCustomObject]@{ MB = [math]::Round($_.Length/1MB,1); Path = $_.FullName } }
+        } catch { }
+    }
+    $tempClaude = Join-Path $env:TEMP "claude"
+    if (Test-Path $tempClaude) {
+        try {
+            Get-ChildItem $tempClaude -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                $sz = (Get-ChildItem $_.FullName -Recurse -File -Force -ErrorAction SilentlyContinue |
+                    Measure-Object Length -Sum).Sum
+                if ($sz -gt 50MB) {
+                    $items += [PSCustomObject]@{ MB = [math]::Round($sz/1MB,1); Path = $_.FullName }
+                }
+            }
+        } catch { }
+    }
+    try {
+        $sz = (Get-ChildItem $DataDir -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+        $items += [PSCustomObject]@{ MB = [math]::Round($sz/1MB,1); Path = "$DataDir (collection data)" }
+    } catch { }
+    return ($items | Sort-Object MB -Descending | Select-Object -First $top)
+}
+
+# Reclaim what is genuinely ours to reclaim. Never touches the live DB, never touches
+# another agent's *current* scratchpad (only files untouched for $staleH hours), and
+# never touches the VHDX files - those need an elevated compaction the watchdog cannot do.
+function Invoke-Reclaim([int]$staleH = 24) {
+    $freed = 0.0
+    $cut = (Get-Date).AddHours(-$staleH)
+    $tempClaude = Join-Path $env:TEMP "claude"
+    if (Test-Path $tempClaude) {
+        foreach ($pat in @("*.db", "*.db-wal", "*.db-shm", "*.log", "*.zip", "*.tar", "*.tmp")) {
+            try {
+                Get-ChildItem $tempClaude -Recurse -File -Force -Filter $pat -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTime -lt $cut -and $_.Length -gt 1MB } |
+                    ForEach-Object {
+                        $mb = [math]::Round($_.Length/1MB,1)
+                        try { Remove-Item $_.FullName -Force -ErrorAction Stop; $freed += $mb
+                              Write-Log "reclaim: deleted $($_.FullName) (${mb}MB, stale ${staleH}h+)" } catch { }
+                    }
+            } catch { }
+        }
+    }
+    # rotated/compressed logs anywhere in our data dir, beyond the retention the
+    # rotate_logs policy already implies
+    try {
+        Get-ChildItem $DataDir -File -Force -Filter "*.gz" -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-7) } |
+            ForEach-Object {
+                $mb = [math]::Round($_.Length/1MB,1)
+                try { Remove-Item $_.FullName -Force -ErrorAction Stop; $freed += $mb
+                      Write-Log "reclaim: deleted rotated log $($_.Name) (${mb}MB)" } catch { }
+            }
+    } catch { }
+    # user-scope Windows temp leftovers (no elevation needed, 7d+ untouched)
+    try {
+        Get-ChildItem $env:TEMP -File -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-7) -and $_.Length -gt 10MB } |
+            ForEach-Object {
+                $mb = [math]::Round($_.Length/1MB,1)
+                try { Remove-Item $_.FullName -Force -ErrorAction Stop; $freed += $mb
+                      Write-Log "reclaim: deleted temp $($_.Name) (${mb}MB)" } catch { }
+            }
+    } catch { }
+    return [math]::Round($freed, 1)
 }
 
 function Invoke-Restart($state, [string]$reason) {
@@ -322,6 +425,10 @@ if ($null -ne $tele) {
         $restartReason = "log_stale"
     }
     $prev = Get-Prop $state "last_telemetry" $null
+    # captured before last_telemetry is overwritten below - the W4 contract block needs
+    # to know whether this cycle is looking at a genuinely new telemetry line
+    $prevTeleTs = ""
+    if ($null -ne $prev) { $prevTeleTs = Get-Prop $prev "ts" "" }
     $openNow = ($session -ne "closed")
     if ($null -ne $prev -and $openNow -and (Get-Prop $prev "session" "closed") -ne "closed") {
         if ($tele.counters -eq (Get-Prop $prev "counters" "") -and $tele.ts_str -ne (Get-Prop $prev "ts" "")) {
@@ -345,6 +452,171 @@ if ($null -ne $tele) {
     $problems += "no_telemetry"
 }
 
+# ---- W4 watchdog contract (main 27abc3f): counters + log strings ----
+# These counters exist only on post-27abc3f collectors. On an older binary they are
+# simply absent from the telemetry line and every check below no-ops (no false alarms).
+$openSession = ($session -ne "closed" -and $session -ne "unknown")
+if ($null -ne $tele) {
+    $cur = Parse-Counters $tele.counters
+    $prevRaw = Get-Prop $state "last_counters" $null
+    $prev = @{}
+    if ($null -ne $prevRaw) {
+        foreach ($p in $prevRaw.PSObject.Properties) { $prev[$p.Name] = [double]$p.Value }
+    }
+    function Delta([string]$k) {
+        if (-not $cur.ContainsKey($k)) { return $null }
+        if (-not $prev.ContainsKey($k)) { return 0.0 }
+        return ($cur[$k] - $prev[$k])
+    }
+
+    # (1) HIGHEST PRIORITY - ranking snapshot age. Rankings have no historical API,
+    # so a stalled ranking loop is unrecoverable loss for every minute it stays stalled.
+    if ($openSession -and $cur.ContainsKey("ranking_snap_age_s")) {
+        $rsa = [int]$cur["ranking_snap_age_s"]
+        if ($rsa -lt 0) {
+            # Only strike on a NEW telemetry line. Reading the same stale line twice
+            # (telemetry is 5-minutely, so is this watchdog) must not count as two
+            # independent observations - that would restart on a single startup -1.
+            $strk = Get-Prop $state "ranking_never_strikes" 0
+            if ($tele.ts_str -ne $prevTeleTs) { $strk = $strk + 1 }
+            Set-Prop $state "ranking_never_strikes" $strk
+            if ($strk -ge 2 -and $null -eq $restartReason) {
+                $problems += "ranking_snap_never"
+                $restartReason = "ranking_snap_never"
+            }
+        } elseif ($rsa -gt $RankingSnapAgeCritS) {
+            Set-Prop $state "ranking_never_strikes" 0
+            $problems += "ranking_snap_age_${rsa}s"
+            Raise-Alert $state "ranking_snap_stalled" "CRIT" (
+                "HIGHEST PRIORITY: ranking_snap_age_s=$rsa (threshold $RankingSnapAgeCritS s) " +
+                "during session=$session. The ranking loop has silently stopped and rankings " +
+                "CANNOT be back-filled - every minute of this is permanent data loss. " +
+                "Restarting the collector.") 900 | Out-Null
+            if ($null -eq $restartReason) { $restartReason = "ranking_snap_stalled" }
+        } else {
+            Set-Prop $state "ranking_never_strikes" 0
+            Clear-AlertKey $state "ranking_snap_stalled"
+        }
+    }
+
+    # (2) auth_failures - the exact 2026-08-01 blind spot (api_errors stayed 0 while
+    # every call died). A sustained rise means the token path is dead; restart re-runs
+    # the launcher, which guarantees TOSS_BASE_URL (docs/11 section 11-1).
+    $dAuth = Delta "auth_failures"
+    if ($null -ne $dAuth -and $dAuth -gt 0) {
+        Raise-Alert $state "auth_failures" "CRIT" (
+            "auth_failures rose by $dAuth (total $($cur['auth_failures'])) - token expired/" +
+            "rejected or issuance/lease failure. This is the blind spot that cost 2 hours on " +
+            "2026-08-01. Restart threshold is a rise of $AuthFailuresToRestart in one cycle.") 1800 | Out-Null
+        if ($dAuth -ge $AuthFailuresToRestart -and $null -eq $restartReason) {
+            $problems += "auth_failures_$dAuth"
+            $restartReason = "auth_failures"
+        }
+    }
+
+    # (3) schema_mismatch - API response shape changed. A restart cannot fix this;
+    # alert only, so a human looks at it.
+    $dSchema = Delta "schema_mismatch"
+    if ($null -ne $dSchema -and $dSchema -gt 0) {
+        $problems += "schema_mismatch_$dSchema"
+        Raise-Alert $state "schema_mismatch" "CRIT" (
+            "schema_mismatch rose by $dSchema (total $($cur['schema_mismatch'])) - the API " +
+            "response shape changed. A restart will NOT fix this. Inspect collector.log and " +
+            "the endpoint contract before trusting today's data.") 3600 | Out-Null
+    }
+
+    # (4) write-failure family - data reaching the collector but not the DB.
+    foreach ($wk in @("event_write_failures", "promotion_write_failures", "rankings_write_failures")) {
+        $d = Delta $wk
+        if ($null -ne $d -and $d -gt 0) {
+            $problems += "${wk}_$d"
+            Raise-Alert $state $wk "WARN" (
+                "$wk rose by $d (total $($cur[$wk])) - rows are being collected but not stored. " +
+                "Check disk space and data/collector.log for the underlying exception.") 3600 | Out-Null
+        }
+    }
+
+    # (5) rankings_clamped - first-ever fire is an observation milestone (docs/11 11-3):
+    # the int64 overflow symbol is back in the rankings and the clamp branch finally ran.
+    $dClamp = Delta "rankings_clamped"
+    if ($null -ne $dClamp -and $dClamp -gt 0) {
+        Raise-Alert $state "rankings_clamped" "INFO" (
+            "rankings_clamped rose by $dClamp (total $($cur['rankings_clamped'])) - the int64 " +
+            "clamp branch fired. This is the W4 hotfix working as designed (not an outage), " +
+            "and it is the observation item from docs/11 section 11-3.") 21600 | Out-Null
+    }
+
+    # (6) collection health - silent partial loss rather than a hard stop.
+    if ($openSession -and $cur.ContainsKey("fetch_success_pct")) {
+        $fs = [double]$cur["fetch_success_pct"]
+        if ($fs -lt $FetchSuccessWarnPct) {
+            $problems += "fetch_success_$fs"
+            Raise-Alert $state "fetch_success_low" "WARN" (
+                "fetch_success_pct=$fs (threshold $FetchSuccessWarnPct) with prices_missing=" +
+                "$($cur['prices_missing']) - the tier1 sweep is silently losing symbols.") 3600 | Out-Null
+        } else {
+            Clear-AlertKey $state "fetch_success_low"
+        }
+    }
+    $dLoop = Delta "loop_errors"
+    if ($null -ne $dLoop -and $dLoop -gt $LoopErrorSurge) {
+        $problems += "loop_errors_$dLoop"
+        Raise-Alert $state "loop_errors_surge" "WARN" (
+            "loop_errors rose by $dLoop in one cycle (threshold $LoopErrorSurge, total " +
+            "$($cur['loop_errors'])) - something is throwing repeatedly inside the loops.") 3600 | Out-Null
+    }
+    if ($openSession -and $cur.ContainsKey("candles_1m")) {
+        $dC = Delta "candles_1m"
+        if ($null -ne $dC -and $dC -eq 0) {
+            $strk = (Get-Prop $state "candles_flat_strikes" 0) + 1
+            Set-Prop $state "candles_flat_strikes" $strk
+            if ($strk -ge 3) {
+                $problems += "candles_1m_flat_x$strk"
+                Raise-Alert $state "candles_flat" "WARN" (
+                    "candles_1m has not advanced for $strk cycles during session=$session - " +
+                    "the tier2 candle loop may be stalled while other loops still run.") 3600 | Out-Null
+            }
+        } else {
+            Set-Prop $state "candles_flat_strikes" 0
+            Clear-AlertKey $state "candles_flat"
+        }
+    } else {
+        Set-Prop $state "candles_flat_strikes" 0
+    }
+
+    $snapObj = New-Object PSObject
+    foreach ($k in $cur.Keys) { Set-Prop $snapObj $k $cur[$k] }
+    Set-Prop $state "last_counters" $snapObj
+}
+
+# (7) W4 contract log strings - things that are logged but may not be counted.
+$tailText = (Get-LogTail 500) -join "`n"
+if ($tailText.Length -gt 0) {
+    $logPatterns = @(
+        @{ Key = "log_auth_failure"; Rx = "AUTH-FAILURE"; Level = "CRIT"; Min = 1;
+           Msg = "AUTH-FAILURE lines are present in the recent log - token expired/rejected or issuance/lease failure." },
+        @{ Key = "log_forbidden"; Rx = "ForbiddenEndpoint|Forbidden"; Level = "WARN"; Min = 1;
+           Msg = "Forbidden/ForbiddenEndpoint in the recent log - an endpoint is refusing this key (contract or entitlement change)." },
+        @{ Key = "log_rankings_store"; Rx = "rankings store failed"; Level = "WARN"; Min = 1;
+           Msg = "'rankings store failed' in the recent log - ranking rows are being dropped at the DB write." },
+        @{ Key = "log_rankings_clamp"; Rx = "rankings clamp"; Level = "INFO"; Min = 1;
+           Msg = "'rankings clamp' in the recent log - the int64 clamp branch fired (working as designed)." },
+        @{ Key = "log_precision_drift"; Rx = "precision drift"; Level = "WARN"; Min = 1;
+           Msg = "'precision drift' in the recent log - API number formatting changed; verify parsed prices." },
+        @{ Key = "log_tape_gap"; Rx = "tape gap"; Level = "INFO"; Min = 20;
+           Msg = "Many 'tape gap' lines in the recent log - normal right after a restart, suspicious otherwise." }
+    )
+    foreach ($lp in $logPatterns) {
+        $n = ([regex]::Matches($tailText, $lp.Rx)).Count
+        if ($n -ge $lp.Min) {
+            $problems += "$($lp.Key)_$n"
+            Raise-Alert $state $lp.Key $lp.Level ("$($lp.Msg)`r`n`r`nOccurrences in the last 500 log lines: $n") 3600 | Out-Null
+        } else {
+            Clear-AlertKey $state $lp.Key
+        }
+    }
+}
+
 # (e) token state: only meaningful during open sessions
 if ($null -eq $restartReason -and $session -ne "closed" -and $session -ne "unknown" -and
     (Test-Path $TokenStateFile)) {
@@ -366,15 +638,39 @@ if ($null -eq $restartReason -and $session -ne "closed" -and $session -ne "unkno
     }
 }
 
-# (d) disk defense
+# (d) disk defense - tiered: survey (8GB) -> reclaim (6GB) -> critical floor (5GB)
 $freeGB = Get-FreeGB
+$consumerText = ""
+if ($freeGB -lt $DiskSurveyGB) {
+    # Only survey when it matters - the walk is too expensive for every 5-minute cycle.
+    $top = Get-TopConsumers 8
+    $consumerText = ($top | ForEach-Object { "  {0,9:N1} MB  {1}" -f $_.MB, $_.Path }) -join "`r`n"
+    Write-Log ("disk survey (free=${freeGB}GB) top consumers:`r`n" + $consumerText)
+}
+if ($freeGB -lt $DiskReclaimGB) {
+    $freedMB = Invoke-Reclaim 24
+    if ($freedMB -gt 0) {
+        $freeGB = Get-FreeGB
+        Write-Log "reclaim freed ${freedMB}MB, free now ${freeGB}GB"
+    }
+    Raise-Alert $state "disk_reclaim" "WARN" (
+        "Free disk fell below $DiskReclaimGB GB. Reclaimed ${freedMB}MB from stale scratch " +
+        "files and rotated logs; free is now $freeGB GB.`r`n`r`nTop consumers:`r`n$consumerText`r`n`r`n" +
+        "NOTE: the dominant consumers on this machine are dynamically expanding virtual disks " +
+        "(WSL ext4.vhdx, Claude VM rootfs.vhdx). They grow and never shrink by themselves and " +
+        "the watchdog cannot compact them without elevation - that is a user action.") 10800 | Out-Null
+}
 if ($freeGB -lt $DiskCritGB) {
     $problems += "disk_crit_${freeGB}GB"
     Raise-Alert $state "disk_critical" "CRIT" (
-        "Free disk $freeGB GB is below critical $DiskCritGB GB.`r`n" +
+        "Free disk $freeGB GB is below the critical floor of $DiskCritGB GB.`r`n" +
         "Actions: log rotation forced; polluted-DB backups " +
         "(tossmon_20260730_polluted.db*, archive_20260730_polluted) will be DELETED to keep " +
-        "the live collection writing. See watchdog.log for what was removed.") 10800 | Out-Null
+        "the live collection writing. See watchdog.log for what was removed.`r`n`r`n" +
+        "Top consumers:`r`n$consumerText`r`n`r`n" +
+        "USER ACTION if this keeps dropping: compact the virtual disks (elevated) - " +
+        "'wsl --shutdown' then Optimize-VHD, and quit the Claude desktop app before compacting " +
+        "its rootfs.vhdx. The collector itself only writes about 440MB/day.") 10800 | Out-Null
     $py = Join-Path $RepoRoot ".venv\Scripts\python.exe"
     try { & $py -m ops.rotate_logs --config (Join-Path $RepoRoot "ops\ops_config.yaml") 2>&1 |
             ForEach-Object { Write-Log "rotate: $_" } } catch { Write-Log "rotate failed: $($_.Exception.Message)" }
@@ -394,7 +690,8 @@ if ($freeGB -lt $DiskCritGB) {
     $problems += "disk_warn_${freeGB}GB"
     if (Raise-Alert $state "disk_warn" "WARN" (
             "Free disk $freeGB GB is below warning $DiskWarnGB GB. Running log rotation. " +
-            "If this keeps dropping, the critical tier ($DiskCritGB GB) deletes polluted-DB backups.") 21600) {
+            "If this keeps dropping, reclaim runs at $DiskReclaimGB GB and the critical floor " +
+            "at $DiskCritGB GB deletes polluted-DB backups.`r`n`r`nTop consumers:`r`n$consumerText") 21600) {
         $py = Join-Path $RepoRoot ".venv\Scripts\python.exe"
         try { & $py -m ops.rotate_logs --config (Join-Path $RepoRoot "ops\ops_config.yaml") 2>&1 |
                 ForEach-Object { Write-Log "rotate: $_" } } catch { Write-Log "rotate failed: $($_.Exception.Message)" }
@@ -402,6 +699,7 @@ if ($freeGB -lt $DiskCritGB) {
 } else {
     Clear-AlertKey $state "disk_warn"
     Clear-AlertKey $state "disk_critical"
+    Clear-AlertKey $state "disk_reclaim"
 }
 
 # (f) power
@@ -455,6 +753,13 @@ if ($null -ne $restartReason) {
 
 $summary = "sup=$($sup.Count) col=$($col.Count) session=$session age_min=$ageMin " +
     "free_gb=$freeGB power=$powerNow($($pw.pct)%)"
+if ($null -ne $tele) {
+    $c2 = Parse-Counters $tele.counters
+    $rsaTxt = "n/a"; if ($c2.ContainsKey("ranking_snap_age_s")) { $rsaTxt = [int]$c2["ranking_snap_age_s"] }
+    $afTxt = "n/a"; if ($c2.ContainsKey("auth_failures")) { $afTxt = [int]$c2["auth_failures"] }
+    $fsTxt = "n/a"; if ($c2.ContainsKey("fetch_success_pct")) { $fsTxt = $c2["fetch_success_pct"] }
+    $summary += " rank_age=$rsaTxt auth_fail=$afTxt fetch_pct=$fsTxt"
+}
 if ($problems.Count -gt 0) { $summary += " problems=" + ($problems -join ",") }
 else { $summary = "OK $summary" }
 Write-Log $summary
