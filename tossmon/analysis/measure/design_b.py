@@ -61,6 +61,21 @@ PLACEBO_SEEDS = (20260730, 20260731, 20260801, 20260802, 20260803)
 
 TOSS_TYPES = (S.TOSS_VOLUME, S.TOSS_AMOUNT)
 
+#: 산출물은 소스 옆이 아니라 저장소 루트의 `out/` 에 쓴다(`.gitignore` 대상).
+#: 소스 옆에 두면 커밋에 섞여 다음 사람의 리베이스를 막는다 — 실제로 막았다.
+OUT_DIR = Path(__file__).resolve().parents[3] / "out"
+
+#: **docs/23 가 싣는 수치의 목록.** 러너 출력(JSON)은 이 필드를 전부 포함해야 하며
+#: 테스트가 그것을 강제한다. 문서에 표를 추가하면 **여기에 먼저 추가**해야 하고,
+#: 그러면 배선을 잊을 수 없다 — 감사 5차 H-1(문서 수치를 재실행할 방법이 없음)의
+#: 재발 방지 장치다. 1차에서 닫았다가 2차에서 다시 열렸으므로 이번엔 코드로 막는다.
+REPORTED_FIELDS = (
+    "rule",              # 공통
+    "gross_mean", "gross_ci", "net_by_scenario",        # §10-N.9
+    "pair_n", "diff_mean", "diff_ci", "diff_ci_bonferroni", "diff_verdict",  # §10-N.8
+    "days_needed",                                       # §10-N.10
+)
+
 
 # --------------------------------------------------------------------------- #
 # 이탈 규칙 — 전부 관측 가능하고, 슈팅 정의를 참조하지 않는다
@@ -384,51 +399,110 @@ def min_rise_independence(db: Path, thresholds=(0.01, 0.02, 0.03, 0.05)) -> dict
                      "yields the identical number by construction")}
 
 
-def main(db: Path) -> int:
-    res = run(db)
+def build_report(res: dict) -> dict:
+    """docs/23 §10-N.8·9·10 의 세 표를 **한 자료구조로** 만든다.
+
+    `main()` 과 테스트가 같은 함수를 쓰므로, 문서에 실리는 수치는 반드시 여기를 지난다.
+    """
     days = [d for d in res["days"] if len(res["real"].get(d, []))]
-    print(f"trading days with entries: {len(days)} -> {days}")
     if not days:
+        return {"days": [], "rules": [], "n_real": 0, "pooled_ci_permitted": False}
+    allr = pd.concat([res["real"][d] for d in days], ignore_index=True)
+    plac = [res["placebo"][d] for d in days if len(res["placebo"].get(d, []))]
+    allp = pd.concat(plac, ignore_index=True) if plac else pd.DataFrame()
+    epd = len(allr) / len(days)
+    rules = []
+    for rule in exit_rules().keys():
+        g = pd.to_numeric(allr.get(rule), errors="coerce").dropna()
+        lo, hi = bootstrap_ci_mean(g.tolist()) if len(g) >= 2 else (_nan(), _nan())
+        # `summarize` 가 n·총수익·체결률의 **정본 계산부**다. 여기서 쓰지 않으면
+        # 테스트만 부르는 죽은 코드가 되고, 그것이 H-1 의 재발 형태였다.
+        base = summarize(allr, rule)
+        diff = difference_ci(allr, allp, rule, n_rules=len(exit_rules()))
+        dn = days_needed_for_difference(diff.get("mean", _nan()),
+                                        diff.get("sd", _nan()), epd)
+        rules.append({
+            "rule": rule,
+            "n": base["n"],
+            "fill_rate": base["fill_rate"],
+            "gross_mean": base["gross_mean"],
+            "gross_ci": [lo, hi],
+            "net_by_scenario": {k: (float(g.mean()) - c if len(g) else _nan())
+                                for k, c in COST_SCENARIOS.items()},
+            "pair_n": diff["n"],
+            "diff_mean": diff["mean"],
+            "diff_ci": list(diff["ci"]),
+            "diff_ci_bonferroni": list(diff["ci_bonferroni"]),
+            "diff_verdict": diff["verdict"],
+            "days_needed": dn,
+        })
+    return {"days": days, "n_real": int(len(allr)), "entries_per_day": epd,
+            "cost_scenarios": dict(COST_SCENARIOS),
+            "pooled_ci_permitted": len(days) >= MIN_DAY_CLUSTERS,
+            "per_day_counts": {d: int(len(res["real"][d])) for d in days},
+            "rules": rules}
+
+
+def _nan() -> float:
+    return float("nan")
+
+
+def main(db: Path, *, out_dir: Path | None = None) -> int:
+    res = run(db)
+    rep = build_report(res)
+    if not rep["days"]:
         print("no entries")
         return 0
-    allr = pd.concat([res["real"][d] for d in days], ignore_index=True)
-    allp = pd.concat([res["placebo"][d] for d in days
-                      if len(res["placebo"].get(d, []))], ignore_index=True)
-    print(f"real entries {len(allr)}   placebo rows {len(allp)} "
-          f"({len(PLACEBO_SEEDS)} seeds)")
+    print(f"trading days with entries: {len(rep['days'])} -> {rep['days']}")
+    print(f"real entries {rep['n_real']}   entries/day {rep['entries_per_day']:.1f}")
 
     print(f"\n=== PER-DAY entry counts (cluster check, need >= {MIN_DAY_CLUSTERS})")
-    for d in days:
-        print(f"  {d}: {len(res['real'][d])}")
-    pooled_ok = len(days) >= MIN_DAY_CLUSTERS
-    print(f"  effective day clusters = {len(days)} -> pooled CI "
-          f"{'PERMITTED' if pooled_ok else 'WITHHELD (sample insufficient)'}")
+    for d, n in rep["per_day_counts"].items():
+        print(f"  {d}: {n}")
+    print(f"  effective day clusters = {len(rep['days'])} -> pooled CI "
+          f"{'PERMITTED' if rep['pooled_ci_permitted'] else 'WITHHELD'}")
 
-    print(f"\n=== EXIT RULES: net of $100 clip cost ({CLIP_COSTS[100]:.4f}), "
-          f"real vs placebo")
-    print(f"{'rule':<16}{'n':>5}{'fill':>7}{'gross':>9}{'NET':>9}"
-          f"{'placebo net':>13}{'REAL-PLACEBO':>14}")
-    rows = []
-    for rule in exit_rules().keys():
-        r = summarize(allr, rule)
-        p = summarize(allp, rule)
-        diff = (r["net_mean"] - p["net_mean"]
-                if r["net_mean"] == r["net_mean"] and p["net_mean"] == p["net_mean"]
-                else float("nan"))
-        print(f"{rule:<16}{r['n']:>5}{r['fill_rate']:>7.3f}{r['gross_mean']:>9.4f}"
-              f"{r['net_mean']:>9.4f}{p['net_mean']:>13.4f}{diff:>14.4f}")
-        rows.append({"rule": rule, **{f"real_{k}": v for k, v in r.items()},
-                     "placebo_net": p["net_mean"], "real_minus_placebo": diff})
-    if pooled_ok:
-        print("\n  pooled CI would be reported here")
-    else:
-        print(f"\n  POOLED CI WITHHELD: {len(days)} day clusters < {MIN_DAY_CLUSTERS}. "
-              f"Need {MIN_DAY_CLUSTERS - len(days)} more trading days.")
-    out = Path(__file__).resolve().parent / "design_b.json"
-    out.write_text(json.dumps({"days": days, "n_real": int(len(allr)),
-                               "rules": rows, "pooled_ci_permitted": pooled_ok},
-                              indent=1, default=str), encoding="utf-8")
-    print(f"wrote {out}")
+    # ---- docs/23 §10-N.8 ----
+    print("\n=== [docs/23 sec 10-N.8] PAIRED DIFFERENCE (real - placebo)")
+    print(f"{'rule':<16}{'pair n':>7}{'diff':>9}{'CI low':>9}{'CI high':>9}"
+          f"{'verdict':>15}{'Bonf low':>10}{'Bonf high':>10}")
+    for r in rep["rules"]:
+        print(f"{r['rule']:<16}{r['pair_n']:>7}{r['diff_mean']:>9.4f}"
+              f"{r['diff_ci'][0]:>9.4f}{r['diff_ci'][1]:>9.4f}{r['diff_verdict']:>15}"
+              f"{r['diff_ci_bonferroni'][0]:>10.4f}{r['diff_ci_bonferroni'][1]:>10.4f}")
+    verdicts: dict = {}
+    for r in rep["rules"]:
+        verdicts[r["diff_verdict"]] = verdicts.get(r["diff_verdict"], 0) + 1
+    print(f"  verdict counts: {verdicts}")
+
+    # ---- docs/23 §10-N.9 ----
+    print("\n=== [docs/23 sec 10-N.9] COST SCENARIOS (net mean by exit rule)")
+    scen = list(COST_SCENARIOS)
+    print(f"{'rule':<16}{'fill':>7}{'gross':>9}{'gross CI':>21}"
+          + "".join(f"{k:>20}" for k in scen))
+    for r in rep["rules"]:
+        ci = f"[{r['gross_ci'][0]:+.4f},{r['gross_ci'][1]:+.4f}]"
+        print(f"{r['rule']:<16}{r['fill_rate']:>7.3f}{r['gross_mean']:>9.4f}{ci:>21}"
+              + "".join(f"{r['net_by_scenario'][k]:>20.4f}" for k in scen))
+    print(f"  scenarios: {COST_SCENARIOS}")
+    print("  NOTE limit_only is an UPPER BOUND (assumes zero non-fill and zero "
+          "adverse selection); real limit fill quality is unmeasured.")
+
+    # ---- docs/23 §10-N.10 ----
+    print("\n=== [docs/23 sec 10-N.10] DAYS NEEDED for the difference CI to exclude 0")
+    for r in rep["rules"]:
+        dn = r["days_needed"]
+        tag = (f"{dn['days_needed']} days (n={dn['n_entries_needed']})"
+               if dn.get("reachable") else f"UNREACHABLE ({dn.get('reason')})")
+        print(f"  {r['rule']:<16} diff {r['diff_mean']:+.4f} -> {tag}")
+    print("  NOTE conditional on the point estimate being the true effect. Where the "
+          "difference CI crosses zero, no number of days excludes zero.")
+
+    out = (out_dir or OUT_DIR)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / "design_b.json"
+    path.write_text(json.dumps(rep, indent=1, default=str), encoding="utf-8")
+    print(f"\nwrote {path}")
     return 0
 
 
