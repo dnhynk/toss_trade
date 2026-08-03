@@ -46,6 +46,7 @@ param(
 
     [double]$FreshCritMin = 15.0,
     [int]$FreezeStrikesToRestart = 2,
+    [int]$ScratchDbMinMB = 100,      # below this a scratch .db is not worth reclaiming
     [double]$DiskSurveyGB = 8.0,
     [double]$DiskReclaimGB = 6.0,
     [double]$DiskWarnGB = 7.0,
@@ -171,8 +172,13 @@ function Raise-Alert($state, [string]$key, [string]$level, [string]$body,
     Set-Prop $alerts $key $NowEpoch
     Set-Prop $state "alert_last" $alerts
 
+    # Prefix decides what a morning glance means. ALERT_ must stay "something needs
+    # attention": PLANNED_ for operator-driven work, NOTE_ for INFO-level records that
+    # are explicitly not faults (designed budget yielding, the clamp branch firing).
+    # Filing those as ALERT_ re-breaks the "any ALERT_ file is trouble" rule.
     $planned = $alwaysPlanned -or $script:PlannedNow.active
     $prefix = "ALERT"
+    if ($level -eq "INFO") { $prefix = "NOTE" }
     $header = ""
     if ($planned) {
         $prefix = "PLANNED"
@@ -299,6 +305,18 @@ function Get-TopConsumers([int]$top = 8) {
                     $items += [PSCustomObject]@{ MB = [math]::Round($sz/1MB,1); Path = $_.FullName }
                 }
             }
+            # Call out scratch DB piles explicitly - the 2026-08-03 incident was 8 copies
+            # inside one scratchpad, which a per-directory total does not make obvious.
+            $dbs = @(Get-ChildItem $tempClaude -Recurse -File -Force -Filter "*.db" -ErrorAction SilentlyContinue |
+                Where-Object { $_.Length -ge ($ScratchDbMinMB * 1MB) })
+            foreach ($g in ($dbs | Group-Object DirectoryName)) {
+                if ($g.Count -lt 2) { continue }
+                $tot = ($g.Group | Measure-Object Length -Sum).Sum
+                $items += [PSCustomObject]@{
+                    MB = [math]::Round($tot/1MB,1)
+                    Path = "$($g.Name) [$($g.Count) scratch DB copies - reclaimable except newest]"
+                }
+            }
         } catch { }
     }
     try {
@@ -308,11 +326,87 @@ function Get-TopConsumers([int]$top = 8) {
     return ($items | Sort-Object MB -Descending | Select-Object -First $top)
 }
 
-# Reclaim what is genuinely ours to reclaim. Never touches the live DB, never touches
-# another agent's *current* scratchpad (only files untouched for $staleH hours), and
-# never touches the VHDX files - those need an elevated compaction the watchdog cannot do.
+# Is another process holding this file open? Opening with FileShare.None fails if so.
+# Cheap, and far more trustworthy than guessing from timestamps.
+function Test-FileInUse([string]$path) {
+    try {
+        $fs = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $fs.Close(); $fs.Dispose()
+        return $false
+    } catch [IO.IOException] {
+        return $true
+    } catch {
+        return $true   # unreadable for any other reason: treat as in use, never delete
+    }
+}
+
+# Delete a file plus its SQLite sidecars. Returns MB actually freed.
+function Remove-DbFile([string]$path) {
+    $mb = 0.0
+    foreach ($p in @($path, "$path-wal", "$path-shm")) {
+        if (-not (Test-Path $p)) { continue }
+        try {
+            $sz = (Get-Item $p).Length / 1MB
+            Remove-Item $p -Force -ErrorAction Stop
+            $mb += $sz
+        } catch { }
+    }
+    return [math]::Round($mb, 1)
+}
+
+# Agent scratch DB copies (2026-08-03 incident). Analysis workers copy the ~500MB
+# collection DB into their scratchpad to avoid lock contention - that part is correct -
+# but a fresh numbered copy each run (live_snapshot.db, live2.db ... live8.db) piled up
+# to 3.9GB in one day. The age-based rule missed every one of them because they were all
+# created that same day, so the watchdog alerted three times and reclaimed 0MB.
+# Rule: within one scratchpad directory, keep the NEWEST copy (an analysis may be using
+# it) and reclaim the older siblings regardless of age. Files still held open are always
+# skipped. This is the second line of defence behind "workers should reuse one copy".
+function Invoke-ScratchDbReclaim([int]$minMB = 100) {
+    $freed = 0.0
+    $items = @()
+    $tempClaude = Join-Path $env:TEMP "claude"
+    if (-not (Test-Path $tempClaude)) { return @{ freed = 0.0; items = $items } }
+    $dbs = @()
+    try {
+        $dbs = @(Get-ChildItem $tempClaude -Recurse -File -Force -Filter "*.db" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Length -ge ($minMB * 1MB) })
+    } catch { }
+    if ($dbs.Count -eq 0) { return @{ freed = 0.0; items = $items } }
+    foreach ($grp in ($dbs | Group-Object DirectoryName)) {
+        if ($grp.Count -lt 2) { continue }   # a lone copy is someone's working set
+        $ordered = @($grp.Group | Sort-Object LastWriteTime -Descending)
+        $keep = $ordered[0]
+        Write-Log ("scratch-db: {0} copies in {1}; keeping newest {2} ({3}MB, {4:HH:mm:ss})" -f `
+            $grp.Count, $grp.Name, $keep.Name, [math]::Round($keep.Length/1MB,1), $keep.LastWriteTime)
+        foreach ($old in ($ordered | Select-Object -Skip 1)) {
+            if (Test-FileInUse $old.FullName) {
+                Write-Log "scratch-db: SKIP $($old.FullName) - file is open by another process"
+                continue
+            }
+            $mb = Remove-DbFile $old.FullName
+            if ($mb -gt 0) {
+                $freed += $mb
+                $items += "$($old.FullName) (${mb}MB, superseded copy)"
+                Write-Log "reclaim: deleted $($old.FullName) (${mb}MB, superseded scratch DB copy)"
+            }
+        }
+    }
+    return @{ freed = [math]::Round($freed,1); items = $items }
+}
+
+# Reclaim what is genuinely ours to reclaim. Never touches the live DB, never touches a
+# file another process holds open, and never touches the VHDX files - those need an
+# elevated compaction the watchdog cannot do. Returns both the total and an itemised
+# list, because a bare "0MB reclaimed" is what made today's incident so slow to diagnose.
 function Invoke-Reclaim([int]$staleH = 24) {
     $freed = 0.0
+    $items = @()
+    # (1) superseded agent scratch DB copies - age-independent, newest always preserved
+    $scratch = Invoke-ScratchDbReclaim $ScratchDbMinMB
+    $freed += $scratch.freed
+    $items += $scratch.items
+
     $cut = (Get-Date).AddHours(-$staleH)
     $tempClaude = Join-Path $env:TEMP "claude"
     if (Test-Path $tempClaude) {
@@ -321,8 +415,13 @@ function Invoke-Reclaim([int]$staleH = 24) {
                 Get-ChildItem $tempClaude -Recurse -File -Force -Filter $pat -ErrorAction SilentlyContinue |
                     Where-Object { $_.LastWriteTime -lt $cut -and $_.Length -gt 1MB } |
                     ForEach-Object {
+                        if (Test-FileInUse $_.FullName) {
+                            Write-Log "reclaim: SKIP $($_.FullName) - file is open by another process"
+                            return
+                        }
                         $mb = [math]::Round($_.Length/1MB,1)
                         try { Remove-Item $_.FullName -Force -ErrorAction Stop; $freed += $mb
+                              $items += "$($_.FullName) (${mb}MB, stale ${staleH}h+)"
                               Write-Log "reclaim: deleted $($_.FullName) (${mb}MB, stale ${staleH}h+)" } catch { }
                     }
             } catch { }
@@ -336,6 +435,7 @@ function Invoke-Reclaim([int]$staleH = 24) {
             ForEach-Object {
                 $mb = [math]::Round($_.Length/1MB,1)
                 try { Remove-Item $_.FullName -Force -ErrorAction Stop; $freed += $mb
+                      $items += "$($_.Name) (${mb}MB, rotated log 7d+)"
                       Write-Log "reclaim: deleted rotated log $($_.Name) (${mb}MB)" } catch { }
             }
     } catch { }
@@ -344,12 +444,15 @@ function Invoke-Reclaim([int]$staleH = 24) {
         Get-ChildItem $env:TEMP -File -Force -ErrorAction SilentlyContinue |
             Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-7) -and $_.Length -gt 10MB } |
             ForEach-Object {
+                if (Test-FileInUse $_.FullName) { return }
                 $mb = [math]::Round($_.Length/1MB,1)
                 try { Remove-Item $_.FullName -Force -ErrorAction Stop; $freed += $mb
+                      $items += "$($_.Name) (${mb}MB, user temp 7d+)"
                       Write-Log "reclaim: deleted temp $($_.Name) (${mb}MB)" } catch { }
             }
     } catch { }
-    return [math]::Round($freed, 1)
+    if ($freed -le 0) { Write-Log "reclaim: nothing eligible - freed 0MB" }
+    return @{ freed = [math]::Round($freed, 1); items = $items }
 }
 
 function Invoke-Restart($state, [string]$reason) {
@@ -753,17 +856,33 @@ if ($freeGB -lt $DiskSurveyGB) {
     Write-Log ("disk survey (free=${freeGB}GB) top consumers:`r`n" + $consumerText)
 }
 if ($freeGB -lt $DiskReclaimGB) {
-    $freedMB = Invoke-Reclaim 24
+    $rec = Invoke-Reclaim 24
+    $freedMB = $rec.freed
+    $detail = "(nothing was eligible)"
     if ($freedMB -gt 0) {
         $freeGB = Get-FreeGB
         Write-Log "reclaim freed ${freedMB}MB, free now ${freeGB}GB"
+        $detail = ($rec.items | ForEach-Object { "  - $_" }) -join "`r`n"
+    } else {
+        # A bare "reclaimed 0MB" is what made the 2026-08-03 incident slow: three alerts,
+        # no reclaim, and a human had to go find the 3.9GB of scratch copies by hand.
+        # If we freed nothing, the alert must carry the evidence needed to act.
+        if ($consumerText -eq "") {
+            $consumerText = ((Get-TopConsumers 8) | ForEach-Object { "  {0,9:N1} MB  {1}" -f $_.MB, $_.Path }) -join "`r`n"
+            Write-Log ("disk survey (forced, reclaim freed 0MB) top consumers:`r`n" + $consumerText)
+        }
     }
+    $top5 = ((Get-TopConsumers 5) | ForEach-Object { "  {0,9:N1} MB  {1}" -f $_.MB, $_.Path }) -join "`r`n"
     Raise-Alert $state "disk_reclaim" "WARN" (
-        "Free disk fell below $DiskReclaimGB GB. Reclaimed ${freedMB}MB from stale scratch " +
-        "files and rotated logs; free is now $freeGB GB.`r`n`r`nTop consumers:`r`n$consumerText`r`n`r`n" +
-        "NOTE: the dominant consumers on this machine are dynamically expanding virtual disks " +
-        "(WSL ext4.vhdx, Claude VM rootfs.vhdx). They grow and never shrink by themselves and " +
-        "the watchdog cannot compact them without elevation - that is a user action.") 10800 | Out-Null
+        "Free disk fell below $DiskReclaimGB GB. Reclaimed ${freedMB}MB; free is now $freeGB GB.`r`n`r`n" +
+        "Reclaimed items:`r`n$detail`r`n`r`n" +
+        "TOP 5 CONSUMERS RIGHT NOW:`r`n$top5`r`n`r`n" +
+        "If the reclaim freed 0MB the space is held by something outside the reclaim rules - " +
+        "read the list above before assuming the watchdog is broken. Two known cases: " +
+        "(1) agent scratch DB copies, now reclaimed automatically except the newest per " +
+        "scratchpad and any file still held open; (2) dynamically expanding virtual disks " +
+        "(WSL ext4.vhdx, Claude VM rootfs.vhdx), which grow and never shrink and need an " +
+        "elevated compaction the watchdog cannot perform - that one is a user action.") 10800 | Out-Null
 }
 if ($freeGB -lt $DiskCritGB) {
     $problems += "disk_crit_${freeGB}GB"
