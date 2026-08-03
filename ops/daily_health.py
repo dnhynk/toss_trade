@@ -121,6 +121,8 @@ def build_summary(cfg, date_str: str | None) -> str:
                         if p.stat().st_mtime >= day_ago)
         planned = sorted(p.name for p in cfg.log_dir.glob("PLANNED_*.txt")
                          if p.stat().st_mtime >= day_ago)
+        notes = sorted(p.name for p in cfg.log_dir.glob("NOTE_*.txt")
+                       if p.stat().st_mtime >= day_ago)
         lines.append("")
         lines.append(f"ALERT files (24h, 진짜 문제): {len(alerts)}")
         lines += [f"  {a}" for a in alerts]
@@ -128,6 +130,8 @@ def build_summary(cfg, date_str: str | None) -> str:
             lines.append("  (없음 — 무인 구간에 사고 없음)")
         lines.append(f"PLANNED files (24h, 계획된 정비): {len(planned)}")
         lines += [f"  {p}" for p in planned]
+        lines.append(f"NOTE files (24h, 설계대로 동작한 기록 — 사고 아님): {len(notes)}")
+        lines += [f"  {n}" for n in notes]
     except OSError:
         pass
     return "\n".join(lines) + "\n"
