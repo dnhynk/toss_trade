@@ -169,7 +169,8 @@ def collect_entries(day_rank: pd.DataFrame, *, min_snaps: int = 20,
             continue
         px, ms = S.find_oversold_entry(ser, drop=drop, lookback_s=lookback_s)
         if px == px:
-            out.append({"symbol": sym, "signal_ms": int(ms), "signal_u": float(px)})
+            out.append({"symbol": sym, "signal_ms": int(ms), "signal_u": float(px),
+                    "entry_idx": len(out)})
     return out
 
 
@@ -186,7 +187,10 @@ def evaluate(series_by_symbol: dict, entries: list[dict], *,
         entry_u = S.price_at(ser, fill_ms)
         if not (entry_u == entry_u and entry_u > 0):
             continue                      # 체결가 없음 -> 거래 성립 안 함
-        rec = {"symbol": e["symbol"], "entry_ms": fill_ms, "entry_u": entry_u}
+        rec = {"symbol": e["symbol"], "entry_ms": fill_ms, "entry_u": entry_u,
+               # 쌍체 비교의 키. 실제와 위약이 **같은 진입 시각**을 공유하므로
+               # 이 인덱스로 짝지어야 한다(씨앗을 독립 표본으로 세면 안 된다).
+               "entry_idx": int(e.get("entry_idx", -1))}
         for name, fn in rules.items():
             r = fn(ser, fill_ms, entry_u)
             rec[name] = (float(r["exit_u"] / entry_u - 1.0)
@@ -206,7 +210,8 @@ def placebo_entries(entries: list[dict], symbols: list[str], seed: int) -> list[
     pick = rng.choice(np.asarray(symbols, dtype=object), size=len(entries),
                       replace=True)
     return [{"symbol": str(pick[i]), "signal_ms": e["signal_ms"],
-             "signal_u": float("nan")} for i, e in enumerate(entries)]
+             "signal_u": float("nan"), "entry_idx": i}
+            for i, e in enumerate(entries)]
 
 
 # --------------------------------------------------------------------------- #
@@ -227,6 +232,79 @@ def summarize(df: pd.DataFrame, rule: str, *, clip: int = 100) -> dict:
             "gross_median": float(v.median()),
             "net_mean": float(v.mean() - cost), "ci": (lo - cost, hi - cost),
             "fill_rate": float(fill)}
+
+
+#: 비용 시나리오 3종 (감사 후속 지시).
+#: (i) 시장가성 — docs/21 티어2 실측 왕복(호가창을 가로지른다).
+#: (ii) 지정가 — docs/06 §7 수수료 왕복 0.2% 만. **상한 시나리오**(미체결·역선택 0 가정).
+#: (iii) 절충 — 한 다리만 지정가: 수수료 + 편도 스프레드.
+#:     편도 = $2~5 밴드 움직임 조건부 상대 스프레드 2.56%(docs/18 §3.1)의 절반.
+COMMISSION_ROUND_TRIP = 0.002
+ONE_LEG_SPREAD = 0.0128
+COST_SCENARIOS = {
+    "market_2.38pct": 0.0238,
+    "limit_only_0.2pct": COMMISSION_ROUND_TRIP,
+    "hybrid_one_leg": COMMISSION_ROUND_TRIP + ONE_LEG_SPREAD,
+}
+
+
+def paired_difference(real: pd.DataFrame, placebo: pd.DataFrame,
+                      rule: str) -> pd.Series:
+    """진입 단위 **쌍체** 차이 (실제 − 위약평균).
+
+    위약은 씨앗마다 다른 종목을 뽑으므로, 먼저 **진입별로 씨앗 평균**을 낸 뒤
+    실제와 짝짓는다. 씨앗을 독립 표본으로 세면 안 된다 — 씨앗은 5개뿐이고 **같은
+    진입 시각 집합을 공유**하므로 유효 자유도를 부풀린다.
+    """
+    if real is None or len(real) == 0 or placebo is None or len(placebo) == 0:
+        return pd.Series(dtype="float64")
+    if rule not in real.columns or rule not in placebo.columns:
+        return pd.Series(dtype="float64")
+    r = real.set_index("entry_idx")[rule]
+    p = placebo.groupby("entry_idx")[rule].mean()      # 씨앗 평균 먼저
+    common = r.index.intersection(p.index)
+    return (r.loc[common] - p.loc[common]).dropna()
+
+
+def difference_ci(real: pd.DataFrame, placebo: pd.DataFrame, rule: str, *,
+                  n_rules: int = 12) -> dict:
+    """쌍체 차이의 부트스트랩 CI. **본페로니 보정본을 병기**한다(12규칙 다중검정).
+
+    `verdict` 는 세 갈래로만 말한다: `above_zero` / `crosses_zero` / `below_zero`.
+    """
+    d = paired_difference(real, placebo, rule)
+    if len(d) < 2:
+        return {"n": int(len(d)), "mean": float("nan"),
+                "ci": (float("nan"), float("nan")),
+                "ci_bonferroni": (float("nan"), float("nan")),
+                "verdict": "insufficient"}
+    lo, hi = bootstrap_ci_mean(d.tolist())
+    blo, bhi = bootstrap_ci_mean(d.tolist(), alpha=0.05 / max(1, n_rules))
+    verdict = ("above_zero" if lo > 0 else
+               "below_zero" if hi < 0 else "crosses_zero")
+    return {"n": int(len(d)), "mean": float(d.mean()), "sd": float(d.std(ddof=1)),
+            "ci": (lo, hi), "ci_bonferroni": (blo, bhi), "verdict": verdict}
+
+
+def days_needed_for_difference(diff_mean: float, diff_sd: float,
+                               entries_per_day: float, *,
+                               z: float = 1.96) -> dict:
+    """차이 CI 가 0 을 배제하려면 거래일이 몇 개 필요한가 (현재 효과크기·분산 기준).
+
+    `mean > z*sd/sqrt(n)` 을 풀어 `n > (z*sd/mean)^2`. 군집 하한
+    `MIN_DAY_CLUSTERS` 도 함께 건다. 효과가 0 이하면 **도달 불가**를 그대로 돌려준다.
+    """
+    if not (diff_sd > 0 and entries_per_day > 0):
+        return {"reachable": False, "reason": "invalid inputs"}
+    if not (diff_mean > 0):
+        return {"reachable": False, "reason": "point estimate is not positive",
+                "diff_mean": diff_mean}
+    n = (z * diff_sd / diff_mean) ** 2
+    days = max(float(MIN_DAY_CLUSTERS), n / entries_per_day)
+    return {"reachable": True, "n_entries_needed": int(np.ceil(n)),
+            "entries_per_day": entries_per_day,
+            "days_needed": int(np.ceil(days)),
+            "floor_applied": bool(n / entries_per_day < MIN_DAY_CLUSTERS)}
 
 
 def load_days(conn) -> list[str]:

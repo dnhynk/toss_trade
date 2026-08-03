@@ -236,3 +236,110 @@ def test_summarize_handles_tiny_samples_without_inventing_a_ci():
 
 def test_clip_costs_match_docs21():
     assert D.CLIP_COSTS == {100: 0.0238, 500: 0.0445, 1000: 0.0491, 2000: 0.0644}
+
+
+# --------------------------------------------------------------------------- #
+# 위약 대비 차이의 CI — 쌍체여야 한다
+# --------------------------------------------------------------------------- #
+def _pair_frames():
+    real = pd.DataFrame({"entry_idx": [0, 1, 2], "r": [0.05, 0.03, 0.04]})
+    plac = pd.DataFrame({"entry_idx": [0, 0, 1, 1, 2, 2],
+                         "r": [0.01, 0.03, 0.00, 0.02, 0.02, 0.02]})
+    return real, plac
+
+
+def test_paired_difference_averages_seeds_before_pairing():
+    """씨앗을 독립 표본으로 세면 유효 자유도가 부풀려진다 — 먼저 평균낸다."""
+    real, plac = _pair_frames()
+    d = D.paired_difference(real, plac, "r")
+    assert len(d) == 3                               # 6행이 아니라 진입 3건
+    assert d.loc[0] == pytest.approx(0.05 - 0.02)    # 위약 씨앗 평균 0.02
+
+
+def test_paired_difference_only_uses_shared_entries():
+    real = pd.DataFrame({"entry_idx": [0, 1], "r": [0.05, 0.03]})
+    plac = pd.DataFrame({"entry_idx": [0, 0], "r": [0.01, 0.03]})
+    assert list(D.paired_difference(real, plac, "r").index) == [0]
+
+
+def test_paired_difference_empty_on_missing_rule_or_frame():
+    real, plac = _pair_frames()
+    assert D.paired_difference(real, plac, "nope").empty
+    assert D.paired_difference(pd.DataFrame(), plac, "r").empty
+
+
+def test_difference_ci_reports_one_of_three_verdicts():
+    real, plac = _pair_frames()
+    out = D.difference_ci(real, plac, "r")
+    assert out["verdict"] in ("above_zero", "crosses_zero", "below_zero")
+    assert out["n"] == 3
+
+
+def test_difference_ci_detects_a_clearly_positive_effect():
+    real = pd.DataFrame({"entry_idx": list(range(40)), "r": [0.05] * 40})
+    plac = pd.DataFrame({"entry_idx": list(range(40)),
+                         "r": [0.01 + 0.0001 * i for i in range(40)]})
+    assert D.difference_ci(real, plac, "r")["verdict"] == "above_zero"
+
+
+def test_difference_ci_calls_a_noisy_zero_effect_crossing():
+    rng = np.random.default_rng(0)
+    n = 40
+    real = pd.DataFrame({"entry_idx": list(range(n)), "r": rng.normal(0, 0.05, n)})
+    plac = pd.DataFrame({"entry_idx": list(range(n)), "r": rng.normal(0, 0.05, n)})
+    assert D.difference_ci(real, plac, "r")["verdict"] == "crosses_zero"
+
+
+def test_bonferroni_interval_is_wider_than_the_plain_one():
+    rng = np.random.default_rng(1)
+    n = 60
+    real = pd.DataFrame({"entry_idx": list(range(n)), "r": rng.normal(0.02, 0.03, n)})
+    plac = pd.DataFrame({"entry_idx": list(range(n)), "r": rng.normal(0.00, 0.03, n)})
+    out = D.difference_ci(real, plac, "r", n_rules=12)
+    assert out["ci_bonferroni"][0] < out["ci"][0]
+    assert out["ci_bonferroni"][1] > out["ci"][1]
+
+
+# --------------------------------------------------------------------------- #
+# 비용 시나리오 3종
+# --------------------------------------------------------------------------- #
+def test_three_cost_scenarios_are_ordered_and_documented():
+    c = D.COST_SCENARIOS
+    assert set(c) == {"market_2.38pct", "limit_only_0.2pct", "hybrid_one_leg"}
+    assert c["limit_only_0.2pct"] < c["hybrid_one_leg"] < c["market_2.38pct"]
+
+
+def test_limit_only_scenario_is_exactly_the_commission():
+    """docs/06 §7: 편도 0.1% -> 왕복 0.2%. 그 이상을 넣으면 상한 시나리오가 아니다."""
+    assert D.COST_SCENARIOS["limit_only_0.2pct"] == pytest.approx(0.002)
+    assert D.COMMISSION_ROUND_TRIP == pytest.approx(0.002)
+
+
+def test_hybrid_is_commission_plus_one_leg_spread():
+    assert D.COST_SCENARIOS["hybrid_one_leg"] == pytest.approx(
+        D.COMMISSION_ROUND_TRIP + D.ONE_LEG_SPREAD)
+    # 편도 = $2~5 움직임 조건부 스프레드 2.56% 의 절반
+    assert D.ONE_LEG_SPREAD == pytest.approx(0.0256 / 2, abs=1e-4)
+
+
+# --------------------------------------------------------------------------- #
+# 필요 거래일
+# --------------------------------------------------------------------------- #
+def test_days_needed_scales_with_variance():
+    # entries/day 를 작게 잡아 통계 요구량이 군집 하한(5일)보다 크게 만든다 —
+    # 그래야 "분산이 커지면 더 오래 걸린다"를 실제로 검사한다.
+    a = D.days_needed_for_difference(0.005, 0.02, 5.0)
+    b = D.days_needed_for_difference(0.005, 0.04, 5.0)
+    assert not a["floor_applied"] and not b["floor_applied"]
+    assert b["days_needed"] > a["days_needed"]
+
+
+def test_days_needed_reports_unreachable_for_a_nonpositive_effect():
+    r = D.days_needed_for_difference(-0.001, 0.02, 90.0)
+    assert r["reachable"] is False
+
+
+def test_days_needed_applies_the_cluster_floor():
+    r = D.days_needed_for_difference(0.05, 0.01, 1000.0)   # 통계적으로는 1일이면 충분
+    assert r["days_needed"] >= D.MIN_DAY_CLUSTERS
+    assert r["floor_applied"] is True
