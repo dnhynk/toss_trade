@@ -771,3 +771,106 @@ T4 디스크 warn→로테이션+ALERT, T4b crit→오염 백업 삭제 / T7 센
 **아침 확인 파일 (사용자용)**: `data/ALERT_*.txt`(있으면 문제 — 없는 게 정상),
 `data/watchdog.log`(5분마다 1줄, `OK sup=1 col=1 ...` 이 정상), `data/daily_health_<날짜>.txt`
 (매일 08:52 생성, 전일 수집 품질), `data/collector.log`(원 로그, telemetry 라인).
+
+## 15. 사각 수정 반영 재기동 + 워치독 W4 계약 배선 (2026-08-03 10:25~10:26) — `가동 중`
+
+### 15-1. 문제: 가동 중이던 수집기가 수정 전 코드였다
+
+§13 기동(08-02 21:50:49) **30분 뒤인 22:20 에 W4 사각 수정(`27abc3f`)이 main 에 머지**됐다.
+w5-ops 는 그 시점 이전 코드였으므로, 5일 무인 운영의 핵심 안전장치들이 **전부 비활성**인
+채로 돌고 있었다 — `auth_failures`(08-01 에 2시간을 태운 바로 그 사각), 삼켜지던 예외의
+승격 카운터(`event_write_failures`·`promotion_write_failures`·`schema_mismatch`), 수집
+건강도(`ranking_snap_age_s`·`fetch_success_pct`·`prices_missing`), 그리고 prev_close
+원주가화. 코디네이터가 `collector.log` 에 `auth_failures` 가 0회 등장한다는 것으로 확인했다.
+**§14 워치독이 감시하려던 카운터가 애초에 존재하지 않았다**는 뜻이라, 감시 계약도 같이
+공회전 중이었다.
+
+### 15-2. 무중단에 가까운 재기동 (갭 61초)
+
+`git rebase main`(→ `146b13f`, §13·§14 커밋은 이미 main 에 머지돼 중복 제거됨) 후,
+**STOP 파일 + 워치독 자동 복구**를 조합해 재기동했다 — 에이전트가 프로세스를 직접
+낳지 않으므로 §11-2 의 0xC000013A 함정을 원천 회피한다:
+
+1. 10:24:58 STOP 생성 → 10:25:00 supervisor·collector 정상 종료(2초).
+2. 10:25:00 STOP 즉시 제거(워치독은 STOP 존재 시 전면 스탠드다운하므로, 제거해야 복구가 돈다).
+3. **에이전트는 도구 호출을 비우고 대기** → 10:25:52 워치독 정기 사이클이 `both_dead` 판정
+   → `RESTART reason=process_dead` → 10:26:01 기동, `outcome=OK sup=1 col=1`.
+
+**수집 공백 10:25:00~10:26:01 = 61초** (주간장 중). 상태 이어받기 정상
+(`resumed ... watch=1500 tier2+=39`). 부수 효과로 **§14 워치독의 자동 재기동 층이 실전에서
+발동·성공한 첫 사례**가 됐다(그전까지는 샌드박스 검증만 있었다).
+
+### 15-3. 새 카운터 노출 확인 (수정 반영의 직접 증거)
+
+재기동 직후 10:26:02 텔레메트리에 **신규 카운터 전량 등장**:
+`auth_failures=0 loop_errors=36210 schema_mismatch=1 event_write_failures=0
+promotion_write_failures=0 rankings_write_failures=0 rankings_clamped=0
+ranking_snap_age_s=-1 prices_missing=0 fetch_success_pct=100.0 candles_1m=228053`.
+`ranking_snap_age_s=-1` 은 기동 1초 시점이라 아직 스냅이 없다는 정상값이고, DB 로 교차
+확인했다 — 재기동 후 6분간 `rankings_snap` 9,200행·최신 스냅 나이 0.1초로 **랭킹 루프
+정상**. `schema_mismatch=1` 은 상태파일에 누적돼 있던 과거값으로 보이며(재기동 후 증가
+없음) 증가분만 경보하므로 오탐이 되지 않는다 — 다만 관찰 항목으로 남긴다.
+
+### 15-4. 워치독에 W4 감시 계약 배선 (`ops/watchdog.ps1`)
+
+카운터 12종 + 로그 문자열 6종을 5분 주기 판독에 넣었다. 판정은 **증가분(delta) 기준**이라
+누적값이 이미 큰 카운터(`loop_errors=36210`)도 오탐을 내지 않는다.
+
+| 신호 | 임계 | 대응 |
+|---|---|---|
+| `ranking_snap_age_s` **(최우선)** | 개장 중 >300초, 또는 `-1` 2연속 | CRIT + 재기동 |
+| `auth_failures` | 증가 시 경보, 1주기 +3 이상 | CRIT + 재기동 |
+| `schema_mismatch` | 증가 | CRIT 경보만 (**재기동으로 안 고쳐진다** — 사람이 봐야 함) |
+| `*_write_failures` 3종 | 증가 | WARN 경보 |
+| `rankings_clamped` | 증가 | INFO (§11-3 클램프 분기 첫 발화 관측점) |
+| `fetch_success_pct` | 개장 중 <90% | WARN (조용한 부분 유실) |
+| `loop_errors` | 1주기 +500 초과 | WARN |
+| `candles_1m` | 개장 중 3주기 정체 | WARN (tier2 루프만 멈춘 경우) |
+| 로그: `AUTH-FAILURE` | 1회 | CRIT |
+| 로그: `Forbidden(Endpoint)` / `rankings store failed` / `precision drift` | 1회 | WARN |
+| 로그: `rankings clamp` / `tape gap`(20회+) | — | INFO |
+
+**최우선을 랭킹으로 잡은 이유**: 랭킹은 과거 조회 API 가 없다. 루프가 조용히 멈추면 그
+시간만큼 영구 손실이고 사후 복구가 불가능하다(다른 지표는 재조회 여지가 있다).
+
+**검증 11/11 PASS** (샌드박스, 라이브 무접촉): 랭킹 정체→재기동 / 정상 랭킹→무발화 /
+auth_failures 급증→재기동 / schema_mismatch→경보만·재기동 안 함 / write_failures 3종+clamp /
+fetch_success 저하 / 로그 문자열 4종 동시 / **closed 세션에서 개장 전용 점검 전부 무발화** /
+**수정 전(구) 텔레메트리에서 오탐 0** / 디스크 재확보+top consumer 로깅 / **정체 판정
+이중계상 방지**. 워치독 요약줄에 `rank_age=`·`auth_fail=`·`fetch_pct=` 를 추가해 사람이 한
+줄로 읽을 수 있게 했다.
+
+**이중계상 방지는 실전에서 바로 필요했다**: 텔레메트리도 5분, 워치독도 5분 주기라 같은
+줄을 두 번 읽는 순간이 생긴다. 재기동 직후 `ranking_snap_age_s=-1`(정상적인 기동 순간값)
+한 줄을 두 사이클이 각각 읽으면 스트라이크 2로 **불필요한 재기동**이 났을 것이다. 그래서
+스트라이크는 **텔레메트리 타임스탬프가 바뀐 경우에만** 증가하도록 고쳤다(10:30:55 사이클이
+실제로 `rank_age=-1` 을 읽었으나 재기동하지 않았고, 다음 줄에서 `=6` 으로 정상 확인).
+
+### 15-5. 디스크 드레인 진단 — 범인은 수집기가 아니다
+
+13.87GB → 10.96GB(11.5시간, 시간당 약 0.25GB)의 실제 원인을 특정했다. **동적 확장 가상
+디스크 2개**가 지금도 쓰이며 커지고 있고, 한 번 커지면 스스로 줄지 않는다:
+
+| 파일 | 크기 | 비고 |
+|---|---:|---|
+| `AppData\Local\wsl\{...}\ext4.vhdx` | 10.4GB | WSL — 조사 시점에도 갱신 중 |
+| `AppData\Local\Packages\Claude_.../rootfs.vhdx` | 8.7GB | Claude 데스크톱 VM |
+| (참고) `data/tossmon.db` | 0.44GB | **수집 DB 는 하루 약 440MB — 드레인의 주범이 아니다** |
+| (참고) w3-analyzer scratchpad `live_snapshot.db` | 0.41GB | 08-02 22:23 이후 미변경, 재확보 대상 |
+
+**워치독 디스크 방어를 4계층으로 재편**(바닥 5GB): 8GB 미만 → top consumer 조사 결과를
+`watchdog.log` 에 기록(매 주기 전수 조사는 비싸서 이 임계 아래에서만), 7GB 미만 → WARN +
+로테이션, 6GB 미만 → **자동 재확보**(24시간 이상 손대지 않은 Temp 스크래치 DB/로그, 7일
+지난 회전 로그, 7일 지난 사용자 Temp 대용량 파일), 5GB 미만 → 오염 백업 삭제 + CRIT.
+재확보는 라이브 DB·다른 에이전트의 **현재** 스크래치를 건드리지 않도록 나이 기준으로만
+지운다. **VHDX 압축은 워치독이 못 한다**(관리자 권한 필요) — 경보에 사용자 조치로 명시.
+
+### 15-6. tier2 오더북 — W5 권한 밖 (에스컬레이션)
+
+코디네이터 요청(오늘 오더북 141행/4종목 = tier3 전용, 실측 재확인 321행/5종목)은 **설정으로
+해결되지 않는다**. `tossmon/collector/loops.py:1497` `run_tier3_micro` 가 `ctx.tiers.members(3)`
+만 순회하고 `_poll_orderbook` 은 그 루프에서만 호출된다. `config.polling` 에도 tier2 오더북
+주기 키가 없다(`tier3_orderbook_s` 뿐). 즉 **수집기 코드 변경이 필요하고 그건 W4 소유**라
+W5 불변 규칙상 손댈 수 없다. 코디네이터에 에스컬레이션했다. 필요한 것은 tier2 대상 저빈도
+오더북 폴링 루프(예: 심볼당 5~10분 라운드로빈, `GROUP_MARKET_DATA` 예산 안에서)와 그
+주기를 담을 설정 키다.
