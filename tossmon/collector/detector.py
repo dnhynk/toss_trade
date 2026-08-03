@@ -72,6 +72,16 @@ ACTIVITY_ENTRY_SCORE = 0.30
 #: 실제 검출 스코어 경로(`on_new_data`)는 이 쿨다운을 무시한다 — 증거는 쿨다운을 이긴다.
 ACTIVITY_REENTRY_COOLDOWN_S = 600
 
+def _fill_floor(tier: int) -> float:
+    """정원 채우기의 최저 자격 점수 = **그 티어의 유지선**(tier3 = 0.42).
+
+    빈 슬롯이 손실이라고 해서 아무거나 올리면 "tier3 = 뜨거운 종목"이라는 의미가 깨진다
+    — 리플레이 회귀가 실제로 이걸 잡았다(조용한 종목이 정원을 채워 tier3 에 올라갔다).
+    원칙: **그 티어에서 곧바로 강등할 종목은 승격시키지 않는다.** 유지선이 자연스러운
+    하한이고, 절대 승격선(0.60)을 못 넘어도 유지선 위면 정원을 채울 자격이 있다.
+    """
+    return DEFAULT_THRESHOLDS.get(tier, (0.0, 0.0))[1]
+
 #: `first_print`(체결 개시) 는 A2 §3 의 1순위 트리거라 스코어와 무관하게 이 티어로 올린다.
 FIRST_PRINT_TIER = 2
 #: staleness 가 이 비율 이하로 급감하면 "깨어남" 으로 본다.
@@ -303,6 +313,9 @@ class _SymbolState:
     below_since_ms: int | None = None
     #: 약함 입증으로 강등된 뒤 활동 신호 재승격을 막는 시각 (0 = 제한 없음).
     reentry_block_ms: int = 0
+    #: `on_new_data` 로 **실제 검출 스코어를 받은 적이 있는가**. 활동 신호로 들어온
+    #: 미측정 종목과 봉 데이터로 판정된 종목을 구분한다 (정원 채우기의 자격 조건).
+    scored: bool = False
     reason: str = "seed"
 
 
@@ -367,6 +380,7 @@ class TierStateMachine:
         """새 tier 를 반환하거나, 변경 없으면 None."""
         st = self.states.setdefault(symbol, _SymbolState())
         st.score = float(score)
+        st.scored = True                       # 봉 데이터로 실제 판정을 받았다
         st.last_ts_ms = int(ts_ms)
 
         target = self._target_tier(st.score)
@@ -443,6 +457,38 @@ class TierStateMachine:
             for symbol in members[:max(0, len(members) - cap)]:
                 self._change(symbol, self.states[symbol], tier - 1, reason, ts_ms,
                              ignore_dwell=True)
+        return list(self.pending[start:])
+
+    def fill_to_capacity(self, tier: int, ts_ms: int, *,
+                         reason: str = "capacity_fill",
+                         min_score: float | None = None) -> list[TierChange]:
+        """빈 정원을 **바로 아래 티어의 측정된 최고 점수 후보**로 채운다.
+
+        왜 필요한가 (2026-08-04 진단): tier3 진입이 **절대 임계(0.60)** 하나에만 걸려
+        있어서, 그 임계를 넘는 일이 개장 직후(09:30~11:00 ET)에만 몰린다. 실측 시간대별
+        tier3 승격은 22시 50건 / 23시 44건 -> **00시 이후 0건**이고, 그 뒤로는 stale 로
+        빠져나가기만 해 정원 20 중 19가 장 내내 **빈 채로** 남았다. 빈 슬롯은 순손실이다
+        (체결 테이프가 우리의 주 비용 측정 도구인데 0건이 된다).
+
+        그래서 절대 임계 대신 **상대 순위**로 정원을 채운다: 측정된(`scored`) 후보 중
+        점수 상위부터, dwell 을 지킨 것만, 빈자리 수만큼. 임계를 넘는 종목이 있으면
+        그 종목이 자연히 1순위이므로 기존 경로를 밀어내지 않는다.
+        """
+        cap = self.capacity.get(tier)
+        if cap is None:
+            return []
+        floor = _fill_floor(tier) if min_score is None else min_score
+        free = cap - len(self.members(tier))
+        if free <= 0:
+            return []
+        cands = [s for s in self.members(tier - 1)
+                 if self.states[s].scored and self.states[s].score >= floor
+                 and (self.states[s].changed_ms is None
+                      or ts_ms - self.states[s].changed_ms >= self.hysteresis_s * 1000)]
+        cands.sort(key=lambda s: self.states[s].score, reverse=True)
+        start = len(self.pending)
+        for symbol in cands[:free]:
+            self._change(symbol, self.states[symbol], tier, reason, ts_ms)
         return list(self.pending[start:])
 
     def prune(self, keep: set[str]) -> int:

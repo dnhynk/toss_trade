@@ -642,3 +642,52 @@ def test_stale_demotion_does_not_arm_the_reentry_cooldown():
     sm.drain_changes()
     ts = HYST_MS + 400_000 + HYST_MS + 1
     assert sm.force("S", 2, "price_activity", ACTIVITY_ENTRY_SCORE, ts) == 2
+
+
+# --------------------------------------------------------------------------- #
+# tier3 정원 채우기 (2026-08-04: 절대 임계 0.60 은 개장 직후에만 넘어 정원이 장 내내 빔)
+# --------------------------------------------------------------------------- #
+def test_fill_to_capacity_promotes_best_measured_candidates():
+    """빈 tier3 정원을 **측정된** 상위 점수 후보로 채운다 — 빈 슬롯은 순손실이다."""
+    sm = machine(tier2_max=10, tier3_max=3)
+    for sym, sc in (("A", 0.55), ("B", 0.50), ("C", 0.45), ("D", 0.30)):
+        sm.force(sym, 2, "price_activity", ACTIVITY_ENTRY_SCORE, 0)
+        sm.on_new_data(sym, sc, 0)                          # 봉 데이터로 측정됐다
+    sm.drain_changes()
+    assert sm.members(3) == []
+
+    filled = sm.fill_to_capacity(3, HYST_MS + 1)
+    assert sorted(c.symbol for c in filled) == ["A", "B", "C"]   # 상위 3개, 점수순
+    assert "D" not in sm.members(3)                         # 0.30 은 유지선(0.42) 미달
+    assert len(sm.members(3)) == 3
+    assert all(c.reason == "capacity_fill" for c in filled)
+
+
+def test_fill_to_capacity_ignores_unmeasured_symbols():
+    """활동 신호로만 들어온 미측정 종목은 올리지 않는다 — 근거 없는 승격 금지."""
+    sm = machine(tier2_max=10, tier3_max=3)
+    sm.force("UNMEASURED", 2, "price_activity", ACTIVITY_ENTRY_SCORE, 0)
+    sm.drain_changes()
+    assert sm.fill_to_capacity(3, HYST_MS + 1) == []
+    assert sm.members(3) == []
+
+
+def test_fill_to_capacity_respects_capacity_and_dwell():
+    sm = machine(tier2_max=10, tier3_max=2)
+    for sym in ("A", "B", "C"):
+        sm.force(sym, 2, "price_activity", ACTIVITY_ENTRY_SCORE, 0)
+        sm.on_new_data(sym, 0.50, 0)
+    sm.drain_changes()
+    assert sm.fill_to_capacity(3, 1000) == []               # dwell 중이면 안 올린다
+    filled = sm.fill_to_capacity(3, HYST_MS + 1)
+    assert len(filled) == 2                                 # 정원 2 를 넘지 않는다
+    assert sm.fill_to_capacity(3, 2 * HYST_MS) == []        # 이미 가득 차면 무동작
+
+
+def test_fill_to_capacity_leaves_slots_empty_when_only_noise_qualifies():
+    """노이즈만 있으면 빈자리로 둔다 — 아무거나 올리지는 않는다."""
+    sm = machine(tier2_max=10, tier3_max=3)
+    sm.force("N", 2, "price_activity", ACTIVITY_ENTRY_SCORE, 0)
+    sm.on_new_data("N", 0.30, 0)             # tier3 유지선(0.42) 미만 = 노이즈
+    sm.drain_changes()
+    assert sm.fill_to_capacity(3, HYST_MS + 1) == []
