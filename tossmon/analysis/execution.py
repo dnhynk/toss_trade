@@ -156,13 +156,16 @@ def round_trip_cost(bids, asks, notional_usd: float, *, exit_mode: str = "cross"
     반환 `total` = 진입비용 + 이탈비용 + 수수료. 어느 한쪽이라도 산출 불가면 `NaN`.
     """
     m = None
-    if bids and asks:
+    if bids and asks and asks[0][0] >= bids[0][0]:
+        # B1(감사 4차): 크로스/락 호가(ask < bid)는 `relative_spread` 가 이미 NaN 으로
+        # 막는 조건이다. 같은 모듈에서 이 함수만 통과시키면 음의 진입비용이 중앙값
+        # 집계에 섞여 비용을 낙관 쪽으로 민다.
         m = (bids[0][0] + asks[0][0]) / 2.0
     if m is None or m <= 0:
         # 키 구성은 정상 경로와 동일하게 유지한다 — 호출부가 분기하지 않도록.
         return {"entry": _NAN, "exit": _NAN, "total": _NAN, "entry_levels": 0,
                 "entry_exhausted": True, "exit_exhausted": True,
-                "entry_filled_usd": 0.0}
+                "entry_filled_usd": 0.0, "exit_size_aware": exit_mode == "cross"}
     ent = cross_cost(asks, m, notional_usd, side="buy", max_levels=max_levels)
     if exit_mode == "cross":
         ex = cross_cost(bids, m, notional_usd, side="sell", max_levels=max_levels)
@@ -181,14 +184,70 @@ def round_trip_cost(bids, asks, notional_usd: float, *, exit_mode: str = "cross"
         total = ent["cost"] + exit_cost + commission
     return {"entry": ent["cost"], "exit": exit_cost, "total": total,
             "entry_levels": ent["levels_used"], "entry_exhausted": ent["exhausted"],
-            "exit_exhausted": exit_exh, "entry_filled_usd": ent["filled_usd"]}
+            "exit_exhausted": exit_exh, "entry_filled_usd": ent["filled_usd"],
+            # B2(감사 4차): passive/mid 이탈은 반대편 호가를 걷지 않으므로 **크기를
+            # 반영하지 않는다**. 호출부가 이 사실을 알 수 있게 드러낸다.
+            "exit_size_aware": exit_mode == "cross"}
+
+
+def size_cost_curve(books, notionals=DEFAULT_NOTIONALS_USD, *,
+                    require_unexhausted: bool = True,
+                    max_levels: int = DEFAULT_MAX_LEVELS) -> "pd.DataFrame":
+    """주문 크기 → 비용 곡선 (감사 4차 A3 대비 — **데이터가 쌓이면 자동 산출**).
+
+    A3 의 지적: 호가가 소진되면 체결분에만 비용을 매기므로 **주문을 20배 키워도 비용이
+    변하지 않는다**. 즉 현재 표본(스냅의 95.9% 가 1레벨)에서는 크기 효과가 원리상
+    측정 불가다. 이 함수는 그 한계를 **숨기지 않고 분리**한다:
+
+    - `require_unexhausted=True` 면 **가장 큰 주문까지 소진되지 않는 스냅**만 쓴다.
+      그 표본에서만 크기-비용 곡선이 의미를 갖는다.
+    - `n_usable` 이 0 이면 "측정 불가"를 그대로 돌려준다 — 상수 곡선을 지어내지 않는다.
+
+    W5 의 tier-2 호가 수집이 쌓여 다단계 호가가 들어오면 `n_usable` 이 올라가고
+    이 곡선이 처음으로 의미를 갖는다. 그 전까지 결론을 내면 안 된다.
+
+    `books` 는 `depth_json`(또는 `bids`/`asks`) 을 가진 행들의 iterable.
+    """
+    import pandas as pd  # 지역 임포트 — 모듈 상단 의존성을 늘리지 않는다
+
+    parsed = []
+    for r in books:
+        dj = r.get("depth_json") if isinstance(r, dict) else getattr(r, "depth_json", None)
+        b, a = parse_depth(dj)
+        if b and a:
+            parsed.append((b, a))
+    rows = []
+    biggest = max(notionals) if notionals else 0
+    for n in notionals:
+        costs, used = [], 0
+        for b, a in parsed:
+            if require_unexhausted:
+                probe = walk_book(a, biggest, max_levels=max_levels)
+                if probe["exhausted"]:
+                    continue
+            rt = round_trip_cost(b, a, n, max_levels=max_levels)
+            if rt["total"] == rt["total"]:
+                costs.append(rt["total"])
+                used += 1
+        rows.append({"notional_usd": n, "n_usable": used,
+                     "n_books": len(parsed),
+                     "median_round_trip": (float(pd.Series(costs).median())
+                                           if costs else _NAN),
+                     "measurable": bool(used > 0)})
+    return pd.DataFrame(rows)
 
 
 def breakeven_pct(round_trip_total: float) -> float:
-    """왕복 비용을 덮으려면 필요한 총 상승률. 비용이 곧 손익분기 폭이다."""
-    if not (round_trip_total == round_trip_total):
+    """왕복 비용 `c` 를 덮는 데 필요한 총 상승률 = `c / (1 - c)` (감사 4차 C1).
+
+    구현이 항등함수였다 — 비용률과 필요 상승률을 같은 값으로 봤다. 진입가 대비 c 를
+    쓰고 나면 남은 원금이 `1-c` 이므로 실제로는 그만큼 더 올라야 한다.
+    3.22% 에서 +0.11%p, 6.94% 에서 +0.52%p, 8.73% 에서 +0.84%p 차이가 난다.
+    """
+    c = round_trip_total
+    if not (c == c) or c >= 1.0:
         return _NAN
-    return float(round_trip_total)
+    return float(c / (1.0 - c))
 
 
 def top_of_book_usd(bid1_u, bid1_qu, ask1_u, ask1_qu) -> dict:

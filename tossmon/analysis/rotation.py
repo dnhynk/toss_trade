@@ -395,19 +395,22 @@ def spread_compression(orderbook: pd.DataFrame, symbol: str, t_ms: int, *,
 def _spearman(a: pd.Series, b: pd.Series) -> float:
     """순위 상관. `scipy` 없이 (순위 변환 후 피어슨) 으로 계산한다."""
     if len(a) < 2 or a.nunique() < 2 or b.nunique() < 2:
-        return 0.0
+        return _NAN          # 금지 규칙 3 — 정의 불가를 "통과에 유리한 0" 으로 채우지 않는다
     ra = a.rank(method="average").to_numpy(dtype="float64", copy=True)
     rb = b.rank(method="average").to_numpy(dtype="float64", copy=True)
     ra = ra - ra.mean()
     rb = rb - rb.mean()
     denom = math.sqrt(float((ra * ra).sum()) * float((rb * rb).sum()))
     if not (denom > 0):
-        return 0.0
+        return _NAN
     return float((ra * rb).sum() / denom)
 
 
 def density_independence(detected, fill, *, n_quantiles: int = 4) -> dict:
-    """검출 여부가 **데이터 밀도와 무상관**인지 검사 (docs/17 §3 합격 조건).
+    """검출 여부가 데이터 밀도와 무상관인지 검사 — **폐기됨(감사 4차 A6)**.
+
+    이 검정은 완전한 무상관을 탈락시키고 U자 의존을 통과시킨다. 보존은 docs/17 v1
+    수치의 재현을 위해서일 뿐이며, **새 판정에는 `density_independence_v2` 를 쓴다.**
 
     구 측정식은 체결률 분위별 검출률이 0.876→0.280 으로 단조 감소했다. 새 측정식은
     그런 단조 패턴이 없어야 하며, 없으면 `passed=True`.
@@ -435,6 +438,72 @@ def density_independence(detected, fill, *, n_quantiles: int = 4) -> dict:
             "spearman_rho": rho, "monotone": monotone, "passed": passed,
             "reason": ("ok" if passed else
                        ("monotone in density" if monotone else "|rho| >= 0.20"))}
+
+
+def density_independence_v2(detected, fill, *, n_bins: int = 5, n_perm: int = 2000,
+                            seed: int = 20260730, max_rate_ratio: float = 2.0,
+                            alpha: float = 0.05) -> dict:
+    """밀도 무상관 검정 **재설계** (감사 4차 A6).
+
+    구 `density_independence` 는 네 가지로 깨져 있었다:
+    (a) 완전한 무상관(전 분위 동일)이 `monotone=True` 로 **탈락**했고,
+    (b) 검출률이 9배 출렁이는 U자 의존이 ρ=0 이라 **통과**했으며,
+    (c) "비단조" 조건은 4분위에서 우연히 91.7% 가 통과해 **검정력이 없고**,
+    (d) 코호트 필터가 희소 표본을 미리 잘라 ρ 를 0 쪽으로 끌어당겼다(범위 제한).
+
+    새 설계는 **순열 검정**이다. 통계량은 분위별 검출률의 **분산**(단조·U자·아무 형태의
+    의존에 모두 반응한다). 귀무가설은 "검출 여부가 밀도와 독립"이고, `fill` 라벨을
+    섞어 통계량의 귀무분포를 만든다.
+
+    - 완전 무상관 → 통계량이 귀무분포 한가운데 → **통과**(구 검정의 (a) 해소).
+    - U자 의존 → 분산이 크다 → **탈락**((b) 해소).
+    - 검정력은 순열 분포가 직접 준다((c) 해소).
+    - (d) 범위 제한은 검정으로 못 고친다 — `fill` 의 실제 범위를 함께 보고해
+      **호출부가 판단**하도록 한다(`fill_range`, `fill_iqr`).
+
+    합격: 순열 p > `alpha` **그리고** 분위 검출률의 max/min 비 ≤ `max_rate_ratio`.
+    두 번째 조건은 표본이 작아 p 가 커지는 경우에 대한 안전장치다.
+    """
+    d = pd.Series(list(detected)).astype(float)
+    f = pd.Series(list(fill)).astype(float)
+    ok = d.notna() & f.notna()
+    d, f = d[ok].reset_index(drop=True), f[ok].reset_index(drop=True)
+    if len(d) < n_bins * 4 or d.nunique() < 2:
+        return {"n": int(len(d)), "passed": False, "reason": "sample too small",
+                "p_value": _NAN, "rate_ratio": _NAN, "bin_rates": [],
+                "spearman_rho": _NAN}
+    bins = pd.qcut(f, n_bins, duplicates="drop", labels=False)
+    n_eff = int(pd.Series(bins).nunique())
+    if n_eff < 2:
+        return {"n": int(len(d)), "passed": False, "reason": "fill has no spread",
+                "p_value": _NAN, "rate_ratio": _NAN, "bin_rates": [],
+                "spearman_rho": _NAN}
+
+    def stat(labels) -> float:
+        return float(pd.Series(d.to_numpy()).groupby(labels).mean().var(ddof=0))
+
+    observed = stat(bins)
+    rng = np.random.default_rng(seed)
+    arr = bins.to_numpy()
+    null = np.empty(n_perm, dtype="float64")
+    for i in range(n_perm):
+        null[i] = stat(pd.Series(rng.permutation(arr)))
+    # +1 보정: 관측을 귀무표본에 포함해 p 가 0 이 되지 않게 한다
+    p = float((np.sum(null >= observed) + 1) / (n_perm + 1))
+    rates = [float(x) for x in pd.Series(d.to_numpy()).groupby(arr).mean().tolist()]
+    counts = [int(x) for x in pd.Series(d.to_numpy()).groupby(arr).size().tolist()]
+    lo, hi = min(rates), max(rates)
+    ratio = (hi / lo) if lo > 0 else float("inf")
+    passed = bool(p > alpha and ratio <= max_rate_ratio)
+    return {"n": int(len(d)), "n_bins": n_eff, "bin_rates": rates,
+            "bin_counts": counts, "observed_stat": observed, "p_value": p,
+            "rate_ratio": ratio, "spearman_rho": _spearman(f, d),
+            "fill_range": [float(f.min()), float(f.max())],
+            "fill_iqr": [float(f.quantile(0.25)), float(f.quantile(0.75))],
+            "passed": passed,
+            "reason": ("ok" if passed else
+                       (f"permutation p={p:.4f} <= {alpha}" if p <= alpha
+                        else f"rate ratio {ratio:.2f} > {max_rate_ratio}"))}
 
 
 def window_edge_mass(leads, scan_min: int, *, edge_frac: float = 0.10) -> float:
