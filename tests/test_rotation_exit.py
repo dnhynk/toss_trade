@@ -218,3 +218,38 @@ def test_required_days_respects_the_frozen_min_n_floor():
 def test_required_days_rejects_invalid_inputs():
     assert RX.required_days(0.0, 0.02, 8.0)["days_needed"] is None
     assert RX.required_days(0.1, 0.02, 0.0)["days_needed"] is None
+
+
+# --------------------------------------------------------------------------- #
+# 계약 C-2 개정 — amount_u 는 마이크로원(KRW). 비율로만 쓰는 것을 강제한다.
+# --------------------------------------------------------------------------- #
+def test_amount_share_is_invariant_to_the_currency_scale():
+    """환율이 분자·분모에 공통이라 약분된다 — KRW 표기가 점유율을 오염시키지 않는다.
+
+    전 종목 `amount_u` 에 임의 상수(환율)를 곱해도 점유율이 그대로여야 한다.
+    이 성질이 깨지면 amount_u 를 금액으로 읽고 있다는 뜻이다.
+    """
+    base = ranks([(0, "A", 1, 300), (0, "B", 2, 700)])
+    scaled = base.copy()
+    scaled["amount_u"] = scaled["amount_u"] * 1440        # USD -> KRW 환산과 동형
+    a = RX.amount_share_series(base, "A", "TOSS")
+    b = RX.amount_share_series(scaled, "A", "TOSS")
+    assert a.iloc[0] == pytest.approx(b.iloc[0])
+    assert a.iloc[0] == pytest.approx(0.30)
+
+
+def test_share_decline_is_also_currency_scale_invariant():
+    rows = [(0, "A", 1, 500), (0, "B", 2, 500),
+            (60, "A", 1, 100), (60, "B", 2, 900)]
+    base = ranks(rows)
+    scaled = base.copy()
+    scaled["amount_u"] = scaled["amount_u"] * 1440
+    a = RX.share_decline(RX.amount_share_series(base, "A", "TOSS"), 60 * S, 0)
+    b = RX.share_decline(RX.amount_share_series(scaled, "A", "TOSS"), 60 * S, 0)
+    assert a == pytest.approx(b)
+
+
+def test_module_does_not_expose_any_dollar_reading_of_amount_u():
+    """금액 해석 헬퍼가 없어야 한다 — 있으면 누군가 KRW 를 달러로 읽게 된다."""
+    import tossmon.analysis.rotation_exit as m
+    assert not [n for n in dir(m) if "usd" in n.lower() or "dollar" in n.lower()]
