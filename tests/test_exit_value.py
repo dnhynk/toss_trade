@@ -18,6 +18,7 @@ import json
 import pathlib
 import sqlite3
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -317,6 +318,161 @@ def test_runner_applies_the_cost_scenarios_to_the_ceiling_too(report):
 def test_runner_withholds_pooled_ci_below_the_day_cluster_floor(report):
     rep, _ = report
     assert rep["pooled_ci_permitted"] == (len(rep["days"]) >= D.MIN_DAY_CLUSTERS)
+
+
+# --------------------------------------------------------------------------- #
+# 6b. 쌍체 키 — **날짜가 다르면 다른 진입이다**
+# --------------------------------------------------------------------------- #
+def test_entry_keys_are_globally_unique_across_days():
+    """`collect_entries` 는 날마다 0 부터 센다 — 이어 붙이면 키가 겹친다.
+
+    겹친 키로 쌍체를 맺으면 **다른 날 진입끼리 짝이 맺히고**, pandas 가 중복 라벨을
+    조용히 브로드캐스트해서 **오류도 없이 짝 수만 늘어난다.** 실제로 그렇게 됐다 —
+    통제군 짝 수(161)가 정합 성공 건수(160)보다 많아진 것으로 발각됐다.
+    """
+    raw = [{"symbol": "A", "signal_ms": 0, "entry_idx": 0},
+           {"symbol": "B", "signal_ms": 1, "entry_idx": 1}]
+    d1 = D.tag_entries(raw, "2026-07-31")
+    d2 = D.tag_entries(raw, "2026-08-03")
+    keys = [e["entry_idx"] for e in d1 + d2]
+    assert len(set(keys)) == len(keys), keys
+
+
+def test_placebo_inherits_the_entry_key_rather_than_renumbering():
+    """위약이 위치 번호로 다시 매기면 날짜 접두사가 사라져 쌍체가 어긋난다."""
+    ents = D.tag_entries([{"symbol": "A", "signal_ms": 0, "entry_idx": 0}],
+                         "2026-08-03")
+    pl = D.placebo_entries(ents, ["A", "B"], seed=1)
+    assert pl[0]["entry_idx"] == ents[0]["entry_idx"] == "2026-08-03#0"
+
+
+def test_paired_difference_does_not_inflate_when_days_are_concatenated():
+    """중복 키를 주면 짝 수가 부풀던 자리 — 고유 키에서는 정확히 맞아야 한다."""
+    real = pd.DataFrame({"entry_idx": ["d1#0", "d1#1", "d2#0"], "r": [1.0, 2.0, 3.0]})
+    plac = pd.DataFrame({"entry_idx": ["d1#0", "d1#1", "d2#0"], "r": [0.0, 0.0, 0.0]})
+    d = D.paired_difference(real, plac, "r")
+    assert len(d) == 3
+    assert sorted(d.tolist()) == [1.0, 2.0, 3.0]
+
+
+def test_paired_difference_would_inflate_on_colliding_keys():
+    """가드가 실제로 잡을 수 있는 결함임을 증명한다 — 중복 키면 짝이 어긋난다."""
+    real = pd.DataFrame({"entry_idx": [0, 1, 0], "r": [1.0, 2.0, 3.0]})
+    plac = pd.DataFrame({"entry_idx": [0, 1, 0], "r": [0.0, 0.0, 9.0]})
+    d = D.paired_difference(real, plac, "r")
+    # 위약 0번이 두 날 평균(4.5)으로 뭉개져 실제 두 행에 같은 값이 빠진다
+    assert len(d) == 3 and sorted(d.tolist()) != [1.0, 2.0, 3.0]
+
+
+# --------------------------------------------------------------------------- #
+# 7. 통제된 위약 — 상한 우위가 변동성 선택 효과인가
+# --------------------------------------------------------------------------- #
+def test_realized_volatility_uses_only_the_window_before_the_timestamp():
+    """정합 기준이 **사전 관측만**으로 만들어져야 통제가 성립한다."""
+    ts = np.array([0, S12, 2 * S12, 3 * S12, 4 * S12])
+    px = np.array([1.0, 1.0, 1.0, 1.0, 100.0]) * U
+    quiet = V.realized_volatility(ts, px, 3 * S12, window_s=600)
+    noisy = V.realized_volatility(ts, px, 4 * S12, window_s=600)
+    assert quiet == pytest.approx(0.0, abs=1e-12)
+    assert noisy > 0.5                       # 미래 봉이 들어오면 값이 달라진다
+
+
+def test_realized_volatility_is_nan_when_there_is_too_little_to_measure():
+    """관측이 모자라면 **NaN** 이다 — 0 으로 채우면 정합이 조용히 틀어진다."""
+    thin = V.realized_volatility(np.array([0, S12]), np.array([1.0, 2.0]) * U,
+                                 S12, window_s=600)
+    assert thin != thin
+    assert V.realized_volatility(None, None, 0, window_s=600) != \
+        V.realized_volatility(None, None, 0, window_s=600)
+
+
+def _vol_universe() -> dict:
+    """변동성이 뚜렷이 다른 세 종목. 정합이 실제로 걸러내는지 보기 위한 것."""
+    calm = series([1.0, 1.001, 1.0, 1.001] * 8)
+    like = series([1.0, 1.05, 1.0, 1.05] * 8)
+    wild = series([1.0, 1.60, 1.0, 1.60] * 8)
+    return {"REAL": like, "TWIN": like * 1.0, "CALM": calm, "WILD": wild}
+
+
+def test_volatility_matching_keeps_similar_symbols_and_drops_the_rest():
+    uni = _vol_universe()
+    ents = [{"symbol": "REAL", "signal_ms": 30 * S12, "entry_idx": 0}]
+    match = V.volatility_match_pools(ents, uni, tol=0.2, lookback_s=600)
+    pool = match["pools"][0]
+    assert "TWIN" in pool                      # 같은 변동성 -> 후보
+    assert "CALM" not in pool and "WILD" not in pool
+
+
+def test_unmatched_entries_are_dropped_and_therefore_countable():
+    """정합 대상이 없으면 **짝을 잃는다** — 조용히 줄지 않도록 세어 보고한다."""
+    uni = {"REAL": _vol_universe()["REAL"], "CALM": _vol_universe()["CALM"]}
+    ents = [{"symbol": "REAL", "signal_ms": 30 * S12, "entry_idx": 0}]
+    match = V.volatility_match_pools(ents, uni, tol=0.2, lookback_s=600)
+    assert match["pools"][0] == []
+    assert V.volatility_matched_placebo(ents, match, seed=1) == []
+
+
+def test_self_symbol_placebo_keeps_the_symbol_and_moves_the_time():
+    """가장 깨끗한 통제군 — 종목 고유 변동성이 완전히 상쇄된다."""
+    uni = _vol_universe()
+    ents = [{"symbol": "REAL", "signal_ms": 5 * S12, "entry_idx": 0}]
+    out = V.self_symbol_placebo(ents, uni, seed=7, horizon_s=60,
+                                min_gap_s=120)
+    assert len(out) == 1
+    assert out[0]["symbol"] == "REAL"
+    assert abs(out[0]["signal_ms"] - 5 * S12) >= 120_000
+
+
+def test_self_symbol_placebo_leaves_room_for_the_horizon():
+    uni = _vol_universe()
+    ents = [{"symbol": "REAL", "signal_ms": 0, "entry_idx": 0}]
+    out = V.self_symbol_placebo(ents, uni, seed=3, horizon_s=60, min_gap_s=0)
+    last = int(uni["REAL"].index[-1])
+    for e in out:
+        assert e["signal_ms"] + (D.ENTRY_DELAY_S + 60) * 1000 <= last
+
+
+def test_ceiling_arm_reports_both_normalisations():
+    uni = _vol_universe()
+    arm = V.ceiling_arm(uni, [{"symbol": "REAL", "signal_ms": 0, "entry_idx": 0}],
+                        horizon_s=600, lookback_s=600)
+    assert set(V.CONTROL_METRICS) <= set(arm.columns)
+    assert (arm["ceiling"] >= 0).all()
+
+
+def test_normalised_ceiling_cancels_a_pure_volatility_difference():
+    """**이 검사가 통제의 논리 자체다.**
+
+    같은 모양을 크기만 키운 계열은 상한이 크지만 변동성도 같은 비율로 크다.
+    정규화 상한이 거의 같아야 한다 — 아니면 정규화가 제 일을 못 하는 것이다.
+    """
+    # 진입이 **골**에 떨어지도록(그리고 사전 창에 관측이 남도록) 시각을 뒤로 뺐다.
+    # 마루에서 진입하면 상한이 0 이 되어 시험이 무의미해진다.
+    small = series([1.02, 1.00] * 80)
+    big = series([1.20, 1.00] * 80)
+    ent = [{"symbol": "X", "signal_ms": 60 * S12, "entry_idx": 0}]
+    a = V.ceiling_arm({"X": small}, ent, horizon_s=600, lookback_s=600)
+    b = V.ceiling_arm({"X": big}, ent, horizon_s=600, lookback_s=600)
+    assert b["ceiling"].iloc[0] > a["ceiling"].iloc[0] * 3      # 원 상한은 크게 다르다
+    ra = a["ceiling_per_pre_rv"].iloc[0]
+    rb = b["ceiling_per_pre_rv"].iloc[0]
+    assert rb == pytest.approx(ra, rel=0.35)                   # 정규화하면 붙는다
+
+
+def test_controls_summary_marks_survival_per_metric(report):
+    rep, _ = report
+    ct = rep["controls"]
+    assert set(ct["arms"]) == {"random_symbol", "vol_matched", "self_symbol"}
+    for a in ct["arms"].values():
+        assert set(a["survives"]) == set(V.CONTROL_METRICS)
+    assert isinstance(ct["claim_survives_every_control"], bool)
+
+
+def test_controls_report_the_match_rate_rather_than_hiding_it(report):
+    rep, _ = report
+    for m in rep["controls"]["matching"]:
+        assert {"day", "entries", "with_vol_match"} <= set(m)
+        assert m["with_vol_match"] <= m["entries"]
 
 
 def test_underpowered_rules_are_flagged_rather_than_judged(report):
