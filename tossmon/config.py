@@ -87,6 +87,10 @@ class PollingConfig:
     tier3_trades_s: int
     tier3_orderbook_s: int
     ranking_snap_s: int
+    #: tier2 호가 라운드로빈 주기(초, 심볼당 1회). **0 또는 미설정이면 비활성** —
+    #: 되돌리기 쉬우라고 선택 키다 (W5 에스컬레이션 2026-08-03: 호가가 tier3 승격
+    #: 이후에만 수집돼 승격 전후 스프레드 궤적을 원리상 측정할 수 없었다).
+    tier2_orderbook_s: int = 0
 
 
 @dataclass(frozen=True)
@@ -283,8 +287,21 @@ def _parse_polling(data: Mapping[str, Any]) -> PollingConfig | None:
             "polling.tier3_trades_s and polling.tier3_orderbook_s (계약 A2 §1)")
     keys = ("tier1_sweep_s", "tier2_candle_s", "tier3_trades_s", "tier3_orderbook_s",
             "ranking_snap_s")
-    return PollingConfig(**{k: _positive(_as_int(node, k, "polling"), "polling", k)
-                            for k in keys})
+    values: dict[str, int] = {k: _positive(_as_int(node, k, "polling"), "polling", k)
+                              for k in keys}
+    # 선택 키 — 미설정이면 0(비활성). 0 을 허용해야 설정 한 줄로 되돌릴 수 있다.
+    raw = node.get("tier2_orderbook_s")
+    if raw is None:
+        values["tier2_orderbook_s"] = 0
+    else:
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise ValueError("config: polling.tier2_orderbook_s must be an int "
+                             f"(0 disables), got {raw!r}")
+        if raw < 0:
+            raise ValueError("config: polling.tier2_orderbook_s must be >= 0 "
+                             f"(0 disables), got {raw}")
+        values["tier2_orderbook_s"] = raw
+    return PollingConfig(**values)
 
 
 # --------------------------------------------------------------------------- #
