@@ -29,7 +29,8 @@
 
     ---------------------------------------------------------------------------
     FILE GRADE CONTRACT - four prefixes, and what each one asks of the reader.
-    (User decision 2026-08-05. The Korean copy is docs/11 section 21.)
+    (User decision 2026-08-05. The Korean copy, the census below, and the
+    proof-of-failure table live in docs/34_alert_grades.md.)
 
       ALERT_     A FAULT. Something is broken.          -> fix it
       PLANNED_   A human did this on purpose.           -> ignore it
@@ -59,13 +60,18 @@
     provokes exactly the wrong response. Record duration and yield rate instead
     and let the size speak. Do not invent a new threshold.
 
+    The four grades are counted, with a one-line legend, in the morning report
+    (ops/daily_health.py) - do not assume the reader remembers what they mean.
+
     ADDING A NEW CHECK? Decide its grade FIRST, and write down which observation
     separates a fault from a designed behaviour. If your check fires on the
     ABSENCE of something (a counter not advancing, an age exceeding a bound),
     ask: can the collector produce this absence on purpose? If yes, you must
     read the counter that proves it and grade accordingly - otherwise you are
-    grading a phenomenon without knowing its cause, which is how the five false
-    ALERTs above happened. See "the absence family" census in docs/11 section 21.
+    grading a phenomenon without knowing its cause, which is how the false
+    ALERTs above happened. docs/34 section 4 holds the census of that family:
+    12 absence-triggered checks, 4 of which a designed behaviour can imitate,
+    3 of which now separate the cause. Add your check to that table.
 #>
 param(
     [ValidateSet("watchdog", "sentinel")]
