@@ -45,7 +45,17 @@ SHRINK_TO = 0.9
 #: 같은 그룹에 축소를 다시 지시하기까지의 최소 간격 (초). 플래핑 방지.
 SHRINK_COOLDOWN_S = 30.0
 #: 429 를 맞으면 이 비율만큼 추가로 줄인다 (사고 대응).
-RATE_LIMITED_SHRINK_FRAC = 0.2
+#: 0.2 는 과했다 — 429 한 건에 정원 120 이 24 씩 깎여 8회 만에 300->76 이 됐다
+#: (2026-08-04 실측). 회복 경로가 생겼으니 한 번에 크게 자를 이유가 없다.
+RATE_LIMITED_SHRINK_FRAC = 0.10
+
+#: 마지막 429 이후 이만큼 조용하면 정원을 한 단계 **되돌린다**.
+#: 이것이 없으면 축소는 일방통행 래칫이 되어, 429 한 건의 대가를 세션 내내 치른다.
+RECOVER_AFTER_S = 300.0
+#: 회복 1스텝에 되돌리는 폭 (그 티어 상한 대비).
+RECOVER_STEP_FRAC = 0.25
+#: 회복은 실사용이 목표의 이 비율 아래일 때만 — 빡빡한데 되돌리면 429 를 다시 부른다.
+RECOVER_USAGE_MAX = 0.70
 
 
 @dataclass(frozen=True)
@@ -123,6 +133,8 @@ class BudgetGuard:
         self.rate_limited: dict[str, int] = {}
         self._events: dict[str, deque[float]] = {}
         self._last_shrink_s: dict[str, float] = {}
+        self._last_429_s: dict[str, float] = {}
+        self._last_grow_s: dict[str, float] = {}
         self._forced: dict[str, float] = {}      # 429 로 강제 축소해야 할 비율
 
     # ---- 시간 ----------------------------------------------------------
@@ -158,6 +170,7 @@ class BudgetGuard:
 
     def on_429(self, group: str) -> None:
         """429 는 사고다 — 다음 `should_shrink()` 에서 강제로 줄인다."""
+        self._last_429_s[group] = self._now_s()
         self.rate_limited[group] = self.rate_limited.get(group, 0) + 1
         self._forced[group] = max(self._forced.get(group, 0.0), RATE_LIMITED_SHRINK_FRAC)
         if self.notifier is not None:
@@ -257,6 +270,43 @@ class BudgetGuard:
                 out[group] = n
                 self._last_shrink_s[group] = now
                 self._forced.pop(group, None)
+        return out or None
+
+    def should_grow(self) -> dict[str, int] | None:
+        """429 없이 조용했고 여유도 있으면 그룹별 **되돌릴 심볼 수**를 돌려준다.
+
+        축소만 있고 회복이 없으면 429 한 건이 세션 전체의 수집 범위를 깎는다
+        (2026-08-04 실측: 429 8회에 tier2 300->76, tier3 20->2, 자동 복귀 없음).
+        회복 조건은 보수적이다 — 마지막 429 이후 `RECOVER_AFTER_S`, 실사용이 목표의
+        `RECOVER_USAGE_MAX` 미만, 그리고 계획도 목표 이내일 때만 한 스텝 올린다.
+        """
+        if self.plan is None:
+            return None
+        now = self._now_s()
+        out: dict[str, int] = {}
+        for group in (GROUP_MARKET_DATA, GROUP_CHART):
+            if group not in self._last_shrink_s:
+                continue                                  # 깎인 적이 없으면 되돌릴 것도 없다
+            last429 = self._last_429_s.get(group)
+            if last429 is not None and now - last429 < RECOVER_AFTER_S:
+                continue                                  # 아직 사고 직후다
+            if self._forced.get(group):
+                continue                                  # 처리 안 된 축소 지시가 남아 있다
+            last_grow = self._last_grow_s.get(group)
+            if last_grow is not None and now - last_grow < RECOVER_AFTER_S:
+                continue                                  # 스텝 간 최소 간격
+            target = self.target(group)
+            if target <= 0:
+                continue
+            if self.measured_rate(group) > target * RECOVER_USAGE_MAX:
+                continue                                  # 지금도 빡빡하다
+            if self.planned_rate(group) > target:
+                continue                                  # 계획 자체가 초과 상태
+            have = self.plan.symbols_of(group)
+            if have <= 0:
+                continue
+            out[group] = max(1, math.ceil(have * RECOVER_STEP_FRAC))
+            self._last_grow_s[group] = now
         return out or None
 
     def _shrink_symbols(self, group: str, predicted: float, target: float,
