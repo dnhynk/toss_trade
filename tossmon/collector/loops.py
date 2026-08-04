@@ -64,10 +64,29 @@ from .scheduler import (CLOSED, Clock, SessionScheduler, exclude_today_1d_cutoff
 MIN_MS = 60_000
 DAY_MS = 86_400_000
 
-#: 랭킹 4종 (docs/03 §1: 전 티어 승격 트리거 겸 토스 쏠림도 시계열).
+
+def _num(value: float) -> str:
+    """4.0 -> "4", 4.5 -> "4.5". 설정 지문이 타입 표기 때문에 흔들리지 않게 한다."""
+    number = float(value)
+    return str(int(number)) if number == int(number) else f"{number:g}"
+
+
+#: 랭킹 **2종** (docs/03 §1: 전 티어 승격 트리거 겸 토스 쏠림도 시계열).
+#:
+#: 2026-08-04 사용자 결정으로 4종 → 2종. **목적은 디스크다** — 랭킹이 하루 161만 행으로
+#: 전체 쓰기의 93% 라 절반이면 보존이 3주 → 5주 이상이 된다. 호가 예산과는 무관하다
+#: (랭킹은 RANKING 그룹, 호가는 MARKET_DATA 그룹).
+#:
+#: 남긴 두 종이 **건수 기준**인 이유: 체결강도를 건수로 본다 — 큰 주문은 잘게 쪼개져
+#: 나오므로 금액보다 건수가 주포의 흔적을 잘 남긴다. 표적 가격대 종목의 86% 가 TOSS
+#: 거래량 목록에 있고, 두 목록의 **순위 대비**(같은 종목이 TOSS 에서만 높다)가
+#: "개미만 유독 몰린 종목"을 뜻한다 — 실측 시차 0.6초라 같은 순간으로 취급해도 된다.
+#:
+#: 뺀 두 종(…_AMOUNT)은 금액 기준이라 대형주 위주였고, 그 `amount_u` 는 micro-KRW 오염
+#: 필드라 계약상 이미 금액 용도 사용이 금지돼 있다 (쓸 수 없는 값을 받고 있던 셈).
 RANKING_TYPES: tuple[str, ...] = (
-    "MARKET_TRADING_AMOUNT", "MARKET_TRADING_VOLUME",
-    "TOSS_SECURITIES_TRADING_AMOUNT", "TOSS_SECURITIES_TRADING_VOLUME",
+    "MARKET_TRADING_VOLUME",
+    "TOSS_SECURITIES_TRADING_VOLUME",
 )
 #: 토스 랭킹 이 순위 안에 새로 들어오면 그 자체로 tier2 승격 트리거.
 RANKING_PROMOTE_TOP = 10
@@ -547,7 +566,8 @@ class CollectorContext:
             self.cfg,
             tier1_symbols=uni.tier1_max,
             tier2_symbols=self.tiers.capacity.get(2) or uni.tier2_max,
-            tier3_symbols=self.tiers.capacity.get(3) or uni.tier3_max)
+            tier3_symbols=self.tiers.capacity.get(3) or uni.tier3_max,
+            ranking_types=len(RANKING_TYPES))
         self.budget.set_plan(plan)
         deficit = self.budget.reserve_deficit()
         if deficit:
@@ -674,6 +694,33 @@ class CollectorContext:
 
     # ---- 텔레메트리 (무인 실행의 유일한 관측 창) --------------------------
 
+    def config_signature(self) -> str:
+        """수집 **형태**를 공백 없는 한 줄로 요약한 지문.
+
+        분석은 "이 구간의 데이터가 어떤 설정으로 모인 것인가" 를 알아야 한다. 지금까지
+        수집기 변경 경계는 사람이 손으로 적어 왔지만(08-04 00:07:28, 02:26, 10:09),
+        손으로 적는 기록은 빠뜨리면 그만이다. 이 값을 텔레메트리에 실어두면 **경계가
+        데이터 안에 남는다** — 지문이 바뀐 첫 리포트 시각이 곧 전환 시각이다.
+
+        의도적으로 수집 밀도·폭에 영향을 주는 값만 담는다. 무엇을 얼마나 자주 받았는지가
+        바뀌면 지문이 바뀌고, 그 외 설정(경로·자격증명 등)은 지문을 흔들지 않는다.
+        """
+        poll = self.cfg.require_polling()
+        uni = self.cfg.require_universe()
+        # 목록 이름은 길어서 앞글자만 — 종류가 아니라 "구성이 바뀌었나" 만 보면 된다.
+        kinds = "+".join(sorted(
+            t.replace("TOSS_SECURITIES_TRADING_", "T").replace("MARKET_TRADING_", "M")
+            for t in RANKING_TYPES))
+        return (f"rank{len(RANKING_TYPES)}:{kinds}"
+                f",t3max{uni.tier3_max},tr{_num(poll.tier3_trades_s)}s"
+                f",ob{_num(poll.tier3_orderbook_s)}s"
+                f",t2ob{_num(getattr(poll, 'tier2_orderbook_s', 0) or 0)}s"
+                f",t2c{_num(poll.tier2_candle_s)}s,rk{_num(poll.ranking_snap_s)}s")
+
+    def log_config_signature(self, why: str) -> None:
+        """전환 경계를 로그에도 한 줄 남긴다 (기동 시 / 지문이 바뀌었을 때)."""
+        self.notifier.info(f"COLLECTION-CONFIG {why} sig={self.config_signature()}")
+
     def telemetry(self) -> dict[str, object]:
         """주기 리포트 한 줄에 들어갈 관측치.
 
@@ -699,6 +746,8 @@ class CollectorContext:
         fetch_success_pct = round(100.0 * seen / req, 1) if req else 100.0
         return {
             "session": self.current_session(),
+            # 수집 설정 지문 — 이 값이 바뀐 첫 리포트가 곧 수집 경계다 (분석용).
+            "config_sig": self.config_signature(),
             "watch": len(self.watchlist),
             # 워치리스트에 있으면서 tier0 미통과인 심볼 수 — 0 이 아니면 유니버스 게이트가
             # 새는 것이다 (감사 F-2 재발 감시. pinned 는 운영자 책임이라 True 로 계상).
@@ -1200,7 +1249,7 @@ def _clamp_ranking_page(ctx: CollectorContext, page: RankingPage) -> RankingPage
 
 
 async def rankings_once(ctx: CollectorContext) -> int:
-    """랭킹 4종 스냅샷 → DB + 실시간 버퍼 + 유니버스 판정 + 승격 트리거."""
+    """랭킹 2종 스냅샷 → DB + 실시간 버퍼 + 유니버스 판정 + 승격 트리거."""
     stored = 0
     watch = set(ctx.watchlist)
     for rtype in RANKING_TYPES:
@@ -1870,8 +1919,8 @@ async def run_tier2_orderbook(client: TossClient, store: Store, cfg: Config, *,
     스프레드 궤적을 원리상 측정할 수 없었다 — "유동성이 몰릴 때 스프레드가 좁아지는가"
     (진입창 설계)와 주문 크기별 비용(감사 A3)이 여기 걸려 있다.
 
-    tier3 멤버는 제외한다 (`members(2)`) — 이미 `tier3_orderbook_s`(16s)로 조밀하게
-    받고 있어 중복 호출이 될 뿐이다. 주기가 0/미설정이면 루프 자체가 즉시 끝난다.
+    tier3 멤버는 제외한다 (`members(2)`) — 이미 `tier3_orderbook_s`(현재 4s)로 훨씬
+    조밀하게 받고 있어 중복 호출이 될 뿐이다. 주기가 0/미설정이면 루프가 즉시 끝난다.
     """
     ctx = ctx or CollectorContext.create(client, store, cfg)
     period = float(getattr(cfg.require_polling(), "tier2_orderbook_s", 0) or 0)
@@ -1970,6 +2019,8 @@ def reconfigure_tiers(ctx: CollectorContext, session: str) -> dict[str, int]:
 async def run_all(ctx: CollectorContext, *, cycles: int | None = None) -> None:
     """4개 수집 루프 + 세션 감시를 각각 독립 task 로 돌린다."""
     cfg = ctx.cfg
+    # 수집이 시작되는 지점에 경계를 못 박는다 — 이 줄의 시각 이후 데이터가 이 설정이다.
+    ctx.log_config_signature("start")
     tasks = [
         asyncio.create_task(run_session_watch(ctx, cycles=cycles), name="session"),
         asyncio.create_task(run_rankings(ctx.client, ctx.store, cfg, ctx=ctx,

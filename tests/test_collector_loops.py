@@ -59,7 +59,7 @@ def test_symbol_buffer_frame_dtypes_are_int64():
     assert candles_frame([]).empty
 
 
-def _page(symbol, rank, amount_u, rtype="TOSS_SECURITIES_TRADING_AMOUNT"):
+def _page(symbol, rank, amount_u, rtype="TOSS_SECURITIES_TRADING_VOLUME"):
     return RankingPage(ranking_type=rtype, duration="realtime", ranked_at_ms=None,
                        rows=[RankingRow(rank=rank, symbol=symbol, last_u=1_000_000,
                                         base_u=1_000_000, change_rate=0.1,
@@ -592,7 +592,8 @@ def test_every_candle_call_passes_the_contracted_adjustment(tmp_path):
 def test_session_change_rescales_tier_capacity(tmp_path):
     ctx, _ = build_ctx(tmp_path, StubClient({}))
     caps_regular = loops.reconfigure_tiers(ctx, "regular")
-    assert caps_regular == {"tier2_max": 300, "tier3_max": 20}
+    uni = ctx.cfg.universe                               # 설정값을 복제하지 않는다
+    assert caps_regular == {"tier2_max": uni.tier2_max, "tier3_max": uni.tier3_max}
 
     for i in range(5):                                   # tier3 를 5개 채운다
         sym = f"S{i}"
@@ -602,9 +603,11 @@ def test_session_change_rescales_tier_capacity(tmp_path):
     assert len(ctx.tiers.members(3)) == 5
 
     caps_day = loops.reconfigure_tiers(ctx, "day")        # 얇은 세션 → 감시 축소
-    assert caps_day["tier3_max"] == 8
+    scale = loops.SESSION_TIER_SCALE
+    assert caps_day["tier3_max"] == int(uni.tier3_max * scale["day"])
+    assert caps_day["tier3_max"] < uni.tier3_max          # 실제로 줄어야 의미가 있다
     caps_after = loops.reconfigure_tiers(ctx, "after")
-    assert caps_after["tier3_max"] == 10
+    assert caps_after["tier3_max"] == int(uni.tier3_max * scale["after"])
     assert len(ctx.tiers.members(3)) <= caps_after["tier3_max"]
     ctx.store.close()
 
@@ -845,11 +848,12 @@ def test_ranking_int64_overflow_is_clamped_per_row_not_fatal(tmp_path):
 
         rows = ctx.store._conn.execute(
             "SELECT symbol, amount_u FROM rankings_snap WHERE "
-            "ranking_type='TOSS_SECURITIES_TRADING_AMOUNT' ORDER BY rank").fetchall()
+            "ranking_type='TOSS_SECURITIES_TRADING_VOLUME' ORDER BY rank").fetchall()
         assert [s for s, _a in rows] == ["OVRF", "OKAY"]      # 행 단위 — 배치 생존
         assert rows[0][1] == loops.SQLITE_INT_MAX             # 클램프 값 자체가 표식
         assert rows[1][1] == 1_000_000_000                    # 정상 행은 원값 그대로
-        assert ctx.counters["rankings_clamped"] == 4          # 4 rtype × 1 필드
+        n_types = len(loops.RANKING_TYPES)
+        assert ctx.counters["rankings_clamped"] == n_types    # rtype 수 × 1 필드
         assert ctx.counters.get("rankings_write_failures", 0) == 0
         assert ctx.counters.get("loop_errors", 0) == 0        # 더는 unexpected 로 새지 않는다
         clamp_warns = [w for w in warns if "clamp" in w]
@@ -858,7 +862,7 @@ def test_ranking_int64_overflow_is_clamped_per_row_not_fatal(tmp_path):
         assert str(huge) in clamp_warns[0]                    # 원값 명시
         # 텔레메트리로 드러난다 (docs/11 §11-1 사각 봉합)
         data = ctx.telemetry()
-        assert data["rankings_clamped"] == 4
+        assert data["rankings_clamped"] == n_types
         assert data["rankings_write_failures"] == 0
     finally:
         ctx.store.close()
@@ -889,13 +893,13 @@ def test_ranking_clamp_survives_realistic_micro_unit_overflow(tmp_path):
         asyncio.run(loops.rankings_once(ctx))
         got = ctx.store._conn.execute(
             "SELECT symbol, amount_u, vol_qu FROM rankings_snap WHERE "
-            "ranking_type='TOSS_SECURITIES_TRADING_AMOUNT' ORDER BY rank").fetchall()
+            "ranking_type='TOSS_SECURITIES_TRADING_VOLUME' ORDER BY rank").fetchall()
         assert [g[0] for g in got] == ["MEGA", "EDGE", "TINY"]     # 3행 전부 저장
         assert got[0][1] == at_max and got[0][2] == at_max        # MEGA 두 필드 클램프
         assert got[1][1] == at_max and got[1][2] == at_max        # EDGE 경계는 원값(통과)
         assert got[2][1] == 1_500_000 and got[2][2] == 42         # TINY 원값
-        # MEGA 한 행에 2필드 × 4 rtype = 8, EDGE 는 경계라 클램프 아님
-        assert ctx.counters["rankings_clamped"] == 8
+        # MEGA 한 행에 2필드 × rtype 수, EDGE 는 경계라 클램프 아님
+        assert ctx.counters["rankings_clamped"] == 2 * len(loops.RANKING_TYPES)
         assert ctx.counters.get("rankings_write_failures", 0) == 0
         mega = [w for w in warns if "MEGA" in w]
         assert mega and "amount_u" in mega[0] and "vol_qu" in mega[0]
@@ -950,7 +954,7 @@ class MetaClient(StubClient):
 
 
 def toss_page(*rows):
-    return RankingPage(ranking_type="TOSS_SECURITIES_TRADING_AMOUNT",
+    return RankingPage(ranking_type="TOSS_SECURITIES_TRADING_VOLUME",
                        duration="realtime", ranked_at_ms=None,
                        rows=[RankingRow(rank=r, symbol=s, last_u=last_u,
                                         base_u=last_u, change_rate=0.1,
@@ -1631,3 +1635,82 @@ def test_one_429_is_charged_once_across_loops(tmp_path):
         assert sum(ctx.budget.rate_limited.values()) == 1
     finally:
         ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 2026-08-04 전환: 랭킹 2종 + 수집 설정 지문 (분석이 경계를 찾는 열쇠)
+# --------------------------------------------------------------------------- #
+def test_only_the_two_count_based_ranking_lists_are_polled():
+    """금액 목록 2종은 더 이상 받지 않는다.
+
+    `amount_u` 가 micro-KRW 오염 필드라 금액 용도로 못 쓰는데도 하루 80만 행을 쓰고
+    있었다. 남긴 두 종은 **건수 기준**이고, 둘의 순위 대비가 "개미만 몰린 종목" 신호다.
+    """
+    assert loops.RANKING_TYPES == ("MARKET_TRADING_VOLUME",
+                                   "TOSS_SECURITIES_TRADING_VOLUME")
+    assert not any("AMOUNT" in t for t in loops.RANKING_TYPES)
+
+
+@pytest.mark.asyncio
+async def test_rankings_loop_calls_exactly_the_two_lists(tmp_path):
+    """상수만 줄이고 루프가 옛 목록을 계속 부르면 디스크 절감이 안 일어난다."""
+    class RankClient(StubClient):
+        def __init__(self):
+            super().__init__({})
+            self.asked: list[str] = []
+
+        async def get_rankings(self, rtype, **kw):
+            self.asked.append(rtype)
+            return RankingPage(ranking_type=rtype, duration="realtime",
+                               ranked_at_ms=DAY0, rows=[])
+
+    client = RankClient()
+    ctx, _day = build_ctx(tmp_path, client)
+    await loops.rankings_once(ctx)
+    assert client.asked == list(loops.RANKING_TYPES)
+    assert len(client.asked) == 2
+    ctx.store.close()
+
+
+def test_config_signature_records_the_collection_shape(tmp_path):
+    """★ 요구사항 3 — 전환 경계가 텔레메트리 안에 남아야 한다."""
+    ctx, _day = build_ctx(tmp_path, StubClient({}))
+    sig = ctx.config_signature()
+    assert sig == ctx.telemetry()["config_sig"]                # 5분마다 나가는 리포트에 실린다
+    assert " " not in sig                                      # 한 줄 파싱을 깨지 않는다
+    # 결정된 값이 지문에 그대로 보여야 사람이 로그만 보고 확인할 수 있다.
+    assert "rank2:" in sig and "t3max10" in sig and "ob4s" in sig and "tr4s" in sig
+    ctx.store.close()
+
+
+def test_config_signature_changes_when_the_collection_shape_changes(tmp_path):
+    """지문이 안 바뀌면 경계를 못 찾는다 — 밀도/폭이 바뀌면 반드시 달라져야 한다."""
+    base, _ = build_ctx(tmp_path / "a", StubClient({}))
+    wider, _ = build_ctx(tmp_path / "b", StubClient({}), universe={"tier3_max": 20})
+    denser, _ = build_ctx(tmp_path / "c", StubClient({}), polling={"tier3_orderbook_s": 2})
+    sigs = {base.config_signature(), wider.config_signature(), denser.config_signature()}
+    assert len(sigs) == 3
+    for c in (base, wider, denser):
+        c.store.close()
+
+
+def test_startup_logs_the_config_boundary(tmp_path):
+    """로그에도 한 줄 남는다 — 전환 시각을 로그에서 바로 찾을 수 있어야 한다."""
+    ctx, _day = build_ctx(tmp_path, StubClient({}))
+    seen: list[str] = []
+    ctx.notifier.info = seen.append                    # type: ignore[method-assign]
+    ctx.log_config_signature("start")
+    lines = [m for m in seen if "COLLECTION-CONFIG" in m]
+    assert len(lines) == 1 and ctx.config_signature() in lines[0]
+    ctx.store.close()
+
+
+@pytest.mark.asyncio
+async def test_run_all_marks_the_boundary_before_collecting(tmp_path):
+    """경계 줄은 **수집 시작 전에** 나가야 한다 — 뒤에 오면 첫 구간이 미표시로 남는다."""
+    ctx, _day = build_ctx(tmp_path, StubClient({}))
+    seen: list[str] = []
+    ctx.notifier.info = seen.append                    # type: ignore[method-assign]
+    await loops.run_all(ctx, cycles=1)
+    assert any("COLLECTION-CONFIG" in m for m in seen)
+    ctx.store.close()

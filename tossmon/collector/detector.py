@@ -45,6 +45,22 @@ _NAN = float("nan")
 #: 계약 C-6 `events` 의 고정 7컬럼. 나머지 라벨은 전부 meta_json 으로 간다.
 EVENT_CORE_COLUMNS = ("t0_ms", "kind", "peak_ms", "peak_ret", "ret_30m", "ret_close", "session")
 
+#: 토스 쏠림도 피처가 볼 랭킹 2종. **`loops.RANKING_TYPES` 와 같아야 한다.**
+#:
+#: `features.py` 기본값은 아직 금액 2종(…_AMOUNT)인데, 2026-08-04 부터 수집기는 거래량
+#: 2종만 받는다(1391c6e). 넘기지 않으면 두 프레임이 비어 `_toss_concentration_features`
+#: 가 **예외 없이 0** 을 내고, `score_paths` 의 가중치 0.18(toss_share 0.10 +
+#: toss_share_slope_30 0.04 + toss_in_ranking 0.04)이 조용히 사라진다. tier3 임계 0.60 은
+#: 이 항이 살아 있을 때 잡은 값이라 승격이 소리 없이 줄어든다.
+#:
+#: `loops` 를 import 해서 맞추지 않는 이유는 순환 참조다(loops -> detector). 대신 두
+#: 목록이 어긋나면 테스트가 잡는다.
+#:
+#: 두 `amount_u` 의 **비율**은 계약 C-2 상 적법하다 — 금지된 것은 달러 금액으로 쓰는
+#: 것이고, 같은 스냅 두 값의 비는 무차원이라 micro-KRW 계수가 상쇄된다.
+RANKING_TOSS_TYPE = "TOSS_SECURITIES_TRADING_VOLUME"
+RANKING_MARKET_TYPE = "MARKET_TRADING_VOLUME"
+
 #: 티어별 (승격 임계, 강등 임계). 강등선이 낮아 그 사이가 히스테리시스 밴드다.
 DEFAULT_THRESHOLDS: dict[int, tuple[float, float]] = {2: (0.35, 0.22), 3: (0.60, 0.42)}
 
@@ -716,7 +732,8 @@ class EventDetector:
         feats = extract_precursor_features(
             df_1m, rk, t0_ms, include_t0=True, symbol=symbol, curve=curve,
             calendar=calendar, baseline=baseline,
-            shares_outstanding_qu=shares_outstanding_qu)
+            shares_outstanding_qu=shares_outstanding_qu,
+            toss_type=RANKING_TOSS_TYPE, market_type=RANKING_MARKET_TYPE)
         self.counters["scored"] += 1
         score, path, prec, conf = score_paths(feats)
 
