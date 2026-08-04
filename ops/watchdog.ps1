@@ -1006,7 +1006,9 @@ function Get-ClosedByFresherSource {
 }
 
 # Counter read that keeps "absent" distinguishable from "zero" at the call site.
-function Get-Counter($counters, [string]$key, $default) {
+# NOT named Get-Counter: that is a built-in PowerShell cmdlet (performance counters)
+# and shadowing it would make any snippet lifted out of this file call the wrong thing.
+function Get-CounterValue($counters, [string]$key, $default) {
     if ($null -ne $counters -and $counters.ContainsKey($key)) { return $counters[$key] }
     return $default
 }
@@ -1038,13 +1040,13 @@ function Get-Tier2BookVerdict($state, $cur, $tele) {
     $b0Rate = if ($null -ne $base) { [double](Get-Prop $base "rate" 0) } else { 0 }
     $b0429 = if ($null -ne $base) { [double](Get-Prop $base "n429" 0) } else { 0 }
     $b0Skip = if ($null -ne $base) { [double](Get-Prop $base "skipped" 0) } else { 0 }
-    $curRate = [double](Get-Counter $cur "tier2_orderbook_skipped_rate" 0)
-    $cur429 = [double](Get-Counter $cur "tier2_orderbook_skipped_429" 0)
-    $curSkip = [double](Get-Counter $cur "tier2_orderbook_skipped" 0)
+    $curRate = [double](Get-CounterValue $cur "tier2_orderbook_skipped_rate" 0)
+    $cur429 = [double](Get-CounterValue $cur "tier2_orderbook_skipped_429" 0)
+    $curSkip = [double](Get-CounterValue $cur "tier2_orderbook_skipped" 0)
     $runRate = $curRate - $b0Rate
     $run429 = $cur429 - $b0429
     $runSkip = $curSkip - $b0Skip
-    $members = [int](Get-Counter $cur "tier2_members" -1)
+    $members = [int](Get-CounterValue $cur "tier2_members" -1)
     # $tele is a HASHTABLE, not a PSObject - Get-Prop walks PSObject.Properties and would
     # silently return the default here, which would make every state-sourced verdict claim
     # the rate/429 split was unavailable. Read the key directly.
@@ -1052,7 +1054,7 @@ function Get-Tier2BookVerdict($state, $cur, $tele) {
     if ($null -ne $tele -and $tele.ContainsKey("skip_split_available")) {
         $splitOk = [bool]$tele["skip_split_available"]
     }
-    $snaps = [int](Get-Counter $cur "tier2_orderbook_snaps" 0)
+    $snaps = [int](Get-CounterValue $cur "tier2_orderbook_snaps" 0)
 
     # attempted = what the sweep tried this run. Snaps are flat by definition of being here,
     # so attempts are the skips. Expressing the yield as a rate over attempts avoids needing
@@ -1094,7 +1096,7 @@ function Get-Tier2BookVerdict($state, $cur, $tele) {
             "2. FOR WHAT          : " + ($why -join "; ") + "`r`n" +
             "                       MARKET_DATA budget at this moment: " + (Get-BudgetLine) + "`r`n" +
             "                       tier2 members waiting: $memTxt, tier3 members: " +
-            "$([int](Get-Counter $cur 'tier3_members' -1)) (tier3 polls the same MARKET_DATA " +
+            "$([int](Get-CounterValue $cur 'tier3_members' -1)) (tier3 polls the same MARKET_DATA " +
             "budget far more densely - 4s per symbol - so a full tier3 is what crowds this out)`r`n" +
             "3. HOW LONG          : ${durS}s continuous (snap counter frozen at $snaps since " +
             "$([DateTimeOffset]::FromUnixTimeSeconds($sinceEpoch).LocalDateTime.ToString('yyyy-MM-dd HH:mm:ss')))`r`n" +
@@ -1398,9 +1400,9 @@ if ($null -ne $tele) {
                 Set-Prop $state "t2book_flat_base" ([PSCustomObject]@{
                     since = $NowEpoch
                     snaps = [double]$cur["tier2_orderbook_snaps"]
-                    rate = [double](Get-Counter $cur "tier2_orderbook_skipped_rate" 0)
-                    n429 = [double](Get-Counter $cur "tier2_orderbook_skipped_429" 0)
-                    skipped = [double](Get-Counter $cur "tier2_orderbook_skipped" 0)
+                    rate = [double](Get-CounterValue $cur "tier2_orderbook_skipped_rate" 0)
+                    n429 = [double](Get-CounterValue $cur "tier2_orderbook_skipped_429" 0)
+                    skipped = [double](Get-CounterValue $cur "tier2_orderbook_skipped" 0)
                 })
             }
             if ($strk -ge 3) {
