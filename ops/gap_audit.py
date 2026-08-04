@@ -201,6 +201,33 @@ def stayed_in_tier(timeline: dict, symbol: str, tier: int, a_ms: int, b_ms: int)
                    for ts, _ft, tt in timeline.get(symbol, ()))
 
 
+def tier_population(timeline: dict, tier: int, start_ms: int, end_ms: int) -> dict:
+    """창 동안의 **시간가중 평균 소속 종목 수**와 최소/최대.
+
+    이것 없이는 "결손 없음"이 아무 말도 하지 않는다. tier3 가 1종목으로 쪼그라든 창에서
+    결손이 0인 것은 수집이 좋아서가 아니라 **볼 것이 없어서**다. 그리고 결손은 호가
+    주기가 아니라 tier3 종목 수를 따라간다는 관측이 이미 있다(`docs/30` §4). 그래서
+    이 값은 결론에 반드시 따라붙는 측정 조건이다(태스크 지정 형식).
+
+    시간가중이라 "그 순간 몇 종목"이 아니라 "창 전체에 걸쳐 평균 몇 종목"이다.
+    """
+    span = max(end_ms - start_ms, 1)
+    total = 0
+    lo = hi = None
+    edges = {start_ms, end_ms}
+    for ev in timeline.values():
+        for ts, _ft, _tt in ev:
+            if start_ms < ts < end_ms:
+                edges.add(ts)
+    marks = sorted(edges)
+    for a, b in zip(marks, marks[1:]):
+        n = sum(1 for sym in timeline if tier_at(timeline, sym, a) == tier)
+        total += n * (b - a)
+        lo = n if lo is None else min(lo, n)
+        hi = n if hi is None else max(hi, n)
+    return {"avg": round(total / span, 2), "min": lo, "max": hi}
+
+
 def ranking_poll_times(conn, start_ms: int, end_ms: int) -> list[int]:
     """구간 안 랭킹 폴 시각(고유). 수집기가 **살아서 폴링 중이었는지**의 근거로 쓴다."""
     return [int(r[0]) for r in conn.execute(
@@ -612,6 +639,8 @@ def audit(cfg, start_ms: int, end_ms: int, label: str) -> str:
                     f"비율={r['ratio']:.3f}")
         lines.append("")
 
+        pop3 = tier_population(timeline, 3, start_ms, end_ms)
+        pop2 = tier_population(timeline, 2, start_ms, end_ms)
         rk_ts = ranking_poll_times(conn, min(start_ms, min((g.prev_max_ms for g in gaps),
                                                            default=start_ms)), end_ms)
     finally:
@@ -622,10 +651,17 @@ def audit(cfg, start_ms: int, end_ms: int, label: str) -> str:
     lines += [
         "",
         f"[측정 조건] 창 {round((end_ms-start_ms)/3_600_000, 2)}h, "
+        f"tier3 평균 {pop3['avg']}종목(min {pop3['min']} max {pop3['max']}), "
+        f"tier2 평균 {pop2['avg']}종목, "
         f"랭킹 폴 {pooled.get('n', 0)}회, 호가 스냅 {sum(s['n'] for s in ob.values())}개, "
         f"체결 대조 가능 분 {cc['comparable_minutes']}개 "
         f"(그중 거래량 대조 가능 {tc['minutes']}개), "
         f"tape gap 원시 {len(win_gaps)}건",
+        "  ** tier3 종목 수 없이 '결손 없음'을 읽지 마라. tier3 가 쪼그라든 창에서 결손이 "
+        "0인 것은 수집이 좋아서가 아니라 볼 것이 없어서일 수 있다 (docs/30 §4: 결손은 호가 "
+        "주기가 아니라 tier3 종목 수를 따라간다).",
+        "  ** config_sig 에 usage_ratio 는 들어 있지 않다 — 예산 파라미터가 바뀌어도 지문은 "
+        "그대로다. 창 안에서 그 값이 바뀌었는지는 collector.log 와 대조해야 한다.",
         f"[생존 판정 임계] RANKING_COVERAGE_MIN={RANKING_COVERAGE_MIN} "
         f"(랭킹 간격 중앙 {med}초 기준). 이 값이 바뀌면 A/B 경계가 바뀐다.",
         "[조회 한계] 체결 결손은 collector.log 에만 남는다 — 로그 회전 보존기간 밖은 못 본다.",

@@ -312,6 +312,19 @@ def test_orderbook_intervals_split_by_tier_and_exclude_membership_churn():
     conn.close()
 
 
+def test_tier_population_is_time_weighted_not_a_snapshot():
+    """"결손 없음"은 tier3 종목 수 없이 읽으면 안 된다 — 시간가중이라야 의미가 있다.
+
+    창 절반은 2종목, 절반은 0종목이면 평균 1.0 이어야 한다. 끝점만 보면 0 이 나오고
+    그러면 "10종목 보는데 결손 0" 과 "1종목 보는데 결손 0" 이 같아 보인다.
+    """
+    a, b = 0, 1000
+    tl = {"AAA": [(0, 2, 3), (500, 3, 2)],
+          "BBB": [(0, 2, 3), (500, 3, 2)]}
+    pop = GA.tier_population(tl, 3, a, b)
+    assert pop["avg"] == 1.0 and pop["max"] == 2 and pop["min"] == 0
+
+
 def test_ranking_intervals_split_by_type():
     """두 목록은 연달아 찍히므로 풀링하면 중앙값이 실제 폴 주기가 아니게 된다."""
     conn = _mem_db()
