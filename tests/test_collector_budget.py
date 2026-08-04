@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from tests.test_collector_helpers import FrozenClock, make_config
@@ -93,8 +95,21 @@ def test_should_shrink_brings_the_plan_back_under_budget():
     orders = g.should_shrink()
     assert orders and GROUP_MARKET_DATA in orders
     assert SHRINK_TIER[GROUP_MARKET_DATA] == 3               # tier3 를 줄이라는 지시
-    shrunk = plan(tier3=30 - orders[GROUP_MARKET_DATA], book_s=16)
-    assert shrunk.rates()[GROUP_MARKET_DATA] <= 7.0
+    # 축소는 이제 **한 스텝 상한**(SHRINK_MAX_STEP_FRAC)이 있다 — 한 번에 예산 아래로
+    # 내려가지 않는 것이 정상이고, 반복하면 수렴한다. 한 번에 정원을 날리던 것이
+    # 2026-08-04 개장 사고였다 (docs/33).
+    from tossmon.collector.budget import SHRINK_MAX_STEP_FRAC
+
+    assert orders[GROUP_MARKET_DATA] <= math.ceil(30 * SHRINK_MAX_STEP_FRAC)
+    have = 30
+    for _ in range(12):                                       # 반복하면 예산 아래로 수렴
+        g2 = guard(plan(tier3=have, book_s=16), clock=FrozenClock(0))
+        o = g2.should_shrink()
+        if not o:
+            break
+        have -= o[GROUP_MARKET_DATA]
+    assert plan(tier3=have, book_s=16).rates()[GROUP_MARKET_DATA] <= 7.0
+    assert have > 1, "수렴이 아니라 붕괴했다"
     assert BudgetGuard(LIMITS, 0.7).limit_of(GROUP_MARKET_DATA) == 10
 
 
@@ -532,14 +547,37 @@ def test_peak_is_measured_sliding_so_a_burst_across_the_boundary_still_counts():
     assert max(g.per_second_counts(GROUP_CHART)) < 8
 
 
-def test_shrink_now_follows_the_one_second_peak_not_the_average():
-    """★ 판정 근거 전환 — 평균이 천장 아래여도 첨두가 넘으면 (지속되면) 깎는다."""
+def test_shrink_follows_the_sustained_rate_and_a_pure_burst_does_not_shrink():
+    """★ 2026-08-04 개장 사고 이후의 계약 (docs/33 §4-2).
+
+    이 테스트는 예전에 "첨두가 넘으면 깎는다" 였다. 그 계약이 개장에 정원을 날렸다 —
+    1초 버스트를 지속 속도 손잡이(정원)로 고치려 했기 때문이다. 지금 계약은:
+      * 지속률이 천장을 넘으면 깎는다 (양의 문제 — 정원이 맞는 손잡이)
+      * 첨두만 넘는 것은 **깎지 않는다** (타이밍 문제 — 리미터가 맞는 손잡이)
+    첨두 관측·경보는 그대로다. 바뀐 것은 **대응**이지 탐지가 아니다.
+    """
     clock = FrozenClock(0)
     g = guard(clock=clock)
-    orders = _burst(g, clock, GROUP_MARKET_DATA, 9, 120)        # 평균 9, 첨두 9
-    assert g.peak_1s(GROUP_MARKET_DATA) >= 9
-    assert orders, "첨두가 천장(6.65)을 넘어 지속됐는데 축소가 없었다"
+    orders = _burst(g, clock, GROUP_MARKET_DATA, 9, 120)        # 지속률도 9 — 진짜 과부하
+    assert g.measured_rate(GROUP_MARKET_DATA) > g.shrink_ceiling(GROUP_MARKET_DATA)
+    assert orders, "지속률이 천장을 넘어 지속됐는데 축소가 없었다"
     assert any(GROUP_MARKET_DATA in o for o in orders)
+
+    # 반대 방향: 첨두만 높고 지속률은 낮으면 깎지 않는다 (사고 조건 그대로).
+    clock2 = FrozenClock(0)
+    g2 = guard(clock=clock2)
+    burst_orders = []
+    for _ in range(40):
+        for _ in range(9):
+            g2.on_request(GROUP_MARKET_DATA)
+            clock2.advance(0.02)
+        clock2.advance(5.0 - 9 * 0.02)
+        got = g2.should_shrink()
+        if got:
+            burst_orders.append(got)
+    assert g2.peak_1s(GROUP_MARKET_DATA) >= 9                   # 첨두는 여전히 관측된다
+    assert g2.measured_rate(GROUP_MARKET_DATA) < g2.shrink_ceiling(GROUP_MARKET_DATA)
+    assert burst_orders == [], "순수 버스트로 정원을 깎았다 — 사고 재발"
 
 
 def test_a_single_burst_does_not_shrink_without_persistence():
