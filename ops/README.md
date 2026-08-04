@@ -13,6 +13,8 @@
 | `healthcheck.py` | 마지막 수집 시각(테이블별)·DB 증가율·429/호출수(최선노력)·디스크 여유를 한 화면에. |
 | `disk_guard.py` | 디스크 여유 공간만 별도 점검(경보 전용, 독립 스케줄 등록 가능). |
 | `rotate_logs.py` | 로그 파일 크기 기준 회전(gzip) + 보관기간 경과분 삭제. |
+| `watchdog.ps1` | 5분 주기 무인 감시(프로세스·텔레메트리·W4 계약 카운터·디스크·전원·상호 하트비트) + 자동 재기동. 역할 `-Role sentinel` 은 워치독 자체를 감시. 판정 근거·문턱은 `docs/11 §14~20`. |
+| `watchdog_selftest.ps1` | 위 스크립트의 샌드박스 자기시험. 진짜 `watchdog.ps1` 을 임시 DataDir 에서 `-DryRunRestart` 로 돌려 경보/재시작 판정을 검증한다. **가동 중 수집기는 건드리지 않는다.** |
 | `register_task_scheduler.ps1` | 위 3개를 Windows 작업 스케줄러에 등록/해제/상태조회. **기본은 DryRun.** |
 | `hooks/pre_commit_secret_scan.py` | 커밋 전 시크릿 문자열/파일 차단 (`docs/09_secret_hygiene.md`). |
 
@@ -23,6 +25,9 @@ copy ops\ops_config.example.yaml ops\ops_config.yaml    # 필요시 경로/임�
 python -m ops.healthcheck                                # 현재 상태 확인 (DB 없어도 안전하게 동작)
 python -m ops.disk_guard
 python -m ops.rotate_logs
+
+# 워치독을 고친 뒤에는 반드시 이걸 돌린다 (44 케이스, 라이브 무접촉)
+powershell -NoProfile -ExecutionPolicy Bypass -File ops\watchdog_selftest.ps1
 
 # 예약 작업 등록 계획만 확인(아무 것도 등록되지 않음)
 powershell -File ops\register_task_scheduler.ps1 -Action Register

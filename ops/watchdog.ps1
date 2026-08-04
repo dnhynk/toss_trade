@@ -60,6 +60,24 @@ param(
     # ranking_snap_age_s is the HIGHEST-priority alarm: rankings cannot be fetched
     # retroactively, so a silently stalled ranking loop is permanent data loss.
     [int]$RankingSnapAgeCritS = 300,
+
+    # How old an observation may be before its 'session' stops being evidence about NOW.
+    # collector_state.json is only rewritten when a loop does work, so it FREEZES at the
+    # last open-session value the moment the calendar closes (2026-08-04 08:55 incident:
+    # a 6-minute-old file still said session=after while the collector had logged
+    # "session after -> closed" at 08:50:09). Beyond this age the file is a historical
+    # record, not a status - fall back to the log, or judge nothing.
+    [int]$StateTrustS = 300,
+
+    # Grace periods for the ranking-stall verdict. A ranking snapshot older than the
+    # threshold only becomes evidence of a STALL once the loop has had time to take one:
+    # right after a session opens, and right after a (re)start, last_ranking_snap_ms
+    # legitimately still points into the previous session. -1 means "same as
+    # RankingSnapAgeCritS", which is the only value that makes sense in production; they
+    # exist as separate knobs so ops/watchdog_selftest.ps1 can exercise each guard alone.
+    [int]$SessionOpenGraceS = -1,
+    [int]$CollectorWarmupS = -1,
+
     [int]$AuthFailuresToRestart = 3,
     [int]$LoopErrorSurge = 500,
     [double]$FetchSuccessWarnPct = 90.0,
@@ -81,6 +99,8 @@ $ErrorActionPreference = "Stop"
 if ($DataDir -eq "") { $DataDir = Join-Path $RepoRoot "data" }
 if ($StateDir -eq "") { $StateDir = Join-Path $DataDir "ops_state" }
 if ($ExeLike -eq "") { $ExeLike = (Join-Path $RepoRoot ".venv") + "*" }
+if ($SessionOpenGraceS -lt 0) { $SessionOpenGraceS = $RankingSnapAgeCritS }
+if ($CollectorWarmupS -lt 0) { $CollectorWarmupS = $RankingSnapAgeCritS }
 if ($LauncherCmd -eq "") { $LauncherCmd = Join-Path $RepoRoot "ops\launch_collector.cmd" }
 
 $WatchdogLog = Join-Path $DataDir "watchdog.log"
@@ -289,9 +309,9 @@ function Get-LastTelemetry([double]$minutes = 20.0, [int]$maxLines = 20000) {
 # stores keys it has bumped), so the known contract keys are filled in explicitly - that
 # way a delta check sees 0 rather than "unsupported".
 $script:W4_COUNTER_KEYS = @(
-    "auth_failures", "loop_errors", "schema_mismatch", "event_write_failures",
-    "promotion_write_failures", "rankings_write_failures", "rankings_clamped",
-    "prices_missing", "candles_1m", "api_errors", "tier2_orderbook_snaps"
+    "auth_failures", "loop_errors", "schema_mismatch", "symbol_not_found",
+    "event_write_failures", "promotion_write_failures", "rankings_write_failures",
+    "rankings_clamped", "prices_missing", "candles_1m", "api_errors", "tier2_orderbook_snaps"
 )
 function Get-TelemetryFromState {
     if (-not (Test-Path $StateJson)) { return $null }
@@ -318,28 +338,60 @@ function Get-TelemetryFromState {
     foreach ($k in @("tier2_orderbook_skipped_rate", "tier2_orderbook_skipped_429")) {
         if ($c.ContainsKey($k)) { $c["tier2_orderbook_skipped"] += $c[$k] }
     }
+    # ranking_snap_age_s is measured against saved_ms - the instant this observation was
+    # taken - NOT against the wall clock. Against 'now' the value grows without bound the
+    # moment the file stops being rewritten, so a perfectly healthy collector sitting in a
+    # closed session crosses any threshold just by waiting (2026-08-04 08:55: 382 s while
+    # the collector's own telemetry 44 s earlier said 311 s and session=closed). Measured
+    # against saved_ms it means what the alarm assumes it means: "how far behind was the
+    # ranking loop at the last moment we could actually see it". How stale that sighting
+    # is, is a separate fact and is reported separately as age_s.
     $c["ranking_snap_age_s"] = -1.0
     if ($null -ne $j.last_ranking_snap_ms -and [long]$j.last_ranking_snap_ms -gt 0) {
         $c["ranking_snap_age_s"] = [math]::Max(0,
-            [math]::Floor(((Get-Date) - [DateTimeOffset]::FromUnixTimeMilliseconds([long]$j.last_ranking_snap_ms).LocalDateTime).TotalSeconds))
+            [math]::Floor(([double]$j.saved_ms - [double]$j.last_ranking_snap_ms) / 1000.0))
+    }
+    $lastSnapStr = "(never)"
+    if ($null -ne $j.last_ranking_snap_ms -and [long]$j.last_ranking_snap_ms -gt 0) {
+        $lastSnapStr = [DateTimeOffset]::FromUnixTimeMilliseconds(
+            [long]$j.last_ranking_snap_ms).LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")
     }
     $sess = "unknown"
     if ($null -ne $j.session) { $sess = [string]$j.session }
     $sig = (($c.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join " ")
     return @{ ts = $ts; ts_str = $ts.ToString("yyyy-MM-dd HH:mm:ss"); session = $sess
-              counters = $c; counters_sig = $sig; source = "state" }
+              counters = $c; counters_sig = $sig; source = "state"; last_snap_str = $lastSnapStr }
 }
 
 # Read the collector's health from the best available source, and say clearly when it
 # could not be read at all. Being unable to see is itself an incident: the counter-freeze
 # detection - the only early signal we have for a silent API death - is dead while blind.
+#
+# 2026-08-04 08:55 incident: the state file was accepted as authoritative at up to
+# $FreshCritMin (15 min) old. But the collector only rewrites it when a loop does work, so
+# entering a closed session freezes it mid-sentence - it kept saying session=after for the
+# whole 08:50-09:00 KST calendar hole while the collector had already logged
+# "session after -> closed". The watchdog believed the frozen word, decided the session was
+# open, and restarted a perfectly healthy collector. A restart is this project's #1 cause of
+# data loss, and that hole exists every single day.
+#
+# So the state file only speaks for the present while it is younger than $StateTrustS.
+# Past that it is history: fall back to the telemetry line (which the collector keeps
+# emitting every 5 minutes even in a closed session, and which therefore carries the TRUE
+# session), and if that is unavailable too, say the session is unknown and judge nothing.
 function Get-CollectorSnapshot {
     $tried = @()
+    $frozen = $null
     $s = Get-TelemetryFromState
     if ($null -ne $s) {
-        $ageMin = ((Get-Date) - $s.ts).TotalMinutes
-        if ($ageMin -le $FreshCritMin) { return @{ ok = $true; snap = $s; reason = "" } }
-        $tried += ("collector_state.json is stale ({0:N1} min old, threshold {1} min)" -f $ageMin, $FreshCritMin)
+        $ageS = ((Get-Date) - $s.ts).TotalSeconds
+        if ($ageS -le $StateTrustS) { return @{ ok = $true; snap = $s; reason = ""; frozen = $null } }
+        # Keep the frozen reading for the report - "what the stale file claimed" is exactly
+        # the fact a morning reader needs to tell a false alarm from a real one.
+        $frozen = @{ session = $s.session; ts_str = $s.ts_str; age_s = [int]$ageS }
+        $tried += ("collector_state.json is {0}s old (trust window {1}s) - the collector " -f [int]$ageS, $StateTrustS +
+                   "stopped rewriting it at $($s.ts_str), so its session='$($s.session)' is a " +
+                   "historical record, not a status")
     } elseif (Test-Path $StateJson) {
         $tried += "collector_state.json exists but could not be parsed (truncated or corrupt JSON?)"
     } else {
@@ -347,11 +399,24 @@ function Get-CollectorSnapshot {
     }
     $t = Get-LastTelemetry
     if ($null -ne $t) {
+        # Falling back must not mean falling BACKWARDS. If the newest telemetry line is
+        # older than the state file we just rejected, the log is the worse observation and
+        # using it would understate freshness - straight into a log_stale restart of a
+        # collector we can see was alive more recently. Keep the newer sighting; the trust
+        # gate downstream still refuses to read a session off it.
+        if ($null -ne $s -and $s.ts -gt $t.ts) {
+            return @{ ok = $true; snap = $s; frozen = $frozen
+                      reason = ("state file too old to be a status but still newer than the " +
+                                "newest telemetry line ($($t.ts_str)); kept it as the observation, " +
+                                "session not trusted: " + ($tried -join "; ")) }
+        }
         $t["counters"] = Parse-Counters $t.counters
         $t["counters_sig"] = (($t.counters.GetEnumerator() | Sort-Object Name |
             ForEach-Object { "$($_.Name)=$($_.Value)" }) -join " ")
         $t["source"] = "log"
-        return @{ ok = $true; snap = $t; reason = ("state file unusable, fell back to log: " + ($tried -join "; ")) }
+        $t["last_snap_str"] = "(not recorded in the telemetry line)"
+        return @{ ok = $true; snap = $t; frozen = $frozen
+                  reason = ("state file not usable as a status, fell back to log: " + ($tried -join "; ")) }
     }
     if (-not (Test-Path $CollectorLog)) { $tried += "collector.log does not exist at $CollectorLog" }
     else {
@@ -359,7 +424,26 @@ function Get-CollectorSnapshot {
         $tried += ("no parseable 'telemetry session=' line within the time-based log scan " +
                    "(log is ${sz}MB, last modified $((Get-Item $CollectorLog).LastWriteTime.ToString('HH:mm:ss')))")
     }
-    return @{ ok = $false; snap = $null; reason = ($tried -join "; ") }
+    return @{ ok = $false; snap = $null; reason = ($tried -join "; "); frozen = $frozen }
+}
+
+# Youngest live collector process, in seconds. A collector that started moments ago legally
+# carries a large ranking_snap_age_s: last_ranking_snap_ms is RESUMED from the state file,
+# so it still points at the previous session. Judging a stall on that would make the
+# watchdog restart-loop a healthy collector. -1 means "could not tell" and every caller
+# treats that as "no grace", i.e. behaves exactly as before this guard existed.
+function Get-CollectorUptimeS($procs) {
+    $best = -1.0
+    foreach ($p in @($procs)) {
+        try {
+            $started = $p.CreationDate
+            if ($null -eq $started) { continue }
+            if ($started -isnot [datetime]) { $started = [Management.ManagementDateTimeConverter]::ToDateTime([string]$started) }
+            $u = ((Get-Date) - $started).TotalSeconds
+            if ($best -lt 0 -or $u -lt $best) { $best = $u }
+        } catch { }
+    }
+    return $best
 }
 
 # Parse "k=v k=v ..." telemetry counters into a hashtable (W4 contract, main 27abc3f).
@@ -717,9 +801,20 @@ $tele = $snapshot.snap
 $teleSource = "none"
 if ($null -ne $tele) { $teleSource = $tele.source }
 $session = "unknown"
+$sessionRaw = "unknown"     # what the source literally said, before the trust test
+$obsAgeS = -1               # how old the observation itself is
+$sessionTrusted = $false
 $ageMin = -1
 if ($null -ne $tele) {
-    $session = $tele.session
+    $obsAgeS = [int]((Get-Date) - $tele.ts).TotalSeconds
+    $sessionRaw = $tele.session
+    # An observation older than the trust window says nothing about NOW. Its session is
+    # downgraded to 'unknown', which every stall check below reads as "do not judge".
+    # This is the guard that would have prevented the 2026-08-04 08:55 restart even if the
+    # log fallback had also been unavailable.
+    $sessionTrusted = ($obsAgeS -le $StateTrustS)
+    $session = $sessionRaw
+    if (-not $sessionTrusted) { $session = "unknown" }
     $ageMin = [math]::Round(((Get-Date) - $tele.ts).TotalMinutes, 1)
     if ($ageMin -gt $FreshCritMin -and $null -eq $restartReason -and $col.Count -ge 1) {
         # process alive but log dead
@@ -731,7 +826,10 @@ if ($null -ne $tele) {
     # to know whether this cycle is looking at a genuinely new telemetry line
     $prevTeleTs = ""
     if ($null -ne $prev) { $prevTeleTs = Get-Prop $prev "ts" "" }
-    $openNow = ($session -ne "closed")
+    # 'unknown' is NOT open. It used to be (the test was only -ne "closed"), which meant an
+    # unreadable session silently enabled every stall check. Not knowing is a reason to
+    # abstain, not a reason to act.
+    $openNow = ($session -ne "closed" -and $session -ne "unknown")
     if ($null -ne $prev -and $openNow -and (Get-Prop $prev "session" "closed") -ne "closed") {
         if ($tele.counters_sig -eq (Get-Prop $prev "counters" "") -and $tele.ts_str -ne (Get-Prop $prev "ts" "")) {
             $strikes = (Get-Prop $state "freeze_strikes" 0) + 1
@@ -769,10 +867,103 @@ if ($null -ne $tele) {
         "data/collector.log by hand.") 1800 | Out-Null
 }
 
+# ---- how long has the session been open, and how long has the collector been up ----
+# Both answer the same question from different sides: "has enough time passed that a large
+# ranking_snap_age_s could POSSIBLY mean a stall?" Right after a session opens, or right
+# after a (re)start, last_ranking_snap_ms still points into the previous session by design -
+# the collector resumes it from the state file. Alarming there restarts a healthy collector
+# and, worse, does it in a loop.
+$openSession = ($session -ne "closed" -and $session -ne "unknown")
+$wasOpen = Get-Prop $state "session_was_open" $null
+$wasName = Get-Prop $state "session_name" ""
+if ($sessionTrusted) {
+    if ($openSession) {
+        # Reset on ANY session change, not just closed->open. The daily hole is only
+        # observed as 'closed' if the log fallback happens to be readable at that moment;
+        # if it was not, the watchdog goes after -> (unknown, record untouched) -> day and
+        # would never notice a transition happened. Keying on the session NAME closes that:
+        # after != day, so the grace period still starts. The cost is one skipped cycle at
+        # each pre/regular/after boundary, which is a trade the 2026-08-04 restart bought.
+        if ($wasOpen -ne $true -or $wasName -ne $session) { Set-Prop $state "session_open_since" $NowEpoch }
+        Set-Prop $state "session_was_open" $true
+    } else {
+        Set-Prop $state "session_was_open" $false
+        Set-Prop $state "session_open_since" 0
+    }
+    Set-Prop $state "session_name" $session
+}
+# An untrusted/blind cycle deliberately leaves the record alone: not being able to see must
+# not silently re-arm the grace period on the next cycle.
+$openSinceEpoch = [int](Get-Prop $state "session_open_since" 0)
+$openForS = -1
+if ($openSinceEpoch -gt 0) { $openForS = $NowEpoch - $openSinceEpoch }
+$colUptimeS = Get-CollectorUptimeS $col
+
+$script:SnapshotFrozen = $snapshot.frozen
+
+# The newest telemetry LINE, read at most once per cycle and only when something is about
+# to make a decision or write an alert. It is the independent second opinion on 'session':
+# the collector logs one every 5 minutes even while closed, so it keeps moving exactly when
+# collector_state.json stops.
+$script:XCheck = "unset"
+function Get-CrossCheck {
+    if ($script:XCheck -eq "unset") { $script:XCheck = Get-LastTelemetry }
+    return $script:XCheck
+}
+
+# A ranking stall is a claim about an OPEN session. Before acting on it, ask the one source
+# that keeps ticking through a closed session whether the session is really open.
+#
+# This catches what the freshness test alone cannot: on 2026-08-04 the state file was only
+# 71 s old at 08:50:55 - comfortably inside any trust window - and its session was ALREADY
+# wrong, because the collector had logged "session after -> closed" at 08:50:09 and then
+# had no work left to trigger a rewrite. A file can be fresh and stale at the same time.
+# Only a strictly newer observation is allowed to overrule; an older log line proves nothing.
+function Get-ClosedByFresherSource {
+    $xc = Get-CrossCheck
+    if ($null -eq $xc -or $null -eq $tele) { return $null }
+    if ($xc.ts -le $tele.ts) { return $null }
+    if ($xc.session -ne "closed") { return $null }
+    return ("the newest collector.log telemetry ($($xc.ts_str)) is NEWER than this " +
+            "observation ($($tele.ts_str)) and says session=closed")
+}
+
+# Evidence block shared by every alert that could conceivably be this false alarm again.
+# On 2026-08-04 the ALERT file said "the ranking loop has silently stopped ... permanent
+# data loss" when nothing at all was wrong, and it took a person a long morning to tell the
+# difference. Everything needed to make that call in 30 seconds goes in here.
+function Get-EvidenceBlock {
+    $lines = @()
+    $srcName = "collector.log telemetry line"
+    if ($teleSource -eq "state") { $srcName = "data/collector_state.json" }
+    if ($teleSource -eq "none") { $srcName = "(nothing readable)" }
+    $trustTxt = "TRUSTED"
+    if (-not $sessionTrusted) { $trustTxt = "NOT TRUSTED - older than the ${StateTrustS}s trust window, so it was read as 'unknown'" }
+    $lines += "  observed from : $srcName"
+    if ($null -ne $tele) {
+        $lines += ("  observed at   : {0} ({1}s ago)" -f $tele.ts_str, $obsAgeS)
+        $lines += "  session       : $sessionRaw  [$trustTxt]"
+        if ($null -ne $tele.last_snap_str) { $lines += "  last ranking  : $($tele.last_snap_str)" }
+    }
+    if ($openForS -ge 0) { $lines += "  session open  : ${openForS}s (grace threshold ${SessionOpenGraceS}s)" }
+    else { $lines += "  session open  : (not observed open since this watchdog last had a trusted reading)" }
+    if ($colUptimeS -ge 0) { $lines += ("  collector up  : {0}s (warmup threshold {1}s)" -f [int]$colUptimeS, $CollectorWarmupS) }
+    else { $lines += "  collector up  : (could not read process start time)" }
+    if ($null -ne $script:SnapshotFrozen) {
+        $lines += ("  STALE SOURCE  : collector_state.json last written $($script:SnapshotFrozen.ts_str) " +
+                   "($($script:SnapshotFrozen.age_s)s ago) claiming session='$($script:SnapshotFrozen.session)' - ignored")
+    }
+    # Independent cross-check: what does the newest telemetry LINE say? A disagreement
+    # between the two sources is the exact signature of the 2026-08-04 false alarm.
+    $xc = Get-CrossCheck
+    if ($null -ne $xc) { $lines += "  cross-check   : collector.log $($xc.ts_str) says session=$($xc.session)" }
+    else { $lines += "  cross-check   : no telemetry line found in collector.log" }
+    return ("EVIDENCE:`r`n" + ($lines -join "`r`n"))
+}
+
 # ---- W4 watchdog contract (main 27abc3f): counters + log strings ----
 # These counters exist only on post-27abc3f collectors. On an older binary they are
 # simply absent from the telemetry line and every check below no-ops (no false alarms).
-$openSession = ($session -ne "closed" -and $session -ne "unknown")
 if ($null -ne $tele) {
     Clear-AlertKey $state "no_telemetry"
     $cur = $tele.counters
@@ -789,6 +980,28 @@ if ($null -ne $tele) {
 
     # (1) HIGHEST PRIORITY - ranking snapshot age. Rankings have no historical API,
     # so a stalled ranking loop is unrecoverable loss for every minute it stays stalled.
+    #
+    # But "the ranking loop stopped" and "the ranking loop is not supposed to be running"
+    # look IDENTICAL in this counter, and the second one happens every day. Three things
+    # must all hold before a large value is allowed to mean a stall:
+    #   - the session is open AND that reading is fresh enough to be about now
+    #     ($openSession already folds in the trust test: an untrusted session reads
+    #      'unknown', and unknown is not open)
+    #   - the session has been open longer than the threshold - otherwise the last snapshot
+    #     legitimately belongs to the previous session (the 08:50-09:00 KST calendar hole)
+    #   - the collector has been up longer than the threshold - a just-started collector
+    #     resumes last_ranking_snap_ms from the state file, so it inherits the old value
+    $graceReason = ""
+    if ($openForS -ge 0 -and $openForS -lt $SessionOpenGraceS) {
+        $graceReason = "the session has only been open ${openForS}s (grace ${SessionOpenGraceS}s)"
+    } elseif ($colUptimeS -ge 0 -and $colUptimeS -lt $CollectorWarmupS) {
+        $graceReason = ("the collector has only been up {0}s (warmup {1}s)" -f [int]$colUptimeS, $CollectorWarmupS)
+    } else {
+        # last line of defence: a fresh-looking observation whose session a newer source
+        # already contradicts
+        $closedByFresher = Get-ClosedByFresherSource
+        if ($null -ne $closedByFresher) { $graceReason = $closedByFresher }
+    }
     if ($openSession -and $cur.ContainsKey("ranking_snap_age_s")) {
         $rsa = [int]$cur["ranking_snap_age_s"]
         if ($rsa -lt 0) {
@@ -798,23 +1011,55 @@ if ($null -ne $tele) {
             $strk = Get-Prop $state "ranking_never_strikes" 0
             if ($tele.ts_str -ne $prevTeleTs) { $strk = $strk + 1 }
             Set-Prop $state "ranking_never_strikes" $strk
-            if ($strk -ge 2 -and $null -eq $restartReason) {
+            if ($strk -ge 2 -and $null -eq $restartReason -and $graceReason -eq "") {
                 $problems += "ranking_snap_never"
                 $restartReason = "ranking_snap_never"
             }
-        } elseif ($rsa -gt $RankingSnapAgeCritS) {
+        } elseif ($rsa -gt $RankingSnapAgeCritS -and $graceReason -eq "") {
             Set-Prop $state "ranking_never_strikes" 0
             $problems += "ranking_snap_age_${rsa}s"
             Raise-Alert $state "ranking_snap_stalled" "CRIT" (
                 "HIGHEST PRIORITY: ranking_snap_age_s=$rsa (threshold $RankingSnapAgeCritS s) " +
                 "during session=$session. The ranking loop has silently stopped and rankings " +
                 "CANNOT be back-filled - every minute of this is permanent data loss. " +
-                "Restarting the collector.") 900 | Out-Null
+                "Restarting the collector.`r`n`r`n" + (Get-EvidenceBlock) + "`r`n`r`n" +
+                "This alarm fired only because all of the following were true: the session " +
+                "reading is fresher than ${StateTrustS}s, the session has been open longer " +
+                "than ${SessionOpenGraceS}s, and the collector has been up longer than " +
+                "${CollectorWarmupS}s. If any of those had failed, the watchdog would " +
+                "have written NOTE_*_ranking_stall_suppressed instead and restarted " +
+                "nothing.") 900 | Out-Null
             if ($null -eq $restartReason) { $restartReason = "ranking_snap_stalled" }
+        } elseif ($rsa -gt $RankingSnapAgeCritS) {
+            # The old code restarted here. Say out loud that it did not, and why - a
+            # suppressed alarm that leaves no trace is how the next person concludes the
+            # guard "only checked the cases on a list".
+            Set-Prop $state "ranking_never_strikes" 0
+            $problems += "ranking_stall_suppressed_${rsa}s"
+            Write-Log ("ranking judgment SKIPPED: ranking_snap_age_s=$rsa exceeds " +
+                       "$RankingSnapAgeCritS but $graceReason - not a stall, not restarting")
+            Raise-Alert $state "ranking_stall_suppressed" "INFO" (
+                "ranking_snap_age_s=$rsa is over the ${RankingSnapAgeCritS}s threshold, and the " +
+                "watchdog decided this is NOT a stall: $graceReason.`r`n`r`n" +
+                (Get-EvidenceBlock) + "`r`n`r`n" +
+                "This is the 2026-08-04 08:55 false alarm being refused. Nothing is wrong " +
+                "and NOTHING WAS RESTARTED - this file exists so that the refusal is " +
+                "visible rather than silent. It is a NOTE_, not an ALERT_.`r`n" +
+                "It becomes suspicious only if it repeats while the session has genuinely " +
+                "been open for a long time; check data/watchdog.log for 'ranking judgment " +
+                "SKIPPED' lines to see how often it fires.") 21600 | Out-Null
         } else {
             Set-Prop $state "ranking_never_strikes" 0
             Clear-AlertKey $state "ranking_snap_stalled"
+            Clear-AlertKey $state "ranking_stall_suppressed"
         }
+    } elseif (-not $openSession -and $cur.ContainsKey("ranking_snap_age_s") -and
+              [int]$cur["ranking_snap_age_s"] -gt $RankingSnapAgeCritS) {
+        # Session closed or unreadable: a stale ranking snapshot is exactly what should be
+        # there. Log it so the morning reader can see the watchdog saw it and let it be.
+        Write-Log ("ranking judgment SKIPPED: ranking_snap_age_s=$($cur['ranking_snap_age_s']) " +
+                   "but session=$session (raw=$sessionRaw trusted=$sessionTrusted) - rankings " +
+                   "are not expected to advance, not restarting")
     }
 
     # (2) auth_failures - the exact 2026-08-01 blind spot (api_errors stayed 0 while
@@ -832,15 +1077,65 @@ if ($null -ne $tele) {
         }
     }
 
-    # (3) schema_mismatch - API response shape changed. A restart cannot fix this;
-    # alert only, so a human looks at it.
+    # (3a) symbol_not_found (main 4397130) - a symbol in the rankings could not be looked
+    # up: http-404 code=stock-not-found, i.e. delisted / halted / renamed. This happens in
+    # normal operation and the collector simply skips that symbol. INFO, never CRIT.
+    $dSnf = Delta "symbol_not_found"
+    if ($null -ne $dSnf -and $dSnf -gt 0) {
+        Raise-Alert $state "symbol_not_found" "INFO" (
+            "symbol_not_found rose by $dSnf (total $($cur['symbol_not_found'])) - that many " +
+            "lookups came back http-404 code=stock-not-found. The symbol is delisted, halted " +
+            "or renamed; the collector skips it and everything else is unaffected. This is " +
+            "NOT a contract change and there is no reason to distrust today's data.`r`n" +
+            "Worth a look only if the number keeps climbing: that would mean the universe " +
+            "list has drifted away from what the exchange still lists.") 21600 | Out-Null
+    }
+
+    # (3b) schema_mismatch - the API response SHAPE changed. This is the one counter that
+    # justifies "do not trust today's data", so the alert must not cry wolf.
+    #
+    # 2026-08-04: it did. All five occurrences to date were plain http-404
+    # code=stock-not-found (a delisted symbol), yet the alert asserted "the API response
+    # shape changed. A restart will NOT fix this. Inspect the endpoint contract before
+    # trusting today's data." main 4397130 (W4) splits the counter, but a collector started
+    # before that build still lumps them together - and the alert has to be honest on both.
+    # So classify from the evidence in the log rather than from the counter name, and let
+    # the severity follow the evidence:
+    #   every matching line is a 404 stock-not-found -> INFO  (nothing is wrong)
+    #   at least one line is something else          -> CRIT  (the real thing)
+    #   no matching line found at all                -> WARN  (say so; do not assert)
     $dSchema = Delta "schema_mismatch"
     if ($null -ne $dSchema -and $dSchema -gt 0) {
+        $smTail = (Get-LogTail 5000) | Where-Object { $_ -match "schema mismatch \(skip\)" }
+        $smAll = @($smTail)
+        $smNotFound = @($smAll | Where-Object { $_ -match "http-404\b.*\bcode=stock-not-found\b" })
+        $smOther = @($smAll | Where-Object { $_ -notmatch "http-404\b.*\bcode=stock-not-found\b" })
+        $sample = (@($smAll | Select-Object -Last 5) | ForEach-Object { "  $_" }) -join "`r`n"
+        if ($sample -eq "") { $sample = "  (no 'schema mismatch (skip)' line in the last 5000 log lines)" }
+        $lvl = "WARN"
+        $verdict = ("Could not find the matching log lines (searched the last 5000 lines), so " +
+                    "the cause is UNKNOWN. It may be a missing symbol, which is harmless, or a " +
+                    "real response-shape change, which is not. Do not conclude either way from " +
+                    "this file - read data/collector.log around the time above.")
+        if ($smAll.Count -gt 0 -and $smOther.Count -eq 0) {
+            $lvl = "INFO"
+            $verdict = ("Every one of the $($smAll.Count) matching log lines is a plain " +
+                        "http-404 code=stock-not-found - a delisted/halted/renamed symbol, not " +
+                        "a shape change. Nothing is wrong with the data. This collector build " +
+                        "still counts those under schema_mismatch; main 4397130 moves them to " +
+                        "symbol_not_found, and the count will stop rising here once the running " +
+                        "collector picks that build up.")
+        } elseif ($smOther.Count -gt 0) {
+            $lvl = "CRIT"
+            $verdict = ("$($smOther.Count) of the $($smAll.Count) matching log lines are NOT " +
+                        "http-404 code=stock-not-found. That is the real case: the response " +
+                        "shape may have changed. A restart will NOT fix it. Inspect the " +
+                        "endpoint contract before trusting today's data for those fields.")
+        }
         $problems += "schema_mismatch_$dSchema"
-        Raise-Alert $state "schema_mismatch" "CRIT" (
-            "schema_mismatch rose by $dSchema (total $($cur['schema_mismatch'])) - the API " +
-            "response shape changed. A restart will NOT fix this. Inspect collector.log and " +
-            "the endpoint contract before trusting today's data.") 3600 | Out-Null
+        Raise-Alert $state "schema_mismatch" $lvl (
+            "schema_mismatch rose by $dSchema (total $($cur['schema_mismatch'])).`r`n`r`n" +
+            "VERDICT: $verdict`r`n`r`nMatching log lines (most recent 5):`r`n$sample") 3600 | Out-Null
     }
 
     # (4) write-failure family - data reaching the collector but not the DB.
@@ -1111,16 +1406,34 @@ if (Test-Path $SentinelHeartbeatFile) {
 
 # act
 if ($null -ne $restartReason) {
+    # A restart is this project's #1 cause of data loss, so the file that records one has to
+    # let the morning reader decide in 30 seconds whether it was justified. Before
+    # 2026-08-04 this body was one line and a person spent a morning on a restart that
+    # should never have happened.
     Raise-Alert $state "watch_$restartReason" "CRIT" (
         "Watchdog detected: $($problems -join ', ') (session=$session age_min=$ageMin " +
-        "sup=$($sup.Count) col=$($col.Count)). Restarting via $LauncherCmd") 60 | Out-Null
+        "sup=$($sup.Count) col=$($col.Count)). Restarting via $LauncherCmd`r`n`r`n" +
+        (Get-EvidenceBlock) + "`r`n`r`n" +
+        "WAS THIS RESTART JUSTIFIED? Read the evidence above:`r`n" +
+        "  - if 'session' is marked NOT TRUSTED, or 'cross-check' disagrees with 'session', " +
+        "the reading this decision rests on was stale -> the restart was probably wrong, " +
+        "and that is a watchdog defect worth reporting.`r`n" +
+        "  - if 'session open' or 'collector up' is small, the collector had not had time " +
+        "to do the work it is being blamed for.`r`n" +
+        "  - otherwise the observation was fresh and current, and the fault is real.") 60 | Out-Null
     Invoke-Restart $state $restartReason | Out-Null
     Set-Prop $state "collector_missing_strikes" 0
     Set-Prop $state "freeze_strikes" 0
 }
 
-$summary = "sup=$($sup.Count) col=$($col.Count) session=$session age_min=$ageMin " +
-    "src=$teleSource free_gb=$freeGB power=$powerNow($($pw.pct)%)"
+# session_raw vs session is the whole 2026-08-04 lesson in two fields: what the source
+# said, and what the watchdog was willing to believe. open_for/col_up say whether a stall
+# verdict was even admissible this cycle.
+$sessTxt = $session
+if ($sessionRaw -ne $session) { $sessTxt = "$session(raw=$sessionRaw,stale=${obsAgeS}s)" }
+$summary = "sup=$($sup.Count) col=$($col.Count) session=$sessTxt age_min=$ageMin " +
+    "src=$teleSource open_for=${openForS}s col_up=$([int]$colUptimeS)s " +
+    "free_gb=$freeGB power=$powerNow($($pw.pct)%)"
 if ($null -ne $tele) {
     $c2 = $tele.counters
     $rsaTxt = "n/a"; if ($c2.ContainsKey("ranking_snap_age_s")) { $rsaTxt = [int]$c2["ranking_snap_age_s"] }
