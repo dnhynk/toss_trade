@@ -60,6 +60,13 @@ def _build(tmp_path):
     end_ms = md.regular.start_ms + SPAN_MIN * MIN_MS
     rankings = pd.concat([truth_run["rankings"], truth_quiet["rankings"]],
                          ignore_index=True)
+    # synth 는 금액 목록 2종만 만든다 (W3 소유라 건드리지 않는다). 수집기는 2026-08-04
+    # 부터 **건수 목록** 2종만 부르므로, 여기서 이름을 맞춰주지 않으면 리플레이가
+    # 랭킹을 한 행도 못 받아 "랭킹 없이도 통과" 하는 무의미한 테스트가 된다.
+    rankings = rankings.assign(ranking_type=rankings["ranking_type"].replace({
+        "MARKET_TRADING_AMOUNT": "MARKET_TRADING_VOLUME",
+        "TOSS_SECURITIES_TRADING_AMOUNT": "TOSS_SECURITIES_TRADING_VOLUME"}))
+    assert set(rankings["ranking_type"]) == set(loops.RANKING_TYPES)
 
     cfg = make_config(tmp_path)
     store = Store(cfg.store.db_path)

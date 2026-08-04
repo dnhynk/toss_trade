@@ -21,9 +21,11 @@ SHIPPED = make_config()
 
 
 def plan(tier3=None, tier2=None, tier1=None, trades_s=None, book_s=None,
-         candle_s=None):
+         candle_s=None, ranking_types=None):
     uni, poll = SHIPPED.universe, SHIPPED.polling
+    from tossmon.collector.loops import RANKING_TYPES as POLLED
     return TierPlan(
+        ranking_types=len(POLLED) if ranking_types is None else ranking_types,
         tier1_symbols=uni.tier1_max if tier1 is None else tier1,
         tier2_symbols=uni.tier2_max if tier2 is None else tier2,
         tier3_symbols=uni.tier3_max if tier3 is None else tier3,
@@ -41,12 +43,12 @@ def guard(p=None, **kw):
 
 
 def test_plan_rates_reproduce_the_config_arithmetic():
-    """config 주석의 6.42 req/s 가 코드에서도 같은 값으로 나와야 한다."""
+    """config 주석의 5.18 req/s 가 코드에서도 같은 값으로 나와야 한다."""
     rates = plan().rates()
-    assert rates[GROUP_MARKET_DATA] == pytest.approx(8 / 45 + 20 / 4 + 20 / 16, rel=1e-9)
-    assert rates[GROUP_MARKET_DATA] == pytest.approx(6.4278, abs=1e-3)
+    assert rates[GROUP_MARKET_DATA] == pytest.approx(8 / 45 + 10 / 4 + 10 / 4, rel=1e-9)
+    assert rates[GROUP_MARKET_DATA] == pytest.approx(5.1778, abs=1e-3)
     assert rates[GROUP_CHART] == pytest.approx(300 / 110, abs=1e-6)
-    assert rates[GROUP_RANKING] == pytest.approx(4 / 12, abs=1e-6)
+    assert rates[GROUP_RANKING] == pytest.approx(2 / 12, abs=1e-6)
     assert guard().validate_plan() == {}                     # 예산 안
 
 
@@ -68,13 +70,14 @@ def test_from_config_matches_shipped_defaults():
     uni = SHIPPED.universe
     p = TierPlan.from_config(SHIPPED, tier1_symbols=uni.tier1_max,
                              tier2_symbols=uni.tier2_max, tier3_symbols=uni.tier3_max)
-    assert p.rates()[GROUP_MARKET_DATA] == pytest.approx(6.4278, abs=1e-3)
+    assert p.rates()[GROUP_MARKET_DATA] == pytest.approx(5.1778, abs=1e-3)
+    # from_config 의 기본 ranking_types 는 budget 상수, plan() 은 실제 목록을 센다.
     assert p.rates() == plan().rates()
 
 
 def test_tier3_30_would_overrun_market_data():
     """코디네이터가 잡아낸 초과 — tier3_max=30 이면 9.55 req/s 로 7.0 을 넘는다."""
-    g = guard(plan(tier3=30))
+    g = guard(plan(tier3=30, book_s=16))
     over = g.validate_plan()
     assert set(over) == {GROUP_MARKET_DATA}
     # 검증 천장은 이제 축소 판정과 **같은** target x HEADROOM (7.0 x 0.95 = 6.65) 이다.
@@ -86,11 +89,11 @@ def test_alternative_combo_25_symbols_5s_20s_fits():
 
 
 def test_should_shrink_brings_the_plan_back_under_budget():
-    g = guard(plan(tier3=30), clock=FrozenClock(0))
+    g = guard(plan(tier3=30, book_s=16), clock=FrozenClock(0))
     orders = g.should_shrink()
     assert orders and GROUP_MARKET_DATA in orders
     assert SHRINK_TIER[GROUP_MARKET_DATA] == 3               # tier3 를 줄이라는 지시
-    shrunk = plan(tier3=30 - orders[GROUP_MARKET_DATA])
+    shrunk = plan(tier3=30 - orders[GROUP_MARKET_DATA], book_s=16)
     assert shrunk.rates()[GROUP_MARKET_DATA] <= 7.0
     assert BudgetGuard(LIMITS, 0.7).limit_of(GROUP_MARKET_DATA) == 10
 
@@ -184,7 +187,7 @@ def test_429_forces_shrink_and_is_counted_as_an_incident():
 
 def test_shrink_has_a_cooldown_to_avoid_flapping():
     clock = FrozenClock(0)
-    g = guard(plan(tier3=30), clock=clock)
+    g = guard(plan(tier3=30, book_s=16), clock=clock)
     assert g.should_shrink()
     assert g.should_shrink() is None                           # 쿨다운 중
     clock.advance(31)
@@ -389,8 +392,8 @@ def test_plan_and_shrink_use_the_same_ceiling():
 
 
 def test_reserve_deficit_flags_a_plan_with_no_room_left():
-    """출하 설정의 MARKET_DATA 는 여유를 못 남긴다 — 조용히 넘어가면 안 된다."""
-    g = guard()
+    """여유를 못 남기는 계획은 조용히 넘어가면 안 된다 (구 출하 설정 20종목/16s)."""
+    g = guard(plan(tier3=20, book_s=16))
     deficit = g.reserve_deficit()
     assert GROUP_MARKET_DATA in deficit                       # 계획 6.43 > 천장 5.95
     assert deficit[GROUP_MARKET_DATA] == pytest.approx(6.4278 - 7.0 * 0.85, abs=1e-2)
@@ -402,3 +405,58 @@ def test_a_plan_with_real_reserve_reports_no_deficit():
     g = guard(plan(tier3=12, trades_s=5, book_s=20))
     assert g.reserve_deficit() == {}
     assert g.validate_plan() == {}
+
+
+# --------------------------------------------------------------------------- #
+# 2026-08-04 사용자 결정: 랭킹 2종 + tier3 10종목 × 호가 4초
+#
+# 이 블록은 "배포된 설정이 기동 즉시 축소를 부르지 않는다" 를 못박는다. 값을 복제하지
+# 않고 `SHIPPED`(= config.example.yaml)에서 읽는 이유는, 설정만 되돌려놓고 테스트는
+# 초록인 상태를 만들지 않기 위해서다.
+# --------------------------------------------------------------------------- #
+def test_shipped_config_boots_without_shrinking_and_keeps_reserve():
+    """★ 요구사항 1 — 출하 설정이 **경고 없이** 통과해야 한다."""
+    g = guard()                                               # SHIPPED 기반 계획
+    assert g.validate_plan() == {}                            # 하드 위반 없음
+    assert g.reserve_deficit() == {}                          # 경고도 없음 (여유 확보)
+    assert g.should_shrink() is None                          # 기동 즉시 축소 없음
+
+    rate = g.plan.rates()[GROUP_MARKET_DATA]
+    assert rate == pytest.approx(5.178, abs=1e-3)             # tier1 .178 + 2.5 + 2.5
+    assert g.shrink_ceiling(GROUP_MARKET_DATA) - rate == pytest.approx(1.472, abs=1e-3)
+    assert g.plan_ceiling(GROUP_MARKET_DATA) - rate == pytest.approx(0.772, abs=1e-3)
+
+
+def test_shipped_tier3_settings_are_the_decided_ones():
+    """설정이 조용히 되돌아가면 위 여유 계산이 무의미해진다 — 값 자체를 고정한다."""
+    assert SHIPPED.universe.tier3_max == 10
+    assert SHIPPED.polling.tier3_orderbook_s == 4
+    assert SHIPPED.polling.tier3_trades_s == 4                # 체결 주기는 건드리지 않았다
+
+
+def test_ranking_budget_counts_two_lists_not_four():
+    """랭킹 2종화는 RANKING 그룹 호출률을 절반으로 만든다 (디스크가 목적, 예산은 덤)."""
+    two = guard(plan()).plan.rates()[GROUP_RANKING]
+    four = guard(plan(ranking_types=4)).plan.rates()[GROUP_RANKING]
+    assert two == pytest.approx(2 / SHIPPED.polling.ranking_snap_s)
+    assert four == pytest.approx(2 * two)
+
+
+def test_budget_ranking_count_matches_the_list_the_collector_actually_polls():
+    """예산이 세는 종류 수와 수집기가 실제로 도는 목록이 어긋나면 계획이 거짓말이 된다."""
+    from tossmon.collector import budget as B
+    from tossmon.collector.loops import RANKING_TYPES as POLLED
+
+    assert B.RANKING_TYPES == len(POLLED)
+    # 실경로는 상수가 아니라 실제 목록을 세어 넘긴다 — 드리프트가 아예 불가능해야 한다.
+    plan_from_cfg = TierPlan.from_config(SHIPPED, tier1_symbols=1, tier2_symbols=1,
+                                         tier3_symbols=1, ranking_types=len(POLLED))
+    assert plan_from_cfg.ranking_types == len(POLLED)
+
+
+def test_quote_density_is_what_the_decision_bought():
+    """호가 1건당 지나가는 체결 수 — 이 변경의 목적 자체를 숫자로 남긴다."""
+    poll = SHIPPED.polling
+    # 종목당 호가 주기 / 체결 주기 = 호가 사이에 들어오는 체결 폴 수.
+    polls_between_quotes = poll.tier3_orderbook_s / poll.tier3_trades_s
+    assert polls_between_quotes == 1.0                        # 16/4 = 4 였다

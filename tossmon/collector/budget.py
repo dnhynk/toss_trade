@@ -31,8 +31,14 @@ SHRINK_TIER: dict[str, int] = {GROUP_MARKET_DATA: 3, GROUP_CHART: 2}
 
 #: 배치 상한 (/prices, /stocks). client.BATCH_MAX 와 같은 값.
 BATCH_MAX = 200
-#: 랭킹 스냅샷 종류 수 (MARKET/TOSS × AMOUNT/VOLUME).
-RANKING_TYPES = 4
+#: 랭킹 스냅샷 종류 수의 **기본값**. 2026-08-04 사용자 결정으로 4종(MARKET/TOSS ×
+#: AMOUNT/VOLUME) → 2종(거래량 2종)이 됐다. 디스크가 목적이고 RANKING 그룹이라
+#: MARKET_DATA 호가 예산과는 무관하다.
+#:
+#: 실제 계산은 `loops.RANKING_TYPES` 를 세어 `from_config(ranking_types=...)` 로
+#: 넘어온다 — 수집기가 실제로 부르는 목록이 곧 예산의 근거여야 드리프트가 없다.
+#: 이 상수는 그 인자를 주지 않았을 때의 대비값일 뿐이고, 둘의 일치는 테스트가 고정한다.
+RANKING_TYPES = 2
 
 #: 실사용 관측 윈도우 (초).
 WINDOW_S = 60.0
@@ -96,9 +102,10 @@ class TierPlan:
 
     @classmethod
     def from_config(cls, cfg, *, tier1_symbols: int, tier2_symbols: int,
-                    tier3_symbols: int) -> "TierPlan":
+                    tier3_symbols: int, ranking_types: int | None = None) -> "TierPlan":
         polling = cfg.require_polling()
         return cls(
+            ranking_types=RANKING_TYPES if ranking_types is None else int(ranking_types),
             tier1_symbols=int(tier1_symbols),
             tier2_symbols=int(tier2_symbols),
             tier3_symbols=int(tier3_symbols),

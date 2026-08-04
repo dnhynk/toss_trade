@@ -51,7 +51,7 @@ async def close(ctx):
 # --------------------------------------------------------------------------- #
 # 랭킹 — 최우선 수집 대상
 # --------------------------------------------------------------------------- #
-async def test_rankings_snapshot_all_four_types_over_http(tmp_path):
+async def test_rankings_snapshot_every_configured_type_over_http(tmp_path):
     with mock_server() as (base_url, _httpd):
         ctx = await make_ctx(base_url, tmp_path)
         try:
@@ -59,10 +59,10 @@ async def test_rankings_snapshot_all_four_types_over_http(tmp_path):
             rows = ctx.store._conn.execute(
                 "SELECT ranking_type, COUNT(*) FROM rankings_snap GROUP BY 1").fetchall()
             types = {r[0] for r in rows}
-            assert types == set(loops.RANKING_TYPES)          # 4종 전부
+            assert types == set(loops.RANKING_TYPES)          # 설정된 종류 전부
             assert all(n > 0 for _t, n in rows)
-            assert ctx.counters["ranking_snaps"] == 4
-            assert ctx.counters["req_RANKING"] == 4
+            assert ctx.counters["ranking_snaps"] == len(loops.RANKING_TYPES)
+            assert ctx.counters["req_RANKING"] == len(loops.RANKING_TYPES)
         finally:
             await close(ctx)
 
@@ -103,7 +103,7 @@ async def test_ranking_rows_survive_a_full_snapshot_round_trip(tmp_path):
             await loops.rankings_once(ctx)
             row = ctx.store._conn.execute(
                 "SELECT symbol, last_u, vol_qu, amount_u FROM rankings_snap "
-                "WHERE ranking_type='TOSS_SECURITIES_TRADING_AMOUNT' AND rank=1"
+                "WHERE ranking_type='TOSS_SECURITIES_TRADING_VOLUME' AND rank=1"
             ).fetchone()
             assert row is not None
             symbol, last_u, vol_qu, amount_u = row
@@ -380,7 +380,7 @@ async def test_full_run_all_survives_a_few_cycles(tmp_path):
         ctx = await make_ctx(base_url, tmp_path)
         try:
             await asyncio.wait_for(loops.run_all(ctx, cycles=2), timeout=60)
-            assert ctx.counters["ranking_snaps"] >= 4
+            assert ctx.counters["ranking_snaps"] >= len(loops.RANKING_TYPES)
             assert ctx.store._conn.execute(
                 "SELECT COUNT(*) FROM rankings_snap").fetchone()[0] > 0
             assert ctx.counters.get("loop_errors", 0) == 0
