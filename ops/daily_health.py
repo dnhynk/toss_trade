@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from . import gap_audit as GA
 from .healthcheck import _ro_connect
 from .opsconfig import load_ops_config
 
@@ -134,6 +135,17 @@ def build_summary(cfg, date_str: str | None) -> str:
         lines += [f"  {n}" for n in notes]
     except OSError:
         pass
+
+    # 결손 감사 — "어제 데이터가 초 단위 사건을 담고 있는가"에 답하는 절.
+    # 위의 행 수 요약은 **양**만 말한다. 양이 많아도 6초짜리 사건이 조각나 있으면
+    # 쓸 수 없으므로, 아침 한 장에 결손 자체가 같이 찍혀야 한다
+    # (coordination/DATA-QUALITY-PROGRAM.md 축 1). 감사가 깨져도 위 요약은 살아야 하므로
+    # 실패는 삼키고 사유만 남긴다 — 이 파일은 경보가 아니라 기록이다.
+    lines.append("")
+    try:
+        lines.append(GA.audit(cfg, start_ms, end_ms, label))
+    except Exception as e:  # noqa: BLE001
+        lines.append(f"GAP AUDIT FAILED: {e!r} — ops/gap_audit.py 를 직접 돌려 확인할 것")
     return "\n".join(lines) + "\n"
 
 
