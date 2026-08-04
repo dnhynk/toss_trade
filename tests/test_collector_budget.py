@@ -9,6 +9,7 @@ import pytest
 
 from tests.test_collector_helpers import FrozenClock, make_config
 from tossmon.collector.budget import (GROUP_CHART, GROUP_MARKET_DATA, GROUP_RANKING,
+                                      MEASURED_SUSTAIN_S, MEASURED_WARMUP_S,
                                       RECOVER_AFTER_S, SHRINK_TIER, BudgetGuard,
                                       TierPlan)
 
@@ -73,9 +74,11 @@ def test_from_config_matches_shipped_defaults():
 
 def test_tier3_30_would_overrun_market_data():
     """코디네이터가 잡아낸 초과 — tier3_max=30 이면 9.55 req/s 로 7.0 을 넘는다."""
-    over = guard(plan(tier3=30)).validate_plan()
+    g = guard(plan(tier3=30))
+    over = g.validate_plan()
     assert set(over) == {GROUP_MARKET_DATA}
-    assert over[GROUP_MARKET_DATA] == pytest.approx(9.5528 - 7.0, abs=1e-3)
+    # 검증 천장은 이제 축소 판정과 **같은** target x HEADROOM (7.0 x 0.95 = 6.65) 이다.
+    assert over[GROUP_MARKET_DATA] == pytest.approx(9.5528 - 6.65, abs=1e-3)
 
 
 def test_alternative_combo_25_symbols_5s_20s_fits():
@@ -106,17 +109,36 @@ def test_a_short_burst_does_not_shrink_anything():
     assert g.should_shrink() is None
 
 
+def _drive(g, clock, group, rate_per_s, seconds, *, evaluate_every_s=10.0):
+    """`seconds` 동안 `rate_per_s` 로 호출하며 주기적으로 should_shrink 를 평가한다.
+
+    측정 기반 축소는 이제 **지속성**(MEASURED_SUSTAIN_S)을 요구하므로, 한 번 재고 끝내는
+    호출 패턴으로는 재현되지 않는다 — 실제 루프처럼 계속 돌려야 한다.
+    """
+    orders = []
+    step = 1.0 / rate_per_s
+    next_eval = 0.0
+    elapsed = 0.0
+    while elapsed < seconds:
+        g.on_request(group)
+        clock.advance(step)
+        elapsed += step
+        if elapsed >= next_eval:
+            next_eval += evaluate_every_s
+            got = g.should_shrink()
+            if got:
+                orders.append(got)
+    return orders
+
+
 def test_measured_usage_triggers_shrink_even_when_the_plan_looks_fine():
-    """재시도·백필처럼 계획에 없는 호출은 실측에만 나타난다."""
+    """재시도·백필처럼 계획에 없는 호출은 실측에만 나타난다 (지속되면 축소한다)."""
     clock = FrozenClock(0)
     g = guard(plan(), clock=clock)                            # 계획은 6.43 (예산 안)
-    for _ in range(600):                                      # 창(60s)을 가득 채운다
-        g.on_request(GROUP_MARKET_DATA)
-        clock.advance(0.1)                                    # 10 req/s 를 60초간
+    orders = _drive(g, clock, GROUP_MARKET_DATA, 10.0, 180.0)  # 10 req/s 를 3분간
     assert g.measured_rate(GROUP_MARKET_DATA) == pytest.approx(10.0, rel=0.05)
-    assert g.predicted_rate(GROUP_MARKET_DATA) > g.target(GROUP_MARKET_DATA)
-    orders = g.should_shrink()
-    assert orders and orders[GROUP_MARKET_DATA] >= 1
+    assert orders, "지속 과부하인데도 축소가 한 번도 일어나지 않았다"
+    assert any(GROUP_MARKET_DATA in o for o in orders)
 
 
 def test_shipped_defaults_do_not_shrink_at_startup():
@@ -131,15 +153,12 @@ def test_shipped_defaults_do_not_shrink_at_startup():
 
 
 def test_measured_chart_usage_still_triggers_shrink():
-    """여유를 다 먹을 만큼 실사용이 올라가면(4 req/s > 3.5) 그때는 가드가 움직여야 한다."""
+    """여유를 다 먹을 만큼 실사용이 지속되면(4 req/s > 3.325) 가드가 움직여야 한다."""
     clock = FrozenClock(0)
     g = guard(clock=clock)
-    for _ in range(240):
-        g.on_request(GROUP_CHART)
-        clock.advance(0.25)                                   # 4 req/s 를 60초간
+    orders = _drive(g, clock, GROUP_CHART, 4.0, 180.0)
     assert g.measured_rate(GROUP_CHART) == pytest.approx(4.0, rel=0.05)
-    orders = g.should_shrink()
-    assert orders and orders[GROUP_CHART] >= 1
+    assert orders and any(GROUP_CHART in o for o in orders)
 
 
 def test_measured_rate_forgets_outside_the_window():
@@ -308,3 +327,78 @@ def test_single_429_no_longer_cuts_a_fifth_of_capacity():
     g.on_429(GROUP_CHART)
     orders = g.should_shrink()
     assert orders and orders[GROUP_CHART] <= 120 * 0.12    # 24 -> 12 수준
+
+
+# --------------------------------------------------------------------------- #
+# 개장마다 tier3 가 깎이던 경로 (429 무관 measured-overshoot)
+# 실측: 07-31 22:52 20->15 / 08-03 22:34 20->14(32초 만에 점수 0.65 축출) / 08-04 02:48 20->16
+# --------------------------------------------------------------------------- #
+def test_open_burst_right_after_a_session_change_does_not_shrink():
+    """★ 개장 직후 정상 상태는 정원을 깎지 않는다 — 그 순간 측정치는 원래 튄다."""
+    clock = FrozenClock(0)
+    g = guard(clock=clock)
+    g.note_session_change()                                   # 세션 전환 (개장)
+    assert g.in_warmup()
+    # 전환 직후 측정치가 목표를 넘겨 튄다 (개장 버스트)
+    orders = _drive(g, clock, GROUP_MARKET_DATA, 10.0, MEASURED_WARMUP_S - 20)
+    assert orders == [], f"워밍업 중에 축소가 일어났다: {orders}"
+    assert g.measured_rate(GROUP_MARKET_DATA) > g.shrink_ceiling(GROUP_MARKET_DATA)
+
+
+def test_real_sustained_overload_still_shrinks_after_warmup():
+    """★ 진짜 과부하는 여전히 잡는다 — 워밍업은 유예이지 면제가 아니다."""
+    clock = FrozenClock(0)
+    g = guard(clock=clock)
+    g.note_session_change()
+    orders = _drive(g, clock, GROUP_MARKET_DATA, 10.0, MEASURED_WARMUP_S + 120)
+    assert orders, "워밍업이 끝났는데도 지속 과부하를 못 잡았다"
+    assert any(GROUP_MARKET_DATA in o for o in orders)
+
+
+def test_a_single_measurement_spike_does_not_shrink():
+    """한 번 튀는 것으로 깎지 않는다 (지속성 요구) — 개장 축출의 직접 원인이었다."""
+    clock = FrozenClock(0)
+    g = guard(clock=clock)
+    for _ in range(200):                                      # 짧고 굵은 버스트
+        g.on_request(GROUP_MARKET_DATA)
+        clock.advance(0.01)
+    assert g.should_shrink() is None                          # 지속되지 않았다
+    clock.advance(MEASURED_SUSTAIN_S / 2)
+    assert g.should_shrink() is None
+
+
+def test_429_still_shrinks_immediately_even_in_warmup():
+    """429 는 진짜 사고다 — 워밍업·지속성과 무관하게 즉시 반응한다."""
+    clock = FrozenClock(0)
+    g = guard(clock=clock)
+    g.note_session_change()
+    assert g.in_warmup()
+    g.on_429(GROUP_MARKET_DATA)
+    orders = g.should_shrink()
+    assert orders and GROUP_MARKET_DATA in orders
+
+
+# --------------------------------------------------------------------------- #
+# 기준 일치 — "검증은 통과했는데 축소 트리거 바로 아래" 상태를 드러낸다
+# --------------------------------------------------------------------------- #
+def test_plan_and_shrink_use_the_same_ceiling():
+    g = guard()
+    for group in (GROUP_MARKET_DATA, GROUP_CHART):
+        assert g.shrink_ceiling(group) == pytest.approx(g.target(group) * g.headroom)
+        assert g.plan_ceiling(group) < g.shrink_ceiling(group)
+
+
+def test_reserve_deficit_flags_a_plan_with_no_room_left():
+    """출하 설정의 MARKET_DATA 는 여유를 못 남긴다 — 조용히 넘어가면 안 된다."""
+    g = guard()
+    deficit = g.reserve_deficit()
+    assert GROUP_MARKET_DATA in deficit                       # 계획 6.43 > 천장 5.95
+    assert deficit[GROUP_MARKET_DATA] == pytest.approx(6.4278 - 7.0 * 0.85, abs=1e-2)
+    assert GROUP_CHART not in deficit                         # CHART 는 여유가 있다
+    assert g.validate_plan() == {}                            # 하드 위반은 아니다
+
+
+def test_a_plan_with_real_reserve_reports_no_deficit():
+    g = guard(plan(tier3=12, trades_s=5, book_s=20))
+    assert g.reserve_deficit() == {}
+    assert g.validate_plan() == {}
