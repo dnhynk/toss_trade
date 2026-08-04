@@ -36,3 +36,10 @@ w7-prereg          term_40994a88-b928-41e2-8510-dc9541649e00
    기존 메시지가 `run_legacy_local` 로 가서 인자 없는 `check` 가 legacy_read_only 로 실패했다
 4. `dispatch --inject` / `task-show` 플래그 변경 여부 확인 (`--task` vs `--id`)
 5. 바뀐 내용을 `coordination/COORDINATOR-STATE.md` §0 인수 절차에 반영
+
+## 대화 기록 기준 열린 태스크 (조회 실패 대비)
+
+- `task_7aad9a516fa0` — W6 룩어헤드 테스트 게이트 (오늘 09:48 재발행, term_ab4cbd9a)
+- `task_d248876712de` — W4 429 래칫 수정 (오늘 09:45 발행, term_8017b557)
+- `task_0c77aa33b2fc`, `task_8280709b754a` — 아침 거짓 CRIT 2건 (W4 카운터 / W5 경보)
+- `task_fcb173abc751` — failed 상태로 남아 있음, 정리 대상
