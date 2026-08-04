@@ -7,11 +7,18 @@ class TossApiError(Exception):
 
 
 class RateLimited(TossApiError):
-    """429. client 내부에서 Retry-After 대기 후 1회 재시도."""
+    """429. client 내부에서 Retry-After 대기 후 1회 재시도.
 
-    def __init__(self, retry_after_s: float, message: str = ""):
+    `evidence` 는 **그 429 응답 자체**의 진단 기록이다 (`TossClient.last_429` 와 같은 dict).
+    카운트만 있던 시절에는 "한도의 1/5 만 쓰는데 왜 429 인가" 를 판별할 수 없었다 —
+    상위 로깅이 이 필드를 그대로 실으면 원인 판별에 필요한 것이 전부 담긴다.
+    """
+
+    def __init__(self, retry_after_s: float, message: str = "",
+                 evidence: dict | None = None):
         super().__init__(message or f"rate limited, retry after {retry_after_s}s")
         self.retry_after_s = retry_after_s
+        self.evidence = evidence or {}
 
 
 class AuthExpired(TossApiError):

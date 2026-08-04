@@ -1,7 +1,28 @@
-"""GroupRateLimiter — 그룹별 토큰버킷 (계약 C-4).
+"""GroupRateLimiter — 그룹별 토큰버킷 + **고정 1초 창 하드캡** (계약 C-4).
 
 기본 사용률 = 공시 한도 × usage_ratio(0.7). X-RateLimit-* 헤더로 자기보정,
 429 시 Retry-After 준수.
+
+서버 계약 (2026-08-04 실측 확정, docs/06 §9-4·§9-5):
+- 창은 **서버 벽시계 초에 정렬된 고정 1초**다. 슬라이딩도 토큰버킷도 아니다.
+  같은 서버 초 안의 k 번째 호출이 정확히 `remaining = limit-k` 였다 (20/20 적중).
+- 한도는 **그룹 공유**다. 같은 그룹의 다른 엔드포인트가 같은 카운터를 깎는다.
+  그룹끼리는 독립이다.
+
+그래서 **연속 시간 버킷만으로는 부족하다** (이 파일의 옛 결함):
+버킷은 "1초에 평균 r 개" 를 보장하지만 서버는 "벽시계 초마다 최대 L 개" 를 센다.
+경계 앞뒤로 몰리면 아주 짧은 구간에 2×L 이 나간다 — 공시 3 req/s 그룹에
+**6회를 0.561초 안에 전부 200 으로 통과시킨 것이 실측**이다 (docs/06 §9-5).
+반대로 우리가 그 상태에 **의도치 않게** 빠지면 그게 곧 429다.
+
+해결: 버킷은 그대로 두되(초 이하 평활화), 그 위에 **어떤 1초 구간에서도 L 개를 넘지 않는
+슬라이딩 하드캡**을 얹는다. 슬라이딩 캡은 모든 1초 구간을 덮으므로 서버의 고정 창도
+자동으로 덮는다 — 창 위상을 몰라도 안전하다.
+
+캡 구간을 1.0초가 아니라 `WINDOW_HORIZON_S`(1.15초)로 잡는 이유: 우리가 재는 것은 **보낸 시각**,
+서버가 세는 것은 **도착 시각**이다. 실측 RTT 는 54.6~141.0ms(p50 71.0, n=47)이고 편도 지연폭은
+약 43ms 이므로, 1.0초 동안 보낸 것들이 서버에는 0.957초 안에 도착할 수 있다.
+지연폭보다 넉넉한 0.15초를 더해두면 그 압축을 흡수한다.
 
 자기보정 규칙 (overview.md "Rate Limits" 절 + 감사 B-1/B-2/H-4 반영):
 - `X-RateLimit-Limit`      : 서버가 알려주는 초당 한도. **한도를 내리는 데만 쓴다.**
@@ -17,12 +38,26 @@
 버스트 정책 (감사 B-1): 용량 == rate 이면 유휴 직후 첫 1초에 `capacity + rate` = 2×rate 가
 통과한다(MARKET_DATA 실측 14회, 공시 10/s 초과). 이 프로젝트는 **429 를 사고로 규정**하므로
 버스트 여유를 남길 이유가 없다. 용량을 rate 의 일부로 줄이고 버킷을 **빈 상태로 시작**한다.
+
+usage_ratio 의 안전 상한 (W4 예산 모델 입력):
+- 하드캡이 생기기 전까지 이 버킷의 1초 최대 통과량은 `capacity + rate = rate × (1+BURST_FRACTION)`
+  = `limit × usage_ratio × 1.3` 였다. 이것이 한도를 넘지 않으려면 usage_ratio ≤ 1/1.3 = **0.769**.
+  즉 옛 구조에서는 0.7 을 조금만 올려도(0.8) 설계상 한도를 넘었다 — 0.7 은 우연히 안전했다.
+  (게다가 `_capacity_for` 의 하한 1.0 때문에 limit ≤ 3 인 그룹은 0.7 에서도 넘었다:
+   MARKET_INFO 는 1.0+2.1 = 3.1 > 3, ACCOUNT 는 1.0+0.7 = 1.7 > 1.)
+- 하드캡이 생긴 뒤로는 한도 초과가 **구조적으로 불가능**하다. 사용률의 상한은
+  `WINDOW_CAP / WINDOW_HORIZON_S = limit / 1.15` 이므로 usage_ratio ≤ **0.87** 이면
+  버킷이 계속 병목이고, 그 위로는 하드캡이 병목이 된다.
+- 따라서 0.7 → 0.85 로 올릴 여지가 있다 (MARKET_DATA 7.0 → 8.5 req/s, **+21%**).
+  다만 이 값은 수집 예산을 바꾸므로 **W4 의 2단계에서 결정**한다. 여기서는 기본값을
+  건드리지 않고 근거와 상한만 남긴다.
 """
 from __future__ import annotations
 
 import asyncio
 import random
 import time
+from collections import deque
 from typing import Mapping
 
 from .endpoints import DEFAULT_LIMIT, SPEC_LIMITS
@@ -35,12 +70,19 @@ RECOVER_INTERVAL_S = 60.0  # 회복 1스텝의 최소 경과 시간 (감사 H-4:
 # 버킷 용량 = rate × 이 비율 (최소 1.0). 유휴 후 첫 1초 통과량 = capacity + rate.
 BURST_FRACTION = 0.3
 
+# 서버 창 길이 (실측: 벽시계 초 정렬 고정 1초).
+SERVER_WINDOW_S = 1.0
+# 보낸 시각 → 도착 시각 압축을 흡수하는 여유. 실측 편도 지연폭 ≈ 43ms 의 약 3.5배.
+CLOCK_SKEW_MARGIN_S = 0.15
+# 하드캡을 적용하는 구간 길이. 이 구간 안에서 캡을 지키면 서버의 어떤 1초 창에서도 지켜진다.
+WINDOW_HORIZON_S = SERVER_WINDOW_S + CLOCK_SKEW_MARGIN_S
+
 
 class _Bucket:
     __slots__ = ("rate", "capacity", "tokens", "last", "blocked_until", "backoff",
-                 "last_429", "last_recover", "lock")
+                 "last_429", "last_recover", "lock", "window_cap", "sent")
 
-    def __init__(self, rate: float) -> None:
+    def __init__(self, rate: float, window_cap: int) -> None:
         self.rate = max(rate, 1e-3)
         self.capacity = _capacity_for(self.rate)
         # 빈 상태로 시작한다 — 기동 직후 버스트를 막는다 (감사 B-1).
@@ -51,6 +93,29 @@ class _Bucket:
         self.last_429 = 0.0
         self.last_recover = time.monotonic()
         self.lock = asyncio.Lock()
+        # 하드캡: 최근 WINDOW_HORIZON_S 안에 내보낸 요청 시각들. 길이가 window_cap 이면 대기.
+        self.window_cap = max(1, int(window_cap))
+        self.sent: deque[float] = deque()
+
+    # ---- 고정창 하드캡 ---------------------------------------------------
+
+    def prune(self, now: float) -> None:
+        horizon = now - WINDOW_HORIZON_S
+        while self.sent and self.sent[0] <= horizon:
+            self.sent.popleft()
+
+    def window_wait(self, now: float) -> float:
+        """캡에 걸려 있으면 풀릴 때까지 남은 초. 여유가 있으면 0."""
+        self.prune(now)
+        if len(self.sent) < self.window_cap:
+            return 0.0
+        return max(self.sent[0] + WINDOW_HORIZON_S - now, 0.0)
+
+    def note_sent(self, now: float) -> None:
+        self.sent.append(now)
+
+    def set_window_cap(self, cap: int) -> None:
+        self.window_cap = max(1, int(cap))
 
     def effective_rate(self) -> float:
         return max(self.rate / self.backoff, 1e-3)
@@ -95,7 +160,12 @@ class GroupRateLimiter:
     def _bucket(self, group: str) -> _Bucket:
         b = self._buckets.get(group)
         if b is None:
-            b = _Bucket(self._declared_limit(group) * self.usage_ratio)
+            declared = self._declared_limit(group)
+            # 하드캡은 **서버 공시 한도 그대로**다. usage_ratio 를 곱하지 않는다 —
+            # 이건 예산이 아니라 "서버가 절대 거부하지 않는 선" 이라는 안전망이고,
+            # 예산 조절은 버킷 rate 가 맡는다. 둘을 섞으면 정수 내림 때문에
+            # 작은 그룹(limit 3 → 2)이 이유 없이 손해를 본다.
+            b = _Bucket(declared * self.usage_ratio, window_cap=int(declared))
             self._buckets[group] = b
         return b
 
@@ -114,35 +184,73 @@ class GroupRateLimiter:
     def snapshot(self, group: str) -> dict[str, float]:
         """관측/테스트용 상태 덤프."""
         b = self._bucket(group)
+        now = time.monotonic()
+        b.prune(now)
         return {
             "rate": b.rate,
             "effective_rate": b.effective_rate(),
             "capacity": b.capacity,
             "tokens": b.tokens,
             "backoff": b.backoff,
-            "blocked_for_s": max(b.blocked_until - time.monotonic(), 0.0),
+            "blocked_for_s": max(b.blocked_until - now, 0.0),
+            "window_cap": float(b.window_cap),
+            "window_used": float(len(b.sent)),
+            "window_horizon_s": WINDOW_HORIZON_S,
+            "sustained_rate": self.sustained_rate(group),
         }
+
+    def sustained_rate(self, group: str) -> float:
+        """이 그룹에서 **지속 가능한** 초당 호출 수 (W4 예산 모델이 쓸 값).
+
+        버킷 rate 와 하드캡(cap/horizon) 중 **작은 쪽**이 실제 한도다. 기본 설정에서는
+        버킷이 병목이라 값이 예전과 같지만, usage_ratio 를 0.87 위로 올리면 하드캡이
+        병목이 되므로 이 함수를 봐야 한다.
+        """
+        b = self._bucket(group)
+        return min(b.rate, b.window_cap / WINDOW_HORIZON_S)
 
     # ---- contract surface ----------------------------------------------
 
     async def acquire(self, group: str) -> None:
-        """해당 그룹 슬롯 확보까지 대기."""
+        """해당 그룹 슬롯 확보까지 대기.
+
+        세 관문을 모두 통과해야 나간다:
+        1. 429 페널티(`blocked_until`),
+        2. **고정 1초 창 하드캡** — 최근 WINDOW_HORIZON_S 안에 공시 한도만큼 이미 나갔으면 대기,
+        3. 토큰버킷 — 초 이하 평활화 + 예산(usage_ratio).
+
+        락은 대기 중에도 잡고 있는다. 여러 루프가 같은 그룹을 동시에 때려도 이 락 때문에
+        직렬화되므로, "평균은 낮은데 같은 초에 겹쳐서 초과" 하는 일이 **한 프로세스 안에서는**
+        일어나지 않는다. 프로세스가 여럿이면 이 락으로는 못 막는다 (docs/06 §9-6, W4 요건).
+        """
         b = self._bucket(group)
-        # 락을 대기 중에도 잡고 있어야 같은 그룹의 동시 요청이 한도를 넘겨 몰리지 않는다.
         async with b.lock:
             while True:
                 now = time.monotonic()
                 if now < b.blocked_until:
                     await asyncio.sleep(b.blocked_until - now)
                     continue
+                wait = b.window_wait(now)
+                if wait > 0.0:
+                    await asyncio.sleep(wait)
+                    continue
                 b.refill(now)
                 if b.tokens >= 1.0:
                     b.tokens -= 1.0
+                    b.note_sent(now)
                     return
                 await asyncio.sleep((1.0 - b.tokens) / b.effective_rate())
 
-    def update_from_headers(self, group: str, headers: Mapping[str, str]) -> None:
-        """X-RateLimit-Limit/Remaining/Reset 실측 반영."""
+    def update_from_headers(self, group: str, headers: Mapping[str, str],
+                            status: int | None = None) -> None:
+        """X-RateLimit-Limit/Remaining/Reset 실측 반영.
+
+        `status=429` 인 응답의 `remaining` 은 **믿지 않는다**. 실측에서 429 응답이
+        `limit=5, remaining=4` 를 달고 온 적이 있다 (docs/06 §9-3) — 창 경계에서 렌더되면
+        헤더가 거절된 창이 아니라 **다음 창**의 상태를 가리킬 수 있다. 그 값을 잔량으로
+        받아들이면 방금 거절당한 그룹에 오히려 여유가 있다고 착각한다.
+        429 의 감속은 `on_429()` 가 전담한다.
+        """
         b = self._bucket(group)
         limit = _num(headers, "X-RateLimit-Limit")
         remaining = _num(headers, "X-RateLimit-Remaining")
@@ -161,10 +269,12 @@ class GroupRateLimiter:
                 b.rate = max(target, 1e-3)
                 b.capacity = _capacity_for(b.rate)
                 b.tokens = min(b.tokens, b.capacity)
+            # 하드캡도 서버가 알려준 한도로 맞춘다 (내리는 쪽으로만 — ceiling 이 이미 막는다).
+            b.set_window_cap(int(effective_limit))
             # 기록도 클램프된 값으로 — 다음 버킷 생성이 오염되지 않게.
             self.limits[group] = effective_limit
 
-        if remaining is not None:
+        if remaining is not None and status != 429:
             # 서버 잔량은 우리 추정치의 상한. 위로 올리지 않는다.
             allowed = remaining * self.usage_ratio
             b.tokens = min(b.tokens, max(allowed, 0.0))

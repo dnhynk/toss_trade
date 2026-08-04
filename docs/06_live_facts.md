@@ -14,6 +14,10 @@
 | 총 호출 | 53회 (본 프로브 48 + 후속 13, 429 재현 4 포함) |
 | 관측 심볼 | AAPL, MSFT, NVDA, TSLA, QQQ, SOXL (유동), SNTI, BTAI, CRKN (소형) |
 
+**후속 측정**: §9-3~§9-9(레이트리밋 계약)는 2026-08-04 12:52–13:10 KST, 데이마켓 세션,
+가동 중 컬렉터의 토큰을 **재사용**해 측정했다(재발급 금지 — `--reuse-token-state`).
+총 약 60콜, 전부 읽기 전용. 그중 429 는 계측 실증용 2건(MARKET_INFO)뿐이다.
+
 **세션 한계**: 본 측정은 전부 프리마켓 시간대다. **정규장(22:30–05:00 KST)과 데이마켓
 (09:00–17:00 KST) 은 미측정**이며, 아래 §2·§4·§5 의 일부는 세션 의존일 수 있다. 해당 항목은
 `부분확인`으로 표기했다.
@@ -257,7 +261,12 @@ data.allowedValues = ["1d","1w","1mo","3mo","6mo","1y"]
 
 ---
 
-## 9. Rate limit — `확인됨` (헤더 포맷 + 429 재현)
+## 9. Rate limit — `확인됨` (헤더 포맷 · 429 재현 · **창 모양과 적용 범위**)
+
+> §9-1·§9-2 는 2026-07-30 측정, §9-3~§9-8 은 2026-08-04 측정이다.
+> **계약 요약**: 서버는 **그룹마다** `x-ratelimit-limit` 개를 **벽시계 초에 정렬된
+> 고정 1초 창**으로 센다. 그룹끼리는 독립이다. 초과하면 `rate-limit-exceeded` 429 이고
+> `Retry-After` 는 올 때도 안 올 때도 있다.
 
 ### 9-1. 정상 응답 헤더
 
@@ -299,6 +308,248 @@ x-ratelimit-reset: 1
 - 에러 코드는 `rate-limit-exceeded` (엣지단은 `edge-rate-limit-exceeded` 도 존재한다고 문서에 있으나 미관측).
 - 실측 근거: `tests/fixtures/live/live_429_exchange_rate.json`.
 
+### 9-3. 429 계측의 오독과 그 정정 — `확인됨` (2026-08-04)
+
+2026-08-04 운영 로그에 이런 줄이 남았다:
+
+```
+11:10:12 WARNING HTTP-429-DETAIL group=MARKET_DATA status=200
+  headers={'x-ratelimit-limit': '10', 'x-ratelimit-remaining': '9', 'x-ratelimit-reset': '1', ...}
+```
+
+**이 줄은 429 의 헤더가 아니다.** `client.last_headers` 는 "마지막 응답" 이라 429 뒤에 성공
+응답이 하나만 지나가도 덮어써진다. 429 는 client 내부에서 1회 재시도되므로 그 재시도가
+성공하면 기록은 항상 200 쪽이 된다 — 실제로 위 11줄 중 5줄이 `status=200` 이었다.
+**한도의 1/5 만 쓰는데 왜 429 인가** 를 이 근거로는 판별할 수 없다.
+
+정정: `TossClient` 가 429 를 받은 **그 자리에서** 기록을 남긴다 (`client.last_429`,
+`recent_429s`, 그리고 `RateLimited.evidence`). 이후 어떤 응답도 이것을 덮어쓰지 않는다.
+회귀 테스트는 `tests/test_api_ratelimit_contract.py` — 429 다음에 200 을 연달아 주고
+기록된 것이 429 쪽인지 검증한다.
+
+기록에는 원인 판별에 필요한 것이 함께 담긴다:
+
+| 필드 | 뜻 |
+|---|---|
+| `status` / `headers` / `error_code` | 그 429 응답 자체의 상태·레이트리밋 헤더·본문 에러코드 |
+| `retry_after_present` | Retry-After 가 실제로 왔는지 (**안 오는 경우가 있다**, 아래) |
+| `own_requests_in_that_server_second` | 그 **서버 초**에 우리가 보낸 요청 수 |
+| `under_own_limit` | 위 값이 한도 미만인데 429 → **원인이 이 클라이언트 밖에 있다** |
+
+**client 경로로 받은 진짜 429 (2026-08-04 12:10 KST, 근거
+`tests/fixtures/live/live_429_client_record.json`)**:
+
+```
+status=429  x-ratelimit-limit: 3  x-ratelimit-remaining: 0  x-ratelimit-reset: 1  retry-after: 1
+error_code = rate-limit-exceeded
+own_requests_in_that_server_second = 4   (한도 3 초과 → under_own_limit = false)
+```
+
+**`Retry-After` 는 항상 오지는 않는다** — `부분확인`. 위 재현에서는 왔지만, 2026-08-04
+11:30:13 운영 429 에는 없었다(`x-ratelimit-*` 와 `date` 만). 없을 때는 1.0초를 쓴다 —
+창이 벽시계 초 정렬 고정 1초라 어느 위상에서 재든 다음 창으로 넘어간다.
+빈도는 `counters["http_429_no_retry_after"]` 로 센다.
+
+**429 의 `x-ratelimit-remaining` 은 믿지 말 것.** 2026-08-04 11:30:13 운영 429 는
+`limit=5, remaining=4` 를 달고 왔다 — 거절당한 창이 아니라 **다음 창**의 상태로 보인다
+(§9-5 의 경계 렌더 관측과 같은 현상). `limiter.update_from_headers` 는 `status=429` 인
+응답의 `remaining` 을 무시한다.
+
+### 9-4. 창 모양과 한도 적용 범위 — `확인됨` (2026-08-04, 계약 확정)
+
+**W4 의 예산 모델은 이 절 위에 세운다.**
+
+| 확정 사항 | 판정 | 근거 |
+|---|---|---|
+| 창 = **벽시계 초에 정렬된 고정 1초** | `확인됨` | 아래 톱니 20/20 |
+| 슬라이딩 창 아님 | `확인됨` | A, B(+0.08s), C(+1.00s) 3라운드 전부 C 가 `remaining=limit-1` |
+| 토큰버킷 아님 | `확인됨` | 같은 톱니 (버킷이면 초 경계와 무관해야 한다) |
+| 한도는 **그룹 공유** | `확인됨` | 같은 그룹 다른 엔드포인트가 같은 카운터를 깎는다 |
+| 그룹끼리는 **독립** | `확인됨` | MARKET_INFO 소진 직후 STOCK 이 자기 limit-1 |
+
+재현: `tools/live_probe.py --probe ratelimit_contract` (429 를 내지 않는다).
+
+**톱니 (MARKET_INFO 한도 3/s, 0.40초 간격 20발)** — 각 서버 초의 k 번째 호출이
+정확히 `remaining = limit - k`, 그리고 초가 바뀌면 곧바로 리셋:
+
+```
+02:55:59  saw0 rem2
+02:56:00  saw1 rem2  saw2 rem1
+02:56:01  saw3 rem2  saw4 rem1  saw5 rem0
+02:56:02  saw6 rem2  saw7 rem1
+02:56:03  saw8 rem2  saw9 rem1  saw10 rem0
+...                                          (20/20 적중, 100%)
+```
+
+**그룹 공유 (같은 초 안, 다른 엔드포인트)**:
+
+```
+/exchange-rate      limit3 remaining2   →  /market-calendar/US  limit3 remaining1
+/market-calendar/US limit3 remaining2   →  /exchange-rate       limit3 remaining1
+```
+
+**그룹 독립 (같은 초 안, 다른 그룹)**:
+
+```
+/exchange-rate (MARKET_INFO) limit3 remaining2  →  /stocks (STOCK) limit5 remaining4
+```
+
+→ **예산은 그룹 단위로 나눠야 한다.** 엔드포인트별로 나누면 같은 그룹 안에서 서로를 깎는
+것을 놓치고, 계정 전체로 합치면 쓸 수 있는 것을 못 쓴다.
+
+### 9-5. 고정창 경계에서 2×limit 이 통과한다 — `확인됨` (2026-08-04)
+
+고정 1초 창의 고전적 결함을 실측으로 확인했다. 창 N 의 끝과 창 N+1 의 시작에 나눠 쏘면
+**아주 짧은 구간에 한도의 2배가 통과**한다. 공시 **3 req/s** 그룹에:
+
+```
+02:58:02  pre0 rem2   pre1 rem1   pre2 rem0      (0.152초 동안 3발)
+02:58:03  post0 rem2  post1 rem1  post2 rem0     (0.164초 동안 3발)
+→ 6회가 0.561초 안에 전부 HTTP 200. 순간 환산 10.7 req/s.
+```
+
+재현: `tools/live_probe.py --probe ratelimit_boundary` (429 를 내지 않는 양성 대조다).
+
+**이것은 기회가 아니라 위험이다.** 우리 쪽 리미터가 연속 시간 토큰버킷이면 서버 창 위상을
+모른 채 **의도치 않게** 이 상태에 빠질 수 있고, 그러면 반대편(창 N 에 4발)으로 갔을 때가
+곧 429다. 그래서 `api/limiter.py` 는 버킷 위에 **어떤 1초 구간에서도 공시 한도를 넘지 않는
+슬라이딩 하드캡**을 얹는다 — 슬라이딩 캡은 모든 1초 구간을 덮으므로 창 위상을 몰라도 안전하다.
+
+부수 관측: 경계에서 렌더된 응답은 `date` 헤더의 초와 카운터가 **한 초 어긋날 수 있다**
+(`date=02:58:00` 인데 `remaining=0` — 앞 초의 3번째 호출로 계산된 값). §9-3 의
+"429 의 remaining 을 믿지 말 것" 과 같은 뿌리다.
+
+**고친 리미터를 실서버로 검증** (`--probe limiter_holds`, 리미터를 우회하지 않고 오히려
+허용 최대 속도로 밀어붙인다):
+
+```
+MARKET_INFO(한도 3/s, usage_ratio 0.7 → 예산 2.1/s), 8초간 17콜
+한 서버 초 최대 호출 수 = 2  (한도 3)      429 = 0건
+초별: 1,2,2,2,2,2,2,2,1,1
+```
+
+→ 경계에 몰리지 않고 매 초 예산 안에서 고르게 나간다.
+
+### 9-6. 남은 미확인 — 우리 밖의 발신자 / 다른 한도
+
+2026-08-04 11:30:13 운영 429 는 위 계약만으로 설명되지 않는다: MARKET_DATA_CHART 사용률이
+**0.50/3.50 req/s** 인데 429 가 났고, 한 프로세스의 버킷만으로는 그 초에 5발을 낼 수 없다
+(rate 3.5 + capacity 1.05 = 최대 4.55). 가능한 설명은 두 가지이고 **아직 판별되지 않았다**:
+
+1. 같은 자격증명을 쓰는 **다른 발신자**(별도 프로세스·백필·프로브)가 서버 버킷을 공유했다.
+2. 그룹별 한도 말고 **다른 한도**(계정 전체 또는 엣지단 `edge-rate-limit-exceeded`)가 있다.
+
+판별 수단은 이미 심어두었다: 다음 429 부터 `client.last_429["under_own_limit"]` 이 `true` 면
+1번 또는 2번(우리 밖), `false` 면 우리가 실제로 그 초에 한도를 넘긴 것이다.
+카운터는 `counters["http_429_under_own_limit"]`.
+**리미터 한 대로는 1번을 막을 수 없다** — 프로세스가 여럿이면 각자 자기 캡만 지킨다.
+이것은 W4 의 요건이다 (아래 §9-7).
+
+### 9-7. W4 로 넘기는 요건
+
+| # | 요건 | 왜 |
+|---|---|---|
+| 1 | 예산은 **그룹 단위**로 나눌 것 | §9-4 — 엔드포인트별도 계정 전체도 아니다 |
+| 2 | 같은 자격증명으로 도는 발신자를 **하나로 유지**할 것 | §9-6 — 리미터는 프로세스 간 조율을 못 한다. 백필·프로브가 컬렉터와 겹치면 서버 버킷을 공유한다 |
+| 3 | `limiter.sustained_rate(group)` 을 예산의 기준값으로 쓸 것 | 버킷 rate 와 하드캡 중 **작은 쪽**이 실제 상한이다 |
+| 4 | `usage_ratio` 상향은 W4 가 판단 | 하드캡 도입으로 **0.87 까지 구조적으로 안전**해졌다 (근거 §9-8). 0.7 → 0.85 면 MARKET_DATA 7.0 → 8.5 req/s (**+21%**) |
+| 5 | `http_429_under_own_limit` 을 텔레메트리에 실을 것 | §9-6 판별이 운영 중에 자동으로 끝난다 |
+
+### 9-8. `usage_ratio` 안전 상한의 근거 — `확인됨` (산식)
+
+- **옛 구조 (하드캡 없음)**: 버킷의 1초 최대 통과량 = `capacity + rate`
+  = `limit × usage_ratio × (1 + BURST_FRACTION)` = `limit × usage_ratio × 1.3`.
+  한도를 넘지 않으려면 **usage_ratio ≤ 1/1.3 = 0.769**.
+  → 0.7 은 우연히 안전했던 값이고, 0.8 로만 올려도 설계상 한도를 넘었다.
+  게다가 `_capacity_for` 의 하한 1.0 때문에 작은 그룹은 0.7 에서도 넘었다:
+  MARKET_INFO `1.0 + 2.1 = 3.1 > 3`, ACCOUNT `1.0 + 0.7 = 1.7 > 1`.
+- **새 구조 (하드캡 도입)**: 한도 초과가 구조적으로 불가능하다. 지속 가능 상한은
+  `limit / WINDOW_HORIZON_S = limit / 1.15` 이므로 **usage_ratio ≤ 0.87** 이면 버킷이 병목,
+  그 위로는 하드캡이 병목이 된다.
+- `WINDOW_HORIZON_S = 1.0 + 0.15`: 우리가 재는 것은 **보낸 시각**, 서버가 세는 것은
+  **도착 시각**이다. 실측 RTT `min 54.6 / p50 71.0 / p90 93.5 / max 141.0 ms` (n=47)에서
+  편도 지연폭 ≈ 43ms — 1.0초 동안 보낸 것이 서버에는 0.957초 안에 도착할 수 있다.
+  0.15초는 그 압축의 약 3.5배 여유다.
+
+### 9-9. 레이트·한도·창 관련 상수 전수 — W4 작업의 입력
+
+레이트/한도/창에 관여하는 **모든** 상수와 그것을 읽는 곳. `근거` 열이 "근거 없음" 이면
+숫자의 출처가 없다는 뜻이다.
+
+#### 그룹별 공시 한도 (`api/endpoints.py:50` `SPEC_LIMITS`)
+
+| 그룹 | 값 (req/s) | 근거 | 계약과 일치? |
+|---|---|---|---|
+| `MARKET_DATA` | 10 | docs/01 §2 + **헤더 실측** | ✅ 일치 |
+| `MARKET_DATA_CHART` | 5 | docs/01 §2 + **헤더 실측** | ✅ 일치 |
+| `RANKING` | 5 | docs/01 §2 + **헤더 실측** | ✅ 일치 |
+| `STOCK` | 5 | docs/01 §2 + **헤더 실측** | ✅ 일치 |
+| `MARKET_INFO` | 3 | docs/01 §2 + **헤더 실측** | ✅ 일치 |
+| `ACCOUNT` | 1 | overview.md + **헤더 실측** | ✅ 일치 |
+| `ORDER_INFO` | 6 | overview.md만 | ⚠️ **미실측** — `/commissions` 는 `x-tossinvest-account` 헤더가 필요해 400 |
+| `AUTH` | 5 | overview.md만 | ⚠️ **미실측** — 토큰 발급 경로라 프로브 금지(재발급 = 가동 중 토큰 살해) |
+| `ASSET` | 5 | overview.md만 | ⚠️ **미실측** — allowlist 에 해당 엔드포인트 없음 (호출 경로 자체가 없다) |
+
+재현: `tools/live_probe.py --probe ratelimit_groups` (그룹당 1콜).
+
+#### 리미터 상수 (`api/limiter.py`)
+
+| 이름 | 현재값 | 근거 | 계약과 일치? |
+|---|---|---|---|
+| `usage_ratio` (기본, :144) | 0.7 | 예산 여유. **상한의 근거는 §9-8** | ✅ 안전. 하드캡 도입으로 0.87 까지 여유가 생겼다(미상향 — W4 결정) |
+| `SERVER_WINDOW_S` (:74) | 1.0 | **§9-4 실측** | ✅ |
+| `CLOCK_SKEW_MARGIN_S` (:76) | 0.15 | **§9-8 RTT 실측**(편도 지연폭 43ms)의 3.5배 | ✅ |
+| `WINDOW_HORIZON_S` (:78) | 1.15 | 위 둘의 합 | ✅ |
+| 하드캡 `window_cap` (:168) | 공시 한도 그대로 | **§9-4·§9-5 실측** | ✅ 신규 |
+| `BURST_FRACTION` (:71) | 0.3 | 감사 B-1(버스트 억제). 숫자 자체는 **근거 없음** | ⚠️ 이제 안전성은 하드캡이 보장하므로 이 값은 **평활화 취향**일 뿐. 유지 가능 |
+| 빈 버킷 시작 (:117) | tokens=0 | 감사 B-1 (기동 직후 버스트 방지) | ✅ 유지. 하드캡과 목적이 겹치지만 무해하고 기동 스파이크를 한 번 더 막는다 |
+| `MAX_BACKOFF` (:66) | 8.0 | **근거 없음** (관례) | 계약 무관 — 429 후 감속 깊이 |
+| `RECOVER_FACTOR` (:67) | 0.8 | **근거 없음** (관례) | 계약 무관 |
+| `RECOVER_INTERVAL_S` (:68) | 60.0 | 감사 H-4(건수 기준 금지) | 계약 무관. 값 60 자체는 **근거 없음** |
+| `DEFAULT_LIMIT` (`endpoints.py:63`) | 1.0 | 미지 그룹 보수적 기본값 | ✅ 안전한 쪽 |
+
+#### 클라이언트 상수 (`api/client.py`)
+
+| 이름 | 현재값 | 근거 | 계약과 일치? |
+|---|---|---|---|
+| `DEFAULT_RETRY_AFTER_S` (:79) | 1.0 | **§9-4** — 고정 1초 창이라 1.0초면 반드시 다음 창 | ✅ |
+| `MAX_RETRY_AFTER_S` (:82) | 60.0 | HTTP-date 오작동 방어 상한. **근거 없음**(방어값) | 계약 무관 |
+| 429 재시도 횟수 (`_request`) | 1회 | 계약 C-5 | ✅ |
+| `RECENT_429_KEEP` (:67) | 8 | 진단 보관량. **근거 없음** | 계약 무관 |
+| `SEC_COUNT_KEEP` (:71) | 16 | 초별 카운터 보관량. **근거 없음** | 계약 무관 (몇 초면 충분) |
+| `TRANSIENT_BACKOFF_S` (:62) | (0.5, 1.0, 2.0) | 계약 C-5 | 계약 무관 (5xx 용) |
+| `MAX_TRANSIENT_RETRIES` (:63) | 3 | 계약 C-5 | 계약 무관 |
+| `BATCH_MAX`/`CANDLE_MAX`/`TRADES_MAX`/`RANKING_MAX` (:57-60) | 200/200/50/100 | API 스펙 | 계약 무관 (호출당 크기이지 호출률이 아니다) |
+
+#### 설정 (`config/config.example.yaml`)
+
+| 키 | 현재값 | 근거 | 계약과 일치? |
+|---|---|---|---|
+| `api.usage_ratio` | 0.7 | 위와 같음 | ✅ (상향 여지 §9-8) |
+| `limits.*` | AUTH 5, STOCK 5, MARKET_DATA 10, MARKET_DATA_CHART 5, RANKING 5, MARKET_INFO 3 | docs/01 §2 | ✅ 실측과 일치 (AUTH 제외 — 미실측) |
+| `limits` 에 없는 그룹 | — | `SPEC_LIMITS` 로 보강 | ✅ ACCOUNT·ORDER_INFO 가 여기 해당 |
+| 하단 예산 산식 주석 | MARKET_DATA 6.42 ≤ 7.0 | 티어 주기 역산 | ⚠️ **초당 평균**이다. 계약은 **매 초**를 센다 — §9-6 참조 |
+
+#### 이 값들을 읽는 곳
+
+| 위치 | 무엇을 읽는가 | 비고 |
+|---|---|---|
+| `api/limiter.py` `GroupRateLimiter` | `limits`, `usage_ratio`, `SPEC_LIMITS` | 호출을 **늦춰서** 지킨다 |
+| `api/client.py` `_request` → `limiter.acquire` | 그룹 슬롯 | 모든 요청의 단일 관문 |
+| `api/client.py` `_send` → `limiter.update_from_headers` | 응답 헤더 | 자기보정 (429 의 `remaining` 은 무시) |
+| `api/tokens.py` `_issue` | `limiter.acquire("AUTH")` | 토큰 발급도 한도 대상 (감사 A-4) |
+| `collector/budget.py` (**W4 소유**) | `limits`, `usage_ratio`, `SPEC_LIMITS` | 호출을 **줄여서** 지킨다 (티어 축소) |
+| `collector/loops.py` (**W4 소유**) | `client.counters["http_429"]`, `client.last_headers` | ⚠️ 429 진단은 `last_429` 로 옮겨야 한다 (§9-3) |
+| `ops/healthcheck.py` | 로그의 `budget: 429 on <group>` | 계약 무관 (사후 집계) |
+
+#### 계약과 어긋나는 것 — W4 가 고칠 것
+
+| # | 어긋난 곳 | 무엇이 문제인가 |
+|---|---|---|
+| 1 | `collector/budget.py:38` `WINDOW_S = 60.0` | 예산을 **60초 평균**으로 잰다. 계약은 **매 1초**를 센다. `MARKET_DATA_CHART=0.50/3.50` 은 60초에 30콜이라는 뜻이고, 그 30콜이 한 초에 5개 몰려도 이 지표는 0.50 그대로다 — 2026-08-04 11:30 의 429 가 정확히 그 사각지대에서 났다. **평균 예산은 1초 초과를 볼 수 없다.** |
+| 2 | `collector/loops.py:549` `HTTP-429-DETAIL` | `client.last_headers` 를 읽어 429 가 아닌 응답을 찍는다 (§9-3). `client.last_429` 로 교체할 것 |
+| 3 | 예산 분할 단위 | 그룹 단위여야 한다 (§9-4). 현재도 그룹 단위이므로 ✅ — 다만 근거가 이제 실측이다 |
+
 ---
 
 ## 10. 기타 확인 사항
@@ -324,7 +575,9 @@ x-ratelimit-reset: 1
 | 4 | 1m 봉 보관 경계 정밀값 | 1024일 hit / 2048일 miss 까지만 좁힘 | `candle_deep` 이분탐색 확장 (약 10콜) |
 | 5 | `/commissions` 단위 | 문서 미명시 + KR/US 표기 모순 | 토스 고객센터 확인 또는 실거래 대조 |
 | 6 | 휴장일 캘린더 응답 | 측정일이 영업일 | 휴장일에 `--probe calendar` |
-| 7 | `edge-rate-limit-exceeded` (엣지단 429) | 미관측 | 더 공격적인 버스트 — 권장하지 않음 |
+| 7 | `edge-rate-limit-exceeded` (엣지단 429) | 미관측 | 더 공격적인 버스트 — 권장하지 않음. **운영 중 자동 판별로 대체**: `client.last_429["error_code"]` 가 남긴다 (§9-3) |
+| 8 | 2026-08-04 11:30 CHART 429 의 원인 | 그룹 한도로 설명되지 않음(사용률 0.5/3.5) | 다음 429 의 `under_own_limit` 을 볼 것 (§9-6). 프로브가 아니라 **운영 계측**으로 답한다 |
+| 9 | `AUTH`(5/s)·`ASSET`(5/s)·`ORDER_INFO`(6/s) 한도 | 프로브 불가 (§9-9) | AUTH 는 토큰 재발급이 필요해 금지, ASSET 은 호출 경로 없음, ORDER_INFO 는 계좌 헤더 필요 |
 
 ---
 

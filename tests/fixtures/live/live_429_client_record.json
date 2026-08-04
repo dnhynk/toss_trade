@@ -1,0 +1,39 @@
+{
+  "endpoint": "GET /api/v1/exchange-rate",
+  "case": "rate_limited_via_client",
+  "status": 429,
+  "source": "live",
+  "captured_at_ms": 1785813002996,
+  "note": "TossClient._record_429 이 찍은 진짜 429 기록 (헤더는 그 429 응답의 것)",
+  "headers": {
+    "x-request-id": "***MASKED***",
+    "x-ratelimit-limit": "3",
+    "x-ratelimit-remaining": "0",
+    "x-ratelimit-reset": "1",
+    "retry-after": "1",
+    "date": "Tue, 04 Aug 2026 03:10:01 GMT"
+  },
+  "body": {
+    "record": {
+      "at_ms": 1785813001866,
+      "method": "GET",
+      "path": "/api/v1/exchange-rate",
+      "group": "MARKET_INFO",
+      "status": 429,
+      "headers": {
+        "x-request-id": "***MASKED***",
+        "x-ratelimit-limit": "3",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "1",
+        "retry-after": "1",
+        "date": "Tue, 04 Aug 2026 03:10:01 GMT"
+      },
+      "retry_after_present": true,
+      "retry_after_s": 1.0,
+      "error_code": "code=rate-limit-exceeded message=요청 한도를 초과했습니다. 잠시 후 다시 시도해 주세요.",
+      "own_requests_in_that_server_second": 4,
+      "limit_header": 3,
+      "under_own_limit": false
+    }
+  }
+}

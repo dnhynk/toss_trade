@@ -11,13 +11,23 @@
   (계약 C-5 표에 해당 칸이 없어 "재시도 금지 + caller 가 로그·스킵" 정책이 같은 SchemaMismatch 에 매핑).
 - 마이크로달러보다 미세한 가격(동전주의 소수 8자리)은 거부하지 않고 반올림한다 (계약 C-2 개정 A4).
   반올림 건수는 `counters["precision_rounded"]` 에 누적되어 조용히 넘어가지 않는다.
+
+429 진단 (2026-08-04, docs/06 §9-3):
+`last_headers` 는 "마지막 응답" 이라 429 뒤에 성공 응답이 하나만 지나가도 덮어써진다.
+429 는 여기서 1회 재시도되므로 그 재시도가 성공하면 기록은 **항상 200 쪽**이 된다 —
+운영 로그에 `HTTP-429-DETAIL ... status=200` 이 남은 것이 그래서였다.
+그래서 429 는 받은 **그 자리에서** `last_429` / `recent_429s` / `RateLimited.evidence` 에
+찍고, 이후 어떤 응답도 그것을 덮어쓰지 못한다. 429 를 진단할 때 `last_*` 를 보지 말 것.
 """
 from __future__ import annotations
 
 import asyncio
 import random
+import time
+from collections import OrderedDict, deque
 from contextlib import contextmanager
 from decimal import Decimal
+from email.utils import parsedate_to_datetime
 from typing import Any, Literal, Mapping, Sequence
 
 import httpx
@@ -59,6 +69,25 @@ RANKING_MAX = 100        # /rankings 상위 100
 TRANSIENT_BACKOFF_S = (0.5, 1.0, 2.0)
 MAX_TRANSIENT_RETRIES = 3
 
+# 429 기록 보관 개수. 한 번의 사고에서 여러 발이 나면 첫 발이 가장 중요한데 하나만 들고 있으면
+# 그 첫 발이 밀려난다.
+RECENT_429_KEEP = 8
+
+# `date` 헤더 기준 초별 요청 수를 몇 초치나 들고 있을지. 429 원인 판별(우리 초과인가 아닌가)에만
+# 쓰므로 몇 초면 충분하다.
+SEC_COUNT_KEEP = 16
+
+# 429 진단에 남기는 응답 헤더. 시크릿이 실릴 수 있는 헤더는 애초에 목록에 없다
+# (응답 헤더이지만 set-cookie 류를 통째로 로그에 흘리지 않기 위해 allowlist 로 간다).
+DIAG_HEADER_PREFIXES = ("x-ratelimit", "ratelimit", "retry-after", "x-request-id", "date")
+
+# Retry-After 가 없을 때의 대기값. 서버 창이 **벽시계 초에 정렬된 고정 1초**라
+# (docs/06 §9-4) 1.0초를 기다리면 어느 시점에서 재든 반드시 다음 창으로 넘어간다.
+DEFAULT_RETRY_AFTER_S = 1.0
+# Retry-After 가 HTTP-date 로 올 때의 상한. 스펙상 가능하지만 실측 미관측이라,
+# 시계 어긋남으로 터무니없는 값이 나와도 수집이 멈추지 않도록 자른다.
+MAX_RETRY_AFTER_S = 60.0
+
 _CAL_KEYS = (("previous", "previousBusinessDay"), ("today", "today"), ("next", "nextBusinessDay"))
 _SESSIONS = (("day", "dayMarket"), ("pre", "preMarket"),
              ("regular", "regularMarket"), ("after", "afterMarket"))
@@ -96,11 +125,28 @@ class TossClient:
         self.counters: dict[str, int] = {
             "requests": 0, "retries": 0, "http_429": 0, "http_5xx": 0, "auth_refresh": 0,
             "precision_rounded": 0,
+            # 429 인데 Retry-After 가 없던 건수. 실측상 **오는 경우와 안 오는 경우가 둘 다 있다**
+            # (docs/06 §9-3) — 0 이 아니면 기본 대기값(1.0s)에 의존하고 있다는 뜻이다.
+            "http_429_no_retry_after": 0,
+            # 429 를 받았는데 **그 서버 초에 우리가 보낸 요청이 한도 미만**이었던 건수.
+            # 0 이 아니면 429 의 원인이 이 클라이언트 밖에 있다 (다른 프로세스 / 계정 전체 한도).
+            "http_429_under_own_limit": 0,
         }
         # 진단 전용: 마지막 응답의 상태/헤더. 동시 요청 중에는 어느 요청의 것인지 보장하지 않는다
         # (tools/live_probe.py 처럼 순차 실행하는 경우에만 의미가 있다).
+        #
+        # ⚠️ 429 진단에 이 둘을 쓰지 말 것. 429 뒤에 성공 응답이 하나만 지나가도 덮어써져
+        # `status=200` 인 "429 기록" 이 남는다 (2026-08-04 실제로 그렇게 오독했다).
+        # 429 는 아래 `last_429` / `recent_429s` 를 볼 것 — 그쪽은 429 응답 **그 자리에서**
+        # 찍히고 이후 응답이 절대 덮어쓰지 않는다.
         self.last_status: int | None = None
         self.last_headers: dict[str, str] = {}
+
+        # 마지막 429 응답의 완전한 기록(상태·헤더·본문 error code). 200 이 덮어쓰지 않는다.
+        self.last_429: dict[str, Any] | None = None
+        self.recent_429s: deque[dict[str, Any]] = deque(maxlen=RECENT_429_KEEP)
+        # (group, 서버 date 초) → 우리가 그 초에 보낸 요청 수. 429 가 우리 탓인지 판별용.
+        self._sec_counts: OrderedDict[tuple[str, str], int] = OrderedDict()
 
     # ---- 단일 전송 관문 --------------------------------------------------
 
@@ -159,10 +205,64 @@ class TossClient:
         except httpx.HTTPError as exc:
             raise TransientHTTP(0, f"transport error: {type(exc).__name__}") from exc
 
-        self.limiter.update_from_headers(group, resp.headers)
+        own_in_second = self._count_in_server_second(group, resp.headers)
+        self.limiter.update_from_headers(group, resp.headers,
+                                         status=resp.status_code)
         self.last_status = resp.status_code
         self.last_headers = dict(resp.headers)
-        return _classify(resp)
+        if resp.status_code == 429:
+            # **429 응답 그 자리에서** 기록한다. 뒤따르는 200 이 덮어쓸 수 없는 자리에.
+            self._record_429(method, path, group, resp, own_in_second)
+        return _classify(resp, self.last_429 if resp.status_code == 429 else None)
+
+    # ---- 429 진단 --------------------------------------------------------
+
+    def _count_in_server_second(self, group: str, headers: Mapping[str, str]) -> int:
+        """이 응답이 속한 **서버 초**에 우리가 보낸 요청 수 (이 요청 포함).
+
+        서버 창이 벽시계 1초 고정이므로(docs/06 §9-4), `date` 헤더의 초가 곧 창 이름이다.
+        이 수가 그룹 한도보다 작은데도 429 가 났다면 원인은 이 클라이언트 밖에 있다 —
+        같은 자격증명을 쓰는 다른 프로세스이거나, 그룹별이 아닌 다른 한도다.
+        (경계에서 렌더된 응답은 `date` 와 카운터가 한 초 어긋날 수 있으므로 ±1 의 오차가 있다.)
+        """
+        date = headers.get("date") or headers.get("Date")
+        if not date:
+            return 0
+        key = (group, str(date))
+        self._sec_counts[key] = self._sec_counts.get(key, 0) + 1
+        self._sec_counts.move_to_end(key)
+        while len(self._sec_counts) > SEC_COUNT_KEEP:
+            self._sec_counts.popitem(last=False)
+        return self._sec_counts[key]
+
+    def _record_429(self, method: str, path: str, group: str,
+                    resp: httpx.Response, own_in_second: int) -> None:
+        headers = {k: v for k, v in resp.headers.items()
+                   if k.lower().startswith(DIAG_HEADER_PREFIXES)}
+        raw_retry = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
+        if raw_retry is None:
+            self.counters["http_429_no_retry_after"] += 1
+        limit_hdr = _int_or_none(resp.headers.get("x-ratelimit-limit"))
+        under_own = bool(limit_hdr and own_in_second and own_in_second < limit_hdr)
+        if under_own:
+            self.counters["http_429_under_own_limit"] += 1
+        rec: dict[str, Any] = {
+            "at_ms": int(time.time() * 1000),
+            "method": method.upper(),
+            "path": canonical_path(path),
+            "group": group,
+            "status": resp.status_code,
+            "headers": headers,
+            "retry_after_present": raw_retry is not None,
+            "retry_after_s": _retry_after(resp.headers),
+            "error_code": _err_code(resp),
+            "own_requests_in_that_server_second": own_in_second,
+            "limit_header": limit_hdr,
+            # True 면 "우리가 그 초에 한도만큼 쏘지 않았는데 429" — 원인이 밖에 있다는 신호.
+            "under_own_limit": under_own,
+        }
+        self.last_429 = rec
+        self.recent_429s.append(rec)
 
     @contextmanager
     def _track_rounding(self):
@@ -353,11 +453,11 @@ class TossClient:
 # ---- 응답 분류 ----------------------------------------------------------
 
 
-def _classify(resp: httpx.Response) -> dict:
+def _classify(resp: httpx.Response, evidence: dict | None = None) -> dict:
     """HTTP 응답 → envelope dict 또는 계약 C-5 예외."""
     status = resp.status_code
     if status == 429:
-        raise RateLimited(_retry_after(resp.headers), "rate limited")
+        raise RateLimited(_retry_after(resp.headers), "rate limited", evidence=evidence)
     if status == 401:
         raise AuthExpired(f"401 {_err_code(resp)}")
     if status == 403:
@@ -377,11 +477,35 @@ def _classify(resp: httpx.Response) -> dict:
 
 
 def _retry_after(headers: Mapping[str, str]) -> float:
+    """Retry-After → 초. 실측은 정수 초 문자열이고, **없는 경우도 있다** (docs/06 §9-3).
+
+    없으면 1.0초를 쓴다. 서버 창이 벽시계 초에 정렬된 고정 1초라 1.0초를 기다리면
+    어느 위상에서 재든 반드시 다음 창으로 넘어간다 (docs/06 §9-4).
+    HTTP-date 형식은 스펙상 가능하지만 미관측이다 — 들어오면 해석하되 상한을 건다.
+    """
     raw = headers.get("Retry-After") or headers.get("retry-after")
+    if raw is None:
+        return DEFAULT_RETRY_AFTER_S
+    text = str(raw).strip()
     try:
-        return max(float(str(raw).strip()), 0.0)
+        return min(max(float(text), 0.0), MAX_RETRY_AFTER_S)
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(text)
     except (TypeError, ValueError):
-        return 1.0
+        return DEFAULT_RETRY_AFTER_S
+    if when is None:
+        return DEFAULT_RETRY_AFTER_S
+    delta = when.timestamp() - time.time()
+    return min(max(delta, 0.0), MAX_RETRY_AFTER_S)
+
+
+def _int_or_none(raw: Any) -> int | None:
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
 
 
 def _err_code(resp: httpx.Response) -> str:

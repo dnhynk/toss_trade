@@ -7,9 +7,14 @@ api:
   keys_path: "api_keys"                # client_id/secret 파일 (커밋 금지)
   token_state_path: "data/token_state.json"
   timeout_s: 10.0
-  usage_ratio: 0.7                     # rate limit 공시 한도 대비 사용 상한
+  # rate limit 공시 한도 대비 사용 상한.
+  # 서버 계약은 "그룹마다, 벽시계 초에 정렬된 **고정 1초 창**, 창당 limit 개" 다 (docs/06 §9-4 실측).
+  # limiter 가 그 창을 하드캡으로 지키므로 이 값은 **예산 여유**일 뿐 안전장치가 아니다.
+  # 안전 상한은 0.87 (docs/06 §9-8). 0.85 로 올리면 MARKET_DATA 7.0 → 8.5 req/s (+21%).
+  # 상향은 수집 예산을 바꾸므로 W4 가 결정한다.
+  usage_ratio: 0.7
 
-limits:                                # req/s (docs/01 §2)
+limits:                                # req/s (docs/01 §2, 전 그룹 헤더 실측 일치 — docs/06 §9-9)
   AUTH: 5
   STOCK: 5
   MARKET_DATA: 10
@@ -50,6 +55,11 @@ polling:
   tier3_trades_s: 4        # A2 권장 3~5s
   tier3_orderbook_s: 16    # A2 권장 15~20s
   ranking_snap_s: 12
+#
+# ⚠️ 아래 산식은 전부 **초당 평균**이다. 서버는 평균이 아니라 **매 1초**를 센다 (docs/06 §9-4).
+# 평균 6.42 ≤ 7.0 이어도 어느 한 초에 11발이 몰리면 그 초는 429다. 평균을 지키는 것은
+# 예산의 일이고, 매 초를 지키는 것은 `api/limiter.py` 의 하드캡이 맡는다 — 둘 다 필요하다.
+# (`collector/budget.py` 는 60초 평균으로 재므로 1초 초과를 구조적으로 볼 수 없다: docs/06 §9-9.)
 #
 # MARKET_DATA 예산 검증 (한도 10 req/s × usage_ratio 0.7 = 7.0 req/s):
 #   tier1 스윕   1500종목 / 배치200 / 45s            = 0.17 req/s
