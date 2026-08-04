@@ -210,21 +210,37 @@ def tier_population(timeline: dict, tier: int, start_ms: int, end_ms: int) -> di
     이 값은 결론에 반드시 따라붙는 측정 조건이다(태스크 지정 형식).
 
     시간가중이라 "그 순간 몇 종목"이 아니라 "창 전체에 걸쳐 평균 몇 종목"이다.
+
+    구현은 **한 번의 스윕**이다. 구간마다 전 종목을 다시 세는 방식으로 짰더니 하루치
+    창에서 133초가 걸렸고(전체 감사 148초의 90%), 승격 이벤트가 하루 ~6,800건씩 쌓이므로
+    갈수록 나빠진다. 아침 08:52 자동 실행이 그만큼 늦어질 이유가 없다. 스윕은 같은 값을
+    낸다 — 시작 시점 소속을 한 번 구하고, 전이마다 카운트를 ±1 한다.
     """
     span = max(end_ms - start_ms, 1)
+    cur = {sym: tier_at(timeline, sym, start_ms) for sym in timeline}
+    n = sum(1 for v in cur.values() if v == tier)
+    # 정렬 키에 **원래 순서(idx)** 를 넣는다. 한 종목에 같은 시각 전이가 여러 건 올 수
+    # 있고(실측: 22:33:14 에 3->2 와 2->3 이 같은 ms 에), 그때는 DB 순서의 **마지막이
+    # 유효한 티어**다 (`tier_at` 이 그렇게 읽는다). ts 로만 정렬하면 그 순서가 뒤집혀
+    # 조용히 다른 값이 나온다 — 대조 테스트가 이걸 잡았다.
+    events = sorted((ts, idx, sym, tt) for sym, ev in timeline.items()
+                    for idx, (ts, _ft, tt) in enumerate(ev) if start_ms < ts < end_ms)
     total = 0
-    lo = hi = None
-    edges = {start_ms, end_ms}
-    for ev in timeline.values():
-        for ts, _ft, _tt in ev:
-            if start_ms < ts < end_ms:
-                edges.add(ts)
-    marks = sorted(edges)
-    for a, b in zip(marks, marks[1:]):
-        n = sum(1 for sym in timeline if tier_at(timeline, sym, a) == tier)
-        total += n * (b - a)
-        lo = n if lo is None else min(lo, n)
-        hi = n if hi is None else max(hi, n)
+    lo = hi = n
+    prev = start_ms
+    i = 0
+    while i < len(events):
+        ts = events[i][0]
+        total += n * (ts - prev)
+        while i < len(events) and events[i][0] == ts:      # 같은 시각 전이는 한꺼번에
+            _ts, _idx, sym, tt = events[i]
+            was, now = cur.get(sym) == tier, tt == tier
+            n += (1 if now else 0) - (1 if was else 0)
+            cur[sym] = tt
+            i += 1
+        lo, hi = min(lo, n), max(hi, n)
+        prev = ts
+    total += n * (end_ms - prev)
     return {"avg": round(total / span, 2), "min": lo, "max": hi}
 
 

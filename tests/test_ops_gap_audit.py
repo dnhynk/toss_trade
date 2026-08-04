@@ -325,6 +325,28 @@ def test_tier_population_is_time_weighted_not_a_snapshot():
     assert pop["avg"] == 1.0 and pop["max"] == 2 and pop["min"] == 0
 
 
+def test_tier_population_sweep_matches_naive_recount():
+    """스윕 구현이 **구간마다 다시 세는** 방식과 같은 값을 내는지 대조한다.
+
+    속도 때문에 스윕으로 바꿨다(하루치 창 133초 -> 1초 미만). 최적화가 값을 바꾸면
+    조용히 틀린 측정 조건이 리포트에 실린다 — 그래서 느린 쪽을 기준으로 남겨 대조한다.
+    """
+    tl = {
+        "A": [(100, 2, 3), (400, 3, 2), (700, 2, 3)],
+        "B": [(100, 3, 2), (250, 2, 3), (250, 3, 2)],   # 같은 시각 전이 2건
+        "C": [(50, 2, 3)],
+        "D": [(900, 2, 3)],                             # 창 밖 직전
+    }
+    start, end = 0, 1000
+    edges = sorted({start, end} | {ts for ev in tl.values() for ts, _f, _t in ev
+                                   if start < ts < end})
+    for tier in (2, 3):
+        naive = sum(
+            sum(1 for s in tl if GA.tier_at(tl, s, a) == tier) * (b - a)
+            for a, b in zip(edges, edges[1:]))
+        assert GA.tier_population(tl, tier, start, end)["avg"] == round(naive / end, 2)
+
+
 def test_ranking_intervals_split_by_type():
     """두 목록은 연달아 찍히므로 풀링하면 중앙값이 실제 폴 주기가 아니게 된다."""
     conn = _mem_db()
