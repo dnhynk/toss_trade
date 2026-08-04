@@ -370,11 +370,25 @@ def test_oversold_entry_nan_when_no_drop():
 
 
 def test_oversold_entry_uses_only_past_quotes():
-    """앞부분만 준 결과가 전체를 준 결과와 같아야 한다."""
-    px = [1.00, 1.00, 0.90, 0.88, 0.92, 1.50]
+    """앞부분만 준 결과가 전체를 준 결과와 같아야 한다.
+
+    **픽스처 주의 (감사5 H-3).** 이전 픽스처는 `[1.00, 1.00, 0.90, 0.88, 0.92, 1.50]`
+    이었는데, 유일한 '미래' 봉 1.50 은 **상승**인 데다 진입봉(index 4) **뒤에** 온다.
+    규칙은 **하락**에서 발동하므로 미래를 훔쳐봐도 답이 바뀔 수 없었다 — 즉
+    **위반을 표현할 수 없는 픽스처**였고, 실제로 "전 계열의 고점을 본다"는 룩어헤드를
+    심었을 때 이 테스트가 그대로 통과했다.
+
+    아래 픽스처는 그 구멍을 막는다. 나중에 오는 1.60 을 미리 보면 index 2(1.00)가
+    "고점 대비 5% 하락"으로 **잘못** 통과해 진입이 index 4 -> index 2 로 앞당겨진다.
+    정직한 구현에서만 `full == part` 가 성립한다.
+    """
+    px = [1.00, 0.99, 1.00, 0.94, 0.95, 1.60, 1.55]
     full = S.find_oversold_entry(series(px), drop=0.05)
     part = S.find_oversold_entry(series(px[:5]), drop=0.05)
     assert full == part
+    assert full[1] == 4 * S12                    # 과거만 보면 진입은 index 4 다
+    # 픽스처가 실제로 물리는지 확인 — 미래에 더 높은 고점이 있어야 의미가 있다
+    assert max(px[5:]) > max(px[:5])
 
 
 def test_design_b_sells_into_a_shot_while_already_holding():
