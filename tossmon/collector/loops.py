@@ -56,6 +56,7 @@ from ..universe.filters import market_cap_u, passes_tier0
 from .budget import GROUP_CHART, GROUP_MARKET_DATA, GROUP_RANKING, BudgetGuard, TierPlan
 from .detector import (ACTIVITY_ENTRY_SCORE, EventDetector, PriceActivityTracker,
                        TierChange, TierStateMachine, activity_score, build_curve)
+from .mismatch import NotFoundTally, is_symbol_not_found, symbol_from_loop_name
 from .notifier import Notifier
 from .scheduler import (CLOSED, Clock, SessionScheduler, exclude_today_1d_cutoff,
                         session_window, trading_day_of)
@@ -365,6 +366,8 @@ class CollectorContext:
     #: 심볼별 베이스라인 계산 시각 + 세션 전환 에포크 (분산 재계산용).
     baseline_ms: dict[str, int] = field(default_factory=dict)
     baseline_epoch_ms: int = 0
+    #: 심볼별 `stock-not-found` 404 횟수 — 반복 404 심볼 판단 재료 (`mismatch.NotFoundTally`).
+    not_found: NotFoundTally = field(default_factory=NotFoundTally)
     #: 티어 전이 구간 요약용 고수위 (개별 줄은 DEBUG, 사람은 이 델타를 본다).
     _last_promotions: int = 0
     _last_demotions: int = 0
@@ -682,7 +685,15 @@ class CollectorContext:
             # 인증 실패(별도 노출), 광역 catch 로 삼켜지던 것들, 쓰기 실패, 수집 건강도.
             "auth_failures": int(self.counters.get("auth_failures", 0)),
             "loop_errors": int(self.counters.get("loop_errors", 0)),
+            # ⚠️ 이 둘은 **반드시 따로** 읽어야 한다. `schema_mismatch` 는 "응답 모양이
+            # 바뀌었으니 그날 데이터를 의심하라"이고, `symbol_not_found` 는 "상장폐지·거래정지
+            # 종목을 건너뛰었다"로 정상 상태다. 예전에는 후자가 전자로 집계돼 멀쩡한 하루를
+            # 의심하게 만들었다 (실측 5/5 건이 전자로 오분류).
             "schema_mismatch": int(self.counters.get("schema_mismatch", 0)),
+            "symbol_not_found": int(self.counters.get("symbol_not_found", 0)),
+            # 몇 종목에 몰렸나 — 1~2 종목에 반복되면 워치리스트 정리 후보,
+            # 갑자기 전 종목으로 퍼지면 그때는 계약 변경을 의심해야 한다.
+            "symbol_not_found_symbols": len(self.not_found.counts),
             "event_write_failures": int(self.counters.get("event_write_failures", 0)),
             "promotion_write_failures": int(self.counters.get("promotion_write_failures", 0)),
             "rankings_write_failures": int(self.counters.get("rankings_write_failures", 0)),
@@ -719,8 +730,25 @@ class CollectorContext:
         self._last_promotions, self._last_demotions = promo, demo
         self.notifier.info("telemetry " + " ".join(f"{k}={v}" for k, v in data.items())
                            + " | " + self.budget.describe())
+        self._report_repeat_not_found()
         self._check_precision_drift()
         return data
+
+    def _report_repeat_not_found(self) -> None:
+        """같은 심볼이 반복해서 404 면 이름을 밝힌다 (워치리스트 정리 후보).
+
+        카운트만으로는 "1종목이 40번" 과 "40종목이 1번씩" 을 구분할 수 없는데 둘은 뜻이
+        완전히 다르다 — 전자는 그 종목만 빼면 되고, 후자는 계약 변경을 의심해야 한다.
+        정리 자체는 하지 않는다(범위 밖). 반복이 없으면 한 줄도 내지 않는다.
+        """
+        repeats = self.not_found.repeat_symbols()
+        if not repeats:
+            return
+        top = " ".join(f"{sym}={cnt}" for sym, cnt in repeats[:10])
+        more = f" +{len(repeats) - 10} more" if len(repeats) > 10 else ""
+        self.notifier.info(
+            f"symbol-not-found repeats: {top}{more} "
+            f"(delisted/halted candidates for watchlist cleanup; not a contract change)")
 
     def _check_precision_drift(self) -> None:
         """소수 자릿수 신고점 = 응답 형식 변화 의심 신호 (W1 인수인계)."""
@@ -1025,6 +1053,20 @@ async def _guarded(ctx: CollectorContext, name: str, coro,
                           f"{type(exc).__name__}: {exc}")
         return False
     except SchemaMismatch as exc:
+        # `client._classify` 는 재시도 불가한 4xx 를 전부 SchemaMismatch 로 올린다 — 그래서
+        # 성격이 다른 두 가지가 한 카운터에 섞였다. `schema_mismatch` 는 "그날 데이터를
+        # 믿지 마라"의 유일한 근거이므로 **없는 종목으로 묽어지면 안 된다** (mismatch.py 참조).
+        # 실측(2026-07-31~08-04): 이 카운터가 오른 5건이 전부 상장폐지·거래정지였다.
+        if is_symbol_not_found(exc.detail):
+            ctx.bump("symbol_not_found")
+            symbol = symbol_from_loop_name(name)
+            seen = ctx.not_found.add(symbol) if symbol else 0
+            # 반복 404 는 워치리스트에서 빼는 게 맞을 수 있으나 그 판단은 여기 범위 밖이다
+            # (코디네이터 지시) — 몇 번째인지만 드러내 사람이 고를 수 있게 한다.
+            repeat = f" (x{seen})" if seen > 1 else ""
+            ctx.notifier.warn(f"{name}: symbol not found (skip){repeat}: "
+                              f"delisted/halted/renamed, not a contract change")
+            return False
         ctx.bump("schema_mismatch")
         ctx.notifier.warn(f"{name}: schema mismatch (skip): {exc}")
         return False
