@@ -84,21 +84,40 @@ orca orchestration send --type worker_done --subject "<status>" --body "<...>" \
 유효한 `worker_done` 은 **태스크·디스패치를 자동으로 완료 처리**한다.
 뒤에 `task-update --status completed` 를 붙이지 마라.
 
-## 7. 우리 워커 핸들 (2026-08-04)
+## 7. 우리 워커 핸들 (2026-08-04 **밤 재확인** — 낮 목록은 절반이 낡았다)
 
 ```
-coordinator        term_73097d88-5d25-4722-821e-9076e4075c69
-w1-core-api        term_3a8a0ae2-a403-44a6-bb27-9dc4391c5264
-w2-universe-store  term_3d90398c-b6c2-4abc-961f-95b88809db95
-w3-analyzer        term_2c49ee20-13e4-4900-b578-f71aa7386cf0
+coordinator        term_35919dae-638a-4806-a427-3530c38d63d5   (바뀜)
+w1-core-api        term_8b285caa-49b2-4fd3-b16b-24f51af4744c   (바뀜)
+w3-analyzer        term_33927ce5-15a7-4368-931a-2af851d2b3cf   (바뀜)
 w4-collector       term_8017b557-2c9f-4f22-bf36-06c919c66d58
-w5-ops             term_deeb38ea-2ef0-4ad1-ae54-a20ffd5681ed
+w5-ops             term_7d298b46-5200-4244-bb76-a4a0c8028693   (바뀜)
 w6-audit           term_ab4cbd9a-8c78-4432-bb92-cf2cddff4b27
-w7-prereg          term_40994a88-b928-41e2-8510-dc9541649e00
 ```
 
-핸들은 **라우팅 메타데이터일 뿐 영속 신원이 아니다.** 어긋나면
-`orca terminal list --json` 으로 재확인하고 **새 핸들 하나만** 쓴다(옛것과 동시 발송 금지).
+**이 목록도 곧 낡는다. 쓰기 전에 반드시 재확인하라.** 워크트리당 터미널이 여러 개인데
+`terminal list --json` 이 `title`/`agent` 를 안 채워줄 때가 있다 — 그럴 땐 **`preview` 와
+`lastOutputAt`** 를 봐라. 살아 있는 에이전트는 `claude "--dangerously-skip-permissions"` 나
+`new task? /clear to save ...` 같은 프롬프트가 preview 에 찍히고 `lastOutputAt` 이 최근이다.
+`lastOutputAt: None` 인 핸들은 유령 셸이다 — 여기에 디스패치하면 조용히 아무 일도 안 일어난다.
+
+```bash
+orca terminal list --json | ... # worktreePath 로 거르고 preview/lastOutputAt 로 산 것을 고른다
+```
+
+## 7-1. ★ `worker-start` 는 `--terminal` 만으로는 안 된다 (2026-08-04 실측)
+
+기존 에이전트를 재사용할 때 `--terminal <handle>` 만 주면 **`terminal_worktree_mismatch`** 로 거부된다.
+코디네이터의 워크트리를 기준으로 검사하기 때문이다. **`--worktree` 를 함께 줘야 한다:**
+
+```bash
+orca orchestration worker-start --run run_92948a1f80a5 --task <task_id> \
+  --worktree "C:/Users/dongh/orca/workspaces/toss_trade/w5-ops" \
+  --terminal term_7d298b46-... --json
+```
+
+또 `dispatch-show` 는 **`--run` 플래그를 안 받는다**(`--task`, `--from`, `--json` 만).
+명령마다 받는 플래그가 다르니 거부당하면 에러 안의 `validFlags` 를 읽어라.
 
 ## 8. 은퇴한 명령
 
