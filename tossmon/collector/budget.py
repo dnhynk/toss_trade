@@ -201,40 +201,90 @@ class BudgetGuard:
             return float(self.limits[group])
         return float(SPEC_LIMITS.get(group, DEFAULT_LIMIT))
 
-    def max_safe_usage_ratio(self) -> float:
-        """리미터의 버스트 정책이 **1초 창 안에서 지킬 수 있는** usage_ratio 상한.
+    def has_window_hardcap(self) -> bool:
+        """리미터에 슬라이딩 1초 하드캡이 있는가 (W1 d6b47f1).
 
-        토큰버킷은 유휴 직후 1초에 `capacity + rate` 를 통과시킨다. 지금 정책은
-        `capacity = rate × BURST_FRACTION` 이므로 최악 통과량은 `rate × (1+BURST_FRACTION)`
-        이고, 이것이 공시 한도를 넘지 않아야 하므로:
-
-            limit × usage_ratio × (1 + BURST_FRACTION) <= limit
-            usage_ratio <= 1 / (1 + BURST_FRACTION)
-
-        BURST_FRACTION=0.3 이면 **0.769** 다. usage_ratio 를 그 위로 올리면 예산이
-        아니라 **리미터가** 1초 창을 깬다 — 정원을 아무리 줄여도 유휴 직후 한 번의
-        버스트로 한도를 넘는다. 상한을 올리려면 리미터에 1초 하드캡이 먼저 있어야 한다.
+        이 한 가지가 usage_ratio 상한의 의미를 통째로 바꾼다 — 아래 두 메서드 참조.
         """
         try:
-            from ..api.limiter import BURST_FRACTION
+            from ..api import limiter as _lim
+        except Exception:
+            return False
+        return hasattr(_lim, "WINDOW_HORIZON_S")
+
+    def max_safe_usage_ratio(self) -> float:
+        """리미터가 **계획한 속도를 실제로 낼 수 있는** usage_ratio 상한.
+
+        하드캡 **전후로 이 값의 의미가 다르다.**
+
+        (1) 하드캡이 없을 때 — 상한은 **429 안전선**이었다. 토큰버킷은 유휴 직후 1초에
+            `capacity + rate = rate × (1+BURST_FRACTION)` 을 통과시키므로
+
+                limit × usage_ratio × 1.3 <= limit   →   usage_ratio <= 1/1.3 = 0.769
+
+            이 위로 올리면 정원을 아무리 깎아도 유휴 직후 한 번의 버스트로 한도를 넘었다.
+
+        (2) 하드캡이 있을 때 (지금) — **한도 초과는 구조적으로 불가능해졌다.** 슬라이딩 캡이
+            `WINDOW_HORIZON_S`(1.15s) 안에서 `window_cap`(= 공시 한도) 개를 넘기지 않고,
+            모든 1.0초 구간은 어떤 1.15초 구간에 포함되므로 서버 창 위상과 무관하게 지켜진다.
+            그래서 상한의 의미가 "429 안전선" 에서 **"리미터가 낼 수 있는 지속 속도"** 로 바뀐다:
+
+                지속 상한 = window_cap / WINDOW_HORIZON_S = limit / 1.15
+                          →  usage_ratio <= 1/1.15 = 0.870
+
+            이 위로 올리면 429 가 나는 게 아니라 **하드캡이 병목이 되어 호출이 큐에 밀린다.**
+            그러면 폴링 주기가 조용히 늘어나 tier3 4초가 4초가 아니게 된다 — 이 모듈이
+            애초에 막으려던 실패다(늦추기만 하면 큐가 밀린다, 모듈 docstring 참조).
+
+        즉 지금 0.85 가 안전한 이유는 "버스트가 작아서" 가 아니라 **하드캡이 창을 지키기
+        때문**이다. 하드캡이 사라지면 이 값은 자동으로 0.769 로 되돌아간다.
+        """
+        try:
+            from ..api import limiter as _lim
         except Exception:                      # 리미터 정책을 못 읽으면 보수적으로
             return 1.0
-        return 1.0 / (1.0 + float(BURST_FRACTION))
+        if self.has_window_hardcap():
+            horizon = float(getattr(_lim, "WINDOW_HORIZON_S"))
+            return 1.0 / horizon if horizon > 0 else 1.0
+        return 1.0 / (1.0 + float(getattr(_lim, "BURST_FRACTION", 0.3)))
+
+    def worst_case_1s(self, group: str) -> float:
+        """이 설정에서 **한 초에 나갈 수 있는 최대 호출 수** (리미터 정책 기준).
+
+        하드캡이 있으면 캡 자체가 상계다. 없으면 버킷의 `capacity + rate` 다.
+        이 값이 공시 한도를 넘으면 429 는 시간 문제다.
+        """
+        try:
+            from ..api import limiter as _lim
+        except Exception:
+            return float("inf")
+        limit = self.limit_of(group)
+        if self.has_window_hardcap():
+            return float(int(limit))           # window_cap = 공시 한도 (정수 절삭)
+        rate = limit * self.usage_ratio
+        capacity = max(1.0, rate * float(getattr(_lim, "BURST_FRACTION", 0.3)))
+        return rate + capacity
 
     def check_usage_ratio(self) -> float | None:
         """usage_ratio 가 리미터가 지킬 수 있는 범위를 넘으면 초과분을 돌려준다(경보).
 
-        이 검사가 없으면 "예산은 통과했는데 서버 한도는 깨는" 설정이 조용히 배포된다.
+        이 검사가 없으면 "예산은 통과했는데 리미터는 못 내는" 설정이 조용히 배포된다.
         """
         ceiling = self.max_safe_usage_ratio()
         if self.usage_ratio <= ceiling:
             return None
         over = self.usage_ratio - ceiling
         if self.notifier is not None:
+            # 하드캡 유무에 따라 **실패 방식이 다르다.** 문구가 틀리면 엉뚱한 곳을 고친다.
+            if self.has_window_hardcap():
+                why = ("하드캡이 병목이 되어 호출이 큐에 밀린다 — 429 는 안 나지만 "
+                       "폴링 주기가 조용히 늘어난다(tier3 4초가 4초가 아니게 된다)")
+            else:
+                why = ("유휴 직후 1초에 공시 한도를 넘긴다 — 정원을 깎아도 못 고친다. "
+                       "리미터에 1초 하드캡을 먼저 넣어야 이 값을 올릴 수 있다")
             self.notifier.alert(
-                f"budget: usage_ratio {self.usage_ratio:.3f} > 리미터가 지킬 수 있는 "
-                f"상한 {ceiling:.3f} — 유휴 직후 1초에 한도를 넘긴다. 예산이 아니라 "
-                "리미터에 1초 하드캡을 먼저 넣어야 이 값을 올릴 수 있다")
+                f"budget: usage_ratio {self.usage_ratio:.3f} > 리미터가 낼 수 있는 "
+                f"상한 {ceiling:.3f} — {why}")
         return over
 
     def target(self, group: str) -> float:
@@ -248,6 +298,33 @@ class BudgetGuard:
         self.counters[group] = self.counters.get(group, 0) + 1
         q = self._events.setdefault(group, deque())
         q.append(now)
+        cutoff = now - self.window_s
+        while q and q[0] < cutoff:
+            q.popleft()
+
+    def on_requests(self, group: str, n: int) -> None:
+        """`n` 건을 **직전 계상 시각과 지금 사이에 고르게 펴서** 계상한다.
+
+        재시도는 지수 백오프로 **떨어져서** 나가는데, 한 시각에 몰아 계상하면 초당 첨두가
+        가짜로 치솟는다. 2026-08-04 13:10:06 실측: 첨두 13회로 "리미터가 1초 창을 못
+        지킨다" 경보가 났는데 같은 구간 `http_429=0` 이었다 — 서버는 13회를 본 적이 없다.
+        하드캡(W1)이 창을 지키고 있으므로 그 경보는 **내 계측이 만든 허위**였다.
+
+        시도들의 정확한 시각은 client 가 알려주지 않지만, **직전 계상 이후 구간 안에서
+        일어났다는 것은 확실하다.** 그 구간에 균등 분포시키면 총량은 그대로 보존하면서
+        첨두는 실제 밀도에 가까워진다. 가짜 경보는 진짜 경보를 묻는다.
+        """
+        if n <= 1:
+            if n == 1:
+                self.on_request(group)
+            return
+        now = self._now_s()
+        q = self._events.setdefault(group, deque())
+        start = q[-1] if q else now - SERVER_WINDOW_S
+        span = max(now - start, 1e-3)
+        for i in range(n):
+            q.append(start + span * (i + 1) / n)
+        self.counters[group] = self.counters.get(group, 0) + n
         cutoff = now - self.window_s
         while q and q[0] < cutoff:
             q.popleft()
