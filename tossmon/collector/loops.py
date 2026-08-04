@@ -114,6 +114,9 @@ TRADES_COUNT = 50
 CANDLE_ADJUSTED: dict[str, bool] = {"1m": False, "1d": True}
 
 #: 승격 직후 API 백필 상한 (페이지). 이력은 원칙적으로 DB(백필 결과)에서 읽는다.
+#: tier1 배치 사이 간격 (초). 8콜을 연속으로 쏘면 그 1초에 MARKET_DATA 가 8회를 먹고
+#: 같은 초의 tier3 폴링과 겹쳐 한도 10 을 넘는다. 주기(45s) 안에 펴면 수집량은 그대로다.
+TIER1_BATCH_SPACING_S = 1.0
 MAX_BACKFILL_PAGES = 3
 #: 재시작 이어받기 백필 상한 (페이지). 정전 구간을 메울 때만 이 한도까지 늘린다 —
 #: 이걸로도 재개 지점에 못 닿으면 `_backfill_1m` 이 **반드시 경고**한다 (감사 H-9:
@@ -545,10 +548,25 @@ class CollectorContext:
             keep = {k: v for k, v in hdrs.items()
                     if k.lower().startswith(("x-rate", "retry-after", "x-request",
                                              "date", "ratelimit"))}
+            # 429 **순간의 초당 첨두**를 그룹별로 같이 남긴다. 이것이 "CHART 는 자기
+            # 한도(5) 한참 아래인데 왜 429 인가" 를 가르는 유일한 관측이다:
+            #   own >  limit  -> 그 그룹이 진짜 넘겼다 (리미터 결함)
+            #   own <= limit  -> 그 그룹 잘못이 아니다. 그러면 둘 중 하나다 —
+            #                    (a) 귀속이 틀렸거나, (b) 서버가 그룹 한도를 **공유**한다.
+            #                    family 합계가 최대 한도를 넘으면 (b) 쪽 증거가 된다.
+            peaks = {g: self.budget.peak_1s(g)
+                     for g in (GROUP_MARKET_DATA, GROUP_CHART, GROUP_RANKING)}
+            family = peaks[GROUP_MARKET_DATA] + peaks[GROUP_CHART]
+            own_ok = peaks.get(owner, 0) <= self.budget.limit_of(owner)
             self.notifier.warn(
                 f"HTTP-429-DETAIL group={owner} caller={group} "
                 f"attributed={attributed} status="
-                f"{getattr(self.client, 'last_status', None)} headers={keep or hdrs}")
+                f"{getattr(self.client, 'last_status', None)} "
+                f"peak1s={peaks} own_within_limit={own_ok} md_plus_chart={family} "
+                f"headers={keep or hdrs}")
+            if own_ok:
+                # 자기 한도 안인데 맞았다 — 우리 한도 모델이 틀렸다는 뜻이다.
+                self.bump("http_429_under_own_limit")
             if not attributed:
                 # 귀속 불가를 **명시**한다 — 엉뚱한 티어를 깎는 것보다 낫다.
                 self.bump("http_429_unattributed")
@@ -569,6 +587,9 @@ class CollectorContext:
             tier3_symbols=self.tiers.capacity.get(3) or uni.tier3_max,
             ranking_types=len(RANKING_TYPES))
         self.budget.set_plan(plan)
+        # usage_ratio 가 리미터의 버스트 정책보다 크면 예산이 아니라 리미터가 1초 창을
+        # 깬다 — 기동 시점에 잡는다 (정원을 줄여도 고쳐지지 않는 종류의 오설정).
+        self.budget.check_usage_ratio()
         deficit = self.budget.reserve_deficit()
         if deficit:
             detail = ", ".join(f"{g} -{v:.3f} req/s" for g, v in sorted(deficit.items()))
@@ -759,6 +780,18 @@ class CollectorContext:
             # 정원을 로그에서 뒤지지 않고 바로 본다 (래칫 감시용).
             "tier2_cap": int(self.tiers.capacity.get(2) or 0),
             "tier3_cap": int(self.tiers.capacity.get(3) or 0),
+            # 초당 첨두 — **버스트를 드러내는 유일한 관측치**. 60초 평균만 보던 시절에는
+            # "한도의 1/5 인데 429" 가 설명되지 않았다 (평균이 1초 쏠림을 숨긴다).
+            # 서버는 1초 창으로 재므로 이 값이 한도를 넘는 순간이 진짜 위반이다.
+            "md_peak_1s": int(self.budget.peak_1s(GROUP_MARKET_DATA)),
+            "md_p95_1s": round(self.budget.p95_1s(GROUP_MARKET_DATA), 1),
+            "chart_peak_1s": int(self.budget.peak_1s(GROUP_CHART)),
+            "rank_peak_1s": int(self.budget.peak_1s(GROUP_RANKING)),
+            # 0 이 아니면 리미터가 1초 창을 못 지킨 것이다 (정원 문제가 아니다).
+            "over_limit_1s": int(self.budget.counters.get("over_limit_1s", 0)),
+            # 자기 한도 안인데 맞은 429 — 0 이 아니면 우리 한도 모델이 틀린 것이다
+            # (CHART 0.5/3.5 인데 429 인 미해결 건의 판별 지표).
+            "http_429_under_own_limit": int(self.counters.get("http_429_under_own_limit", 0)),
             "budget_shrinks": int(self.counters.get("budget_shrinks", 0)),
             "budget_restores": int(self.counters.get("budget_restores", 0)),
             "http_429": int(getattr(self.client, "counters", {}).get("http_429", 0)),
@@ -1382,9 +1415,24 @@ async def run_tier1_price_sweep(client: TossClient, store: Store, cfg: Config, *
 
 
 async def tier1_sweep_once(ctx: CollectorContext) -> int:
+    """워치리스트 전체를 배치로 훑는다. **배치 사이를 벌린다** — 이유가 중요하다.
+
+    1500종목 / 배치 200 = 8콜이고 평균으로는 8/45s = 0.178 req/s 라 무시할 만해 보인다.
+    그런데 예전에는 이 8콜이 **연속으로** 나갔다. 서버는 1초 창으로 세므로 그 순간
+    MARKET_DATA 에 8회가 몰리고, 같은 초에 도는 tier3 폴링과 겹치면 한도 10 을 넘는다.
+    **"한도의 1/5 만 쓰는데 429"** 의 정체가 이것이다 — 평균이 아니라 겹침이 문제였다.
+
+    주기 안에 고르게 펴면 수집량은 그대로이면서 첨두만 사라진다 (예산 중립).
+    """
     symbols = ctx.tier1_symbols()
     seen = 0
-    for i in range(0, len(symbols), BATCH_MAX):
+    batches = max(1, math.ceil(len(symbols) / BATCH_MAX) if symbols else 1)
+    period = float(ctx.cfg.require_polling().tier1_sweep_s)
+    # 주기의 절반 안에 배치를 다 펴되, 1초보다 촘촘하게는 몰지 않는다.
+    spacing = min(TIER1_BATCH_SPACING_S, (period * 0.5) / batches) if batches > 1 else 0.0
+    for n, i in enumerate(range(0, len(symbols), BATCH_MAX)):
+        if n > 0 and spacing > 0:
+            await ctx.clock.sleep(spacing)
         seen += await _sweep_chunk(ctx, symbols[i:i + BATCH_MAX])
     ctx.flush_changes()
     stale = ctx.tiers.sweep(ctx.clock.now_ms())
@@ -1904,7 +1952,9 @@ def tier2_orderbook_allowed(ctx: CollectorContext) -> tuple[bool, str]:
     if now < ctx._tier2_book_cooldown_ms:
         return False, "429"
     target = ctx.budget.target(GROUP_MARKET_DATA)
-    if target > 0 and ctx.budget.measured_rate(GROUP_MARKET_DATA) >= \
+    # 평균이 아니라 **초당 첨두**를 본다 — 이 루프는 예산의 마지막 여유를 쓰는 쪽이라
+    # 버스트가 있는 순간에 끼어들면 안 된다. 평균만 보면 그 순간이 안 보인다.
+    if target > 0 and ctx.budget.peak_1s(GROUP_MARKET_DATA) >= \
             target * TIER2_ORDERBOOK_HEADROOM:
         return False, "rate"
     return True, ""

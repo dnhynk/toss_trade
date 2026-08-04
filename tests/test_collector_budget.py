@@ -460,3 +460,163 @@ def test_quote_density_is_what_the_decision_bought():
     # 종목당 호가 주기 / 체결 주기 = 호가 사이에 들어오는 체결 폴 수.
     polls_between_quotes = poll.tier3_orderbook_s / poll.tier3_trades_s
     assert polls_between_quotes == 1.0                        # 16/4 = 4 였다
+
+
+# --------------------------------------------------------------------------- #
+# 1초 고정 창 (2026-08-04) — 서버는 1초 창으로 재는데 우리는 60초 평균으로 쟀다
+#
+# 이 블록의 핵심은 **"평균은 낮은데 1초 버스트가 있는"** 상황이다. 예전 모델은 이걸
+# 못 봤고, 그래서 "한도의 1/5 인데 429" 가 설명되지 않았다.
+# --------------------------------------------------------------------------- #
+def _burst(g, clock, group, per_second, seconds, *, spread_s=0.05):
+    """매 초 시작에 `per_second` 회를 몰아 쏘고 나머지 시간은 쉰다.
+
+    60초 평균은 `per_second` 로 낮게 나오지만, 실제로는 매 초 앞머리에 몰려 있다 —
+    서버의 1초 창에서는 그 순간이 전부다.
+    """
+    orders = []
+    for _ in range(int(seconds)):
+        for _ in range(per_second):
+            g.on_request(group)
+            clock.advance(spread_s / max(per_second, 1))
+        clock.advance(1.0 - spread_s)
+        got = g.should_shrink()          # 실제 루프처럼 계속 평가해야 지속 조건이 선다
+        if got:
+            orders.append(got)
+    return orders
+
+
+def test_a_low_average_can_hide_a_one_second_burst():
+    """★ 필수 회귀 — 평균 7.0 은 안전해 보이지만 1초에 15회가 몰려 있다."""
+    clock = FrozenClock(0)
+    g = guard(clock=clock)
+    # 15회씩 몰아 쏘되 나머지 시간을 쉬어서 60초 평균을 낮게 만든다.
+    for _ in range(30):
+        for _ in range(15):
+            g.on_request(GROUP_MARKET_DATA)
+            clock.advance(0.002)
+        clock.advance(1.97)                       # 초당 15회 -> 2초에 15회 = 평균 7.5
+
+    avg = g.measured_rate(GROUP_MARKET_DATA)
+    peak = g.peak_1s(GROUP_MARKET_DATA)
+    assert avg == pytest.approx(7.5, rel=0.15)                # 평균은 "한도 10 의 75%"
+    assert peak >= 15                                          # 그러나 1초에 15회
+    assert peak > g.limit_of(GROUP_MARKET_DATA)                # 공시 한도 초과다
+    # 옛 모델의 판정 근거(평균)는 천장 6.65 를 넘지만, 진짜 위반은 첨두 쪽이고
+    # 그 차이가 2배다 — 이것이 "1/5 을 쓰는데 429" 의 정체다.
+    assert peak > avg * 1.9
+
+
+def test_an_evenly_spread_stream_is_not_treated_as_a_violation():
+    """반대 방향: 같은 평균이라도 고르게 퍼져 있으면 서버는 불만이 없다."""
+    clock = FrozenClock(0)
+    g = guard(clock=clock)
+    for _ in range(300):                                       # 5 req/s 를 60초 균등
+        g.on_request(GROUP_MARKET_DATA)
+        clock.advance(0.2)
+    assert g.measured_rate(GROUP_MARKET_DATA) == pytest.approx(5.0, rel=0.1)
+    assert g.peak_1s(GROUP_MARKET_DATA) <= 6                   # 첨두도 평균 근처
+    assert not g.over_limit_1s(GROUP_MARKET_DATA)
+
+
+def test_peak_is_measured_sliding_so_a_burst_across_the_boundary_still_counts():
+    """정렬 버킷이면 경계에 걸친 버스트가 반으로 쪼개져 숨는다 — 슬라이딩이라 안 숨는다."""
+    clock = FrozenClock(0)
+    g = guard(clock=clock)
+    clock.advance(0.9)
+    for _ in range(8):                                         # 0.9s ~ 1.1s 에 8회
+        g.on_request(GROUP_CHART)
+        clock.advance(0.025)
+    assert g.peak_1s(GROUP_CHART) == 8                          # 한 창에 8회로 보인다
+    # 정렬 버킷으로 세면 (0초대 4 + 1초대 4) 로 쪼개져 첨두를 놓쳤을 것이다.
+    assert max(g.per_second_counts(GROUP_CHART)) < 8
+
+
+def test_shrink_now_follows_the_one_second_peak_not_the_average():
+    """★ 판정 근거 전환 — 평균이 천장 아래여도 첨두가 넘으면 (지속되면) 깎는다."""
+    clock = FrozenClock(0)
+    g = guard(clock=clock)
+    orders = _burst(g, clock, GROUP_MARKET_DATA, 9, 120)        # 평균 9, 첨두 9
+    assert g.peak_1s(GROUP_MARKET_DATA) >= 9
+    assert orders, "첨두가 천장(6.65)을 넘어 지속됐는데 축소가 없었다"
+    assert any(GROUP_MARKET_DATA in o for o in orders)
+
+
+def test_a_single_burst_does_not_shrink_without_persistence():
+    """버스트 한 번으로 정원을 깎지 않는다 (어제 넣은 지속 조건은 그대로 유지된다)."""
+    clock = FrozenClock(0)
+    g = guard(clock=clock)
+    for _ in range(15):
+        g.on_request(GROUP_MARKET_DATA)
+        clock.advance(0.002)
+    assert g.peak_1s(GROUP_MARKET_DATA) >= 15                   # 첨두는 확실히 넘었고
+    assert g.should_shrink() is None                            # 그래도 즉시 깎지는 않는다
+
+
+def test_open_warmup_still_suppresses_peak_based_shrink():
+    """개장 워밍업도 그대로 유지된다 — 첨두 기준으로 바뀌어도 마찬가지다."""
+    clock = FrozenClock(0)
+    g = guard(clock=clock)
+    g.note_session_change()
+    orders = _burst(g, clock, GROUP_MARKET_DATA, 9, 120)
+    assert g.in_warmup()                                        # 120s < 180s 워밍업
+    assert orders == [], "워밍업 중에는 첨두가 넘어도 깎지 않는다"
+
+
+def test_exceeding_the_declared_limit_alerts_once_per_episode():
+    """한도 초과는 정원이 아니라 리미터 문제다 — 경보하되 에피소드당 1회만."""
+    clock = FrozenClock(0)
+    rec = Rec()
+    g = guard(clock=clock, notifier=rec)
+    for _ in range(14):                                          # 한도 10 을 넘긴다
+        g.on_request(GROUP_MARKET_DATA)
+        clock.advance(0.002)
+    g.should_shrink()
+    g.should_shrink()
+    g.should_shrink()
+    over = [a for a in rec.alerts if "리미터" in a]
+    assert len(over) == 1                                        # 반복 경보 없음
+    assert g.counters["over_limit_1s"] == 1
+    assert "1초에 14회" in over[0]
+
+
+def test_grow_is_blocked_by_a_high_peak_even_when_the_average_is_low():
+    """회복도 첨두를 본다 — 평균만 보면 버스트 중에 정원을 되돌린다."""
+    clock = FrozenClock(0)
+    g = guard(clock=clock)
+    g._last_shrink_s[GROUP_MARKET_DATA] = 0.0                    # 깎인 적이 있다고 표시
+    clock.advance(RECOVER_AFTER_S + 10)
+    for _ in range(6):                                           # 첨두 6 > 7.0 x 0.70
+        g.on_request(GROUP_MARKET_DATA)
+        clock.advance(0.01)
+    assert g.measured_rate(GROUP_MARKET_DATA) < 1.0              # 평균은 거의 0
+    assert g.should_grow() is None                               # 그래도 되돌리지 않는다
+
+
+def test_usage_ratio_above_what_the_limiter_can_honour_is_flagged():
+    """★ 0.769 의 정체 — 토큰버킷 버스트 항이 정하는 상한이다.
+
+    유휴 직후 1초 통과량 = rate x (1 + BURST_FRACTION). 이것이 공시 한도를 넘으면
+    정원을 아무리 줄여도 소용없다 (버스트는 예산이 아니라 리미터가 만든다).
+    """
+    from tossmon.api.limiter import BURST_FRACTION
+
+    rec = Rec()
+    safe = 1.0 / (1.0 + BURST_FRACTION)
+    assert BudgetGuard(LIMITS, 0.70).max_safe_usage_ratio() == pytest.approx(safe)
+    assert safe == pytest.approx(0.769, abs=1e-3)
+
+    ok = BudgetGuard(LIMITS, 0.70, notifier=rec)
+    assert ok.check_usage_ratio() is None
+    assert rec.alerts == []
+
+    bad = BudgetGuard(LIMITS, 0.85, notifier=rec)
+    assert bad.check_usage_ratio() == pytest.approx(0.85 - safe, abs=1e-3)
+    assert rec.alerts and "하드캡" in rec.alerts[0]
+
+    # 실제로 한도를 넘는지 산술로 확인한다 (경보 문구가 아니라 사실을 고정한다).
+    limit = 10.0
+    worst_at_085 = limit * 0.85 * (1 + BURST_FRACTION)
+    assert worst_at_085 > limit                       # 11.05 > 10
+    worst_at_safe = limit * safe * (1 + BURST_FRACTION)
+    assert worst_at_safe == pytest.approx(limit)      # 딱 경계
