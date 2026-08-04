@@ -28,3 +28,12 @@ include = ["tossmon*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    # 변이 게이트 (감사5 H-2). 변이 1건마다 pytest 하위 프로세스를 하나 돌리므로
+    # 기본 스위트에서는 제외한다. 실행법:  pytest -m mutation
+    # 또는 사람이 직접 볼 때:              python -m tools.mutation_gate
+    "mutation: look-ahead mutation gate (slow, runs pytest subprocesses)",
+]
+# 기본 실행에서 변이 게이트를 뺀다. 명령행에서 준 -m 이 이 값을 이기므로
+# `pytest -m mutation` 은 정상 동작한다.
+addopts = "-m 'not mutation'"
