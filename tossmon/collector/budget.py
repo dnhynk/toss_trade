@@ -40,8 +40,29 @@ BATCH_MAX = 200
 #: 이 상수는 그 인자를 주지 않았을 때의 대비값일 뿐이고, 둘의 일치는 테스트가 고정한다.
 RANKING_TYPES = 2
 
-#: 실사용 관측 윈도우 (초).
+#: 실사용 관측 **지평** (초). 이 구간의 초당 분포를 본다 — 이 값 자체는 판정 기준이 아니다.
 WINDOW_S = 60.0
+
+#: **서버가 판정하는 창 (초).** 이 프로젝트의 레이트리밋 모델 전체가 이 값 위에 서 있다.
+#:
+#: 서버는 벽시계 기준 **고정 1초 창**으로 센다 (docs/06 §9-2: MARKET_INFO 한도 3 에서
+#: 같은 1초 안에 4번째 호출이 429). 그런데 예전 모델은 60초 **평균**으로 사용률을 재고
+#: 정원을 깎았다. 둘은 전혀 다른 것을 측정한다:
+#:
+#:     60초에 420회 = 평균 7.0 req/s  -> "한도 10 의 70%, 여유 있음"
+#:     그런데 그 420회가 1초에 15회씩 몰렸다면 -> 서버 기준으로는 **매번 위반**
+#:
+#: 2026-08-04 아침의 "한도의 1/5 인데 429" 가 정확히 이 착시였다. 평균은 버스트를
+#: 숨긴다. 그래서 판정 근거를 평균에서 **초당 첨두**로 옮긴다.
+SERVER_WINDOW_S = 1.0
+
+#: 초당 첨두를 **슬라이딩**으로 잰다 (정렬된 고정 버킷이 아니라).
+#:
+#: 우리 시계와 서버 창의 **위상**을 모르기 때문이다. 정렬 버킷으로 세면 경계에 걸친
+#: 버스트가 두 버킷으로 쪼개져 과소평가되는데, 서버 위상이 다르면 그 둘이 한 창에 들어간다.
+#: 어떤 위상의 고정 창이든 그 안의 호출 수는 **슬라이딩 1초 최대 이하**이므로, 슬라이딩
+#: 최대는 위상과 무관하게 안전한 상계다. 과대평가 쪽으로 틀리는 것이 옳은 방향이다.
+PEAK_SLIDING = True
 #: **지속 사용률 상한 배수** — 축소 판정이 쓰는 천장 (target × HEADROOM).
 HEADROOM = 0.95
 #: 계획이 **반드시 비워둬야 하는 여유** (target 대비). 계획에 없는 호출이 전부 여기서
@@ -161,6 +182,7 @@ class BudgetGuard:
         self._last_grow_s: dict[str, float] = {}
         self._measured_over_since: dict[str, float] = {}
         self._warmup_until_s: float = 0.0
+        self._over_limit_active: dict[str, bool] = {}
         self._forced: dict[str, float] = {}      # 429 로 강제 축소해야 할 비율
 
     # ---- 시간 ----------------------------------------------------------
@@ -178,6 +200,42 @@ class BudgetGuard:
         if group in self.limits:
             return float(self.limits[group])
         return float(SPEC_LIMITS.get(group, DEFAULT_LIMIT))
+
+    def max_safe_usage_ratio(self) -> float:
+        """리미터의 버스트 정책이 **1초 창 안에서 지킬 수 있는** usage_ratio 상한.
+
+        토큰버킷은 유휴 직후 1초에 `capacity + rate` 를 통과시킨다. 지금 정책은
+        `capacity = rate × BURST_FRACTION` 이므로 최악 통과량은 `rate × (1+BURST_FRACTION)`
+        이고, 이것이 공시 한도를 넘지 않아야 하므로:
+
+            limit × usage_ratio × (1 + BURST_FRACTION) <= limit
+            usage_ratio <= 1 / (1 + BURST_FRACTION)
+
+        BURST_FRACTION=0.3 이면 **0.769** 다. usage_ratio 를 그 위로 올리면 예산이
+        아니라 **리미터가** 1초 창을 깬다 — 정원을 아무리 줄여도 유휴 직후 한 번의
+        버스트로 한도를 넘는다. 상한을 올리려면 리미터에 1초 하드캡이 먼저 있어야 한다.
+        """
+        try:
+            from ..api.limiter import BURST_FRACTION
+        except Exception:                      # 리미터 정책을 못 읽으면 보수적으로
+            return 1.0
+        return 1.0 / (1.0 + float(BURST_FRACTION))
+
+    def check_usage_ratio(self) -> float | None:
+        """usage_ratio 가 리미터가 지킬 수 있는 범위를 넘으면 초과분을 돌려준다(경보).
+
+        이 검사가 없으면 "예산은 통과했는데 서버 한도는 깨는" 설정이 조용히 배포된다.
+        """
+        ceiling = self.max_safe_usage_ratio()
+        if self.usage_ratio <= ceiling:
+            return None
+        over = self.usage_ratio - ceiling
+        if self.notifier is not None:
+            self.notifier.alert(
+                f"budget: usage_ratio {self.usage_ratio:.3f} > 리미터가 지킬 수 있는 "
+                f"상한 {ceiling:.3f} — 유휴 직후 1초에 한도를 넘긴다. 예산이 아니라 "
+                "리미터에 1초 하드캡을 먼저 넣어야 이 값을 올릴 수 있다")
+        return over
 
     def target(self, group: str) -> float:
         """이 그룹에 허용된 초당 호출수 (= 공시 한도 × usage_ratio)."""
@@ -220,6 +278,88 @@ class BudgetGuard:
             q.popleft()
         return len(q) / self.window_s
 
+    # ---- 초당 분포 (판정의 근거) ---------------------------------------
+
+    def _live_events(self, group: str) -> list[float]:
+        q = self._events.get(group)
+        if not q:
+            return []
+        cutoff = self._now_s() - self.window_s
+        while q and q[0] < cutoff:
+            q.popleft()
+        return list(q)
+
+    def peak_1s(self, group: str) -> int:
+        """관측 지평 안에서 **어느 1초 구간의 최대 호출 수** (슬라이딩).
+
+        서버의 고정 1초 창이 어떤 위상이든 그 창의 호출 수는 이 값 이하다 — 즉 이것은
+        위상과 무관한 안전한 상계다. **축소 판정이 보는 값이 이것이다.**
+        """
+        ev = self._live_events(group)
+        if not ev:
+            return 0
+        peak = 0
+        left = 0
+        for right in range(len(ev)):
+            while ev[right] - ev[left] >= SERVER_WINDOW_S:
+                left += 1
+            peak = max(peak, right - left + 1)
+        return peak
+
+    def per_second_counts(self, group: str) -> list[int]:
+        """정렬된 1초 버킷별 호출 수 (분포 통계용).
+
+        첨두 판정에는 `peak_1s` 를 쓴다 — 이쪽은 경계에 걸친 버스트를 쪼개므로
+        분위수를 볼 때만 쓴다. 호출이 없던 초도 0 으로 채워 넣는다: 빈 초를 빼면
+        "쉬는 시간"이 분모에서 사라져 p95 가 실제보다 높게 나온다.
+        """
+        ev = self._live_events(group)
+        if not ev:
+            return []
+        buckets: dict[int, int] = {}
+        for t in ev:
+            key = int(t // SERVER_WINDOW_S)
+            buckets[key] = buckets.get(key, 0) + 1
+        lo, hi = min(buckets), max(buckets)
+        return [buckets.get(k, 0) for k in range(lo, hi + 1)]
+
+    def p95_1s(self, group: str) -> float:
+        """초당 호출 수의 95 분위. 평균이 숨기는 쏠림을 드러낸다."""
+        counts = sorted(self.per_second_counts(group))
+        if not counts:
+            return 0.0
+        idx = min(len(counts) - 1, int(math.ceil(0.95 * len(counts)) - 1))
+        return float(counts[max(0, idx)])
+
+    def _note_over_limit(self, group: str, peak: float) -> None:
+        """한도 초과 **에피소드**를 1회만 계상·경보한다.
+
+        `peak_1s` 는 관측 지평(60s) 동안 값이 남으므로, 매 평가마다 세면 버스트 한 번이
+        수십 건으로 부풀어 보인다. 첨두가 한도 아래로 내려갔다가 다시 올라올 때만
+        새 에피소드로 친다.
+        """
+        over = peak > self.limit_of(group)
+        was_over = self._over_limit_active.get(group, False)
+        self._over_limit_active[group] = over
+        if not over or was_over:
+            return
+        self.counters["over_limit_1s"] = self.counters.get("over_limit_1s", 0) + 1
+        if self.notifier is not None:
+            self.notifier.alert(
+                f"budget: {group} 1초에 {int(peak)}회 — 공시 한도 "
+                f"{self.limit_of(group):.0f} 초과. 429 를 안 맞았다면 운이다. "
+                "정원이 아니라 **리미터가 1초 창을 못 지키고 있다** — 티어를 깎아도 "
+                "같은 버스트는 또 난다")
+
+    def over_limit_1s(self, group: str) -> bool:
+        """**서버 한도 자체를 넘긴 1초가 있었나.**
+
+        리미터가 제 일을 하면 이것은 절대 True 가 되면 안 된다 — True 면 429 를 안
+        맞은 것이 운이었다는 뜻이고, 원인은 예산이 아니라 리미터에 있다. 그래서 이
+        신호는 축소가 아니라 **경보**로 이어진다 (정원을 깎아도 고쳐지지 않는다).
+        """
+        return self.peak_1s(group) > self.limit_of(group)
+
     # ---- 계획 ----------------------------------------------------------
 
     def set_plan(self, plan: TierPlan | None) -> None:
@@ -229,8 +369,13 @@ class BudgetGuard:
         return self.plan.rates().get(group, 0.0) if self.plan is not None else 0.0
 
     def predicted_rate(self, group: str) -> float:
-        """예측 사용률 = max(계획, 실측). 재시도·백필은 실측에만, 티어 확대는 계획에만 나타난다."""
-        return max(self.planned_rate(group), self.measured_rate(group))
+        """예측 사용률 = max(계획, **초당 첨두**).
+
+        실측 쪽을 60초 평균이 아니라 첨두로 잡는다 — 서버가 1초 창으로 재기 때문이다.
+        재시도·백필처럼 계획에 없는 호출은 대개 몰려서 나가므로 평균에는 거의 안 보이고
+        첨두에만 보인다.
+        """
+        return max(self.planned_rate(group), float(self.peak_1s(group)))
 
     def shrink_ceiling(self, group: str) -> float:
         """축소 판정 천장 — 계획·실측 **둘 다** 이 값에 대고 잰다 (기준 일치)."""
@@ -281,6 +426,10 @@ class BudgetGuard:
 
         대상 티어는 `SHRINK_TIER` (MARKET_DATA→tier3, MARKET_DATA_CHART→tier2).
         랭킹은 과거 조회가 불가능한 유일한 데이터라 **축소 대상이 아니다** — 넘치면 경보만 낸다.
+
+        판정 근거는 **초당 첨두(`peak_1s`)이지 60초 평균이 아니다.** 서버가 1초 창으로
+        재기 때문이다 — 평균이 천장 아래라도 특정 1초에 몰렸으면 그것이 진짜 위반이고,
+        반대로 평균이 높아도 고르게 퍼져 있으면 서버는 아무 불만이 없다.
         """
         if self.plan is None:
             return None
@@ -289,19 +438,25 @@ class BudgetGuard:
         for group in (GROUP_MARKET_DATA, GROUP_CHART, GROUP_RANKING):
             target = self.target(group)
             planned = self.planned_rate(group)
-            measured = self.measured_rate(group)
-            predicted = max(planned, measured)
+            peak = float(self.peak_1s(group))         # ← 판정의 근거 (평균 아님)
+            predicted = max(planned, peak)
             forced = self._forced.get(group, 0.0)
-            ceiling = self.shrink_ceiling(group)      # 계획·실측 공통 천장
+            ceiling = self.shrink_ceiling(group)      # 계획·첨두 공통 천장
             over_plan = planned > ceiling             # 설정 오류 — 즉시 반응
-            over_measured = measured > ceiling
-            # 측정 기반은 **지속성**을 요구하고 **워밍업 중에는 아예 보지 않는다**.
-            if over_measured:
+            over_peak = peak > ceiling                # 실제 1초 창 초과
+            # 첨두 기반은 **지속성**을 요구하고 **워밍업 중에는 아예 보지 않는다**.
+            if over_peak:
                 self._measured_over_since.setdefault(group, now)
                 sustained = now - self._measured_over_since[group] >= MEASURED_SUSTAIN_S
             else:
                 self._measured_over_since.pop(group, None)
                 sustained = False
+            # 서버 한도 자체를 넘긴 초가 있으면 **정원 문제가 아니다** — 리미터가 1초 창을
+            # 못 지키고 있다는 뜻이라 경보로 올린다 (축소해도 같은 버스트는 또 난다).
+            # **에피소드 단위로** 센다: 첨두는 관측 지평(60s) 동안 남아 있으므로 매 평가마다
+            # 세면 한 번의 버스트가 수십 건으로 부풀고, 그런 가짜 반복이 경보 무시 습관을
+            # 만든다 (랭킹 forced 경보에서 이미 겪은 실패다).
+            self._note_over_limit(group, peak)
             over = over_plan or (sustained and not self.in_warmup())
             if not over and not forced:
                 continue
@@ -364,8 +519,8 @@ class BudgetGuard:
             target = self.target(group)
             if target <= 0:
                 continue
-            if self.measured_rate(group) > target * RECOVER_USAGE_MAX:
-                continue                                  # 지금도 빡빡하다
+            if self.peak_1s(group) > target * RECOVER_USAGE_MAX:
+                continue                                  # 초당 첨두가 아직 빡빡하다
             if self.planned_rate(group) > target:
                 continue                                  # 계획 자체가 초과 상태
             have = self.plan.symbols_of(group)
@@ -397,6 +552,8 @@ class BudgetGuard:
             group: {
                 "limit": self.limit_of(group),
                 "target": self.target(group),
+                "peak_1s": float(self.peak_1s(group)),
+                "p95_1s": self.p95_1s(group),
                 "planned": self.planned_rate(group),
                 "measured": self.measured_rate(group),
                 "requests": float(self.counters.get(group, 0)),
@@ -406,7 +563,10 @@ class BudgetGuard:
         }
 
     def describe(self) -> str:
-        parts = [f"{g}={s['measured']:.2f}/{s['target']:.2f}" for g, s in self.snapshot().items()]
+        # 첨두를 먼저 보여준다 — 평균만 보면 버스트가 안 보인다(2026-08-04 착시).
+        parts = [f"{g}=peak{int(s['peak_1s'])}/p95:{s['p95_1s']:.0f}"
+                 f"/avg{s['measured']:.2f}/tgt{s['target']:.2f}"
+                 for g, s in self.snapshot().items()]
         return "budget " + " ".join(parts)
 
 

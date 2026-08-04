@@ -1392,8 +1392,9 @@ def test_tier2_orderbook_yields_first_under_budget_pressure(tmp_path):
     try:
         _tier(ctx, "AAA", 2)
         _tier(ctx, "CCC", 3)
-        # 측정 사용률을 목표의 90% 위로 (target 7.0 -> 6.5)
-        ctx.budget.measured_rate = lambda group: 6.5
+        # 초당 첨두를 목표의 90% 위로 (target 7.0 -> 6.5). 평균이 아니라 첨두를 보는
+        # 이유는 이 루프가 예산의 마지막 여유를 쓰기 때문이다 — 버스트 순간을 피해야 한다.
+        ctx.budget.peak_1s = lambda group: 6.5
 
         asyncio.run(loops.run_tier2_orderbook(ctx.client, ctx.store, ctx.cfg, ctx=ctx,
                                               cycles=3))
@@ -1714,3 +1715,45 @@ async def test_run_all_marks_the_boundary_before_collecting(tmp_path):
     await loops.run_all(ctx, cycles=1)
     assert any("COLLECTION-CONFIG" in m for m in seen)
     ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 1초 창 준수 — tier1 배치 버스트 평탄화 (2026-08-04)
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_tier1_batches_are_spread_so_they_do_not_burst_in_one_second(tmp_path):
+    """★ 평균 0.178 req/s 뒤에 숨어 있던 8콜 버스트를 편다.
+
+    1500종목/배치200 = 8콜. 연속으로 쏘면 그 1초에 MARKET_DATA 가 8회를 먹고, 같은 초의
+    tier3 폴링과 겹치면 한도 10 을 넘는다 — 평균만 보면 절대 안 보이는 사고다.
+    """
+    client = StubClient({f"S{i}": Price(symbol=f"S{i}", ts_ms=DAY0, last_u=1_000_000)
+                         for i in range(600)})
+    ctx, _day = build_ctx(tmp_path, client, symbols=tuple(f"S{i}" for i in range(600)))
+    try:
+        start = ctx.clock.now_ms()
+        await loops.tier1_sweep_once(ctx)
+        # 600종목 = 3배치. 배치 사이가 벌어졌으므로 시간이 흘러야 한다.
+        elapsed_s = (ctx.clock.now_ms() - start) / 1000.0
+        assert client.counters["requests"] == 3
+        assert elapsed_s >= 2.0, "배치가 여전히 연속으로 나간다 (버스트 그대로)"
+        # 예산이 보는 초당 첨두가 배치 수보다 작아야 한다.
+        assert ctx.budget.peak_1s(loops.GROUP_MARKET_DATA) < 3
+    finally:
+        ctx.store.close()
+
+
+@pytest.mark.asyncio
+async def test_spreading_does_not_overrun_the_sweep_period(tmp_path):
+    """펴는 것이 주기를 잡아먹으면 안 된다 — 주기 절반 안에 끝나야 한다."""
+    client = StubClient({f"S{i}": Price(symbol=f"S{i}", ts_ms=DAY0, last_u=1_000_000)
+                         for i in range(2000)})
+    ctx, _day = build_ctx(tmp_path, client, symbols=tuple(f"S{i}" for i in range(2000)),
+                          polling={"tier1_sweep_s": 45})
+    try:
+        start = ctx.clock.now_ms()
+        await loops.tier1_sweep_once(ctx)
+        elapsed_s = (ctx.clock.now_ms() - start) / 1000.0
+        assert elapsed_s <= 45 * 0.5 + 1e-6      # 주기 절반 이내
+    finally:
+        ctx.store.close()
