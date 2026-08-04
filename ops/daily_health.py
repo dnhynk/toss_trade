@@ -124,12 +124,24 @@ def build_summary(cfg, date_str: str | None) -> str:
                          if p.stat().st_mtime >= day_ago)
         notes = sorted(p.name for p in cfg.log_dir.glob("NOTE_*.txt")
                        if p.stat().st_mtime >= day_ago)
+        tradeoffs = sorted(p.name for p in cfg.log_dir.glob("TRADEOFF_*.txt")
+                           if p.stat().st_mtime >= day_ago)
+        # 네 등급의 뜻을 아침 독자가 외우고 있다고 가정하지 않는다 — 리포트가 스스로
+        # 설명한다. 계약 본문은 ops/watchdog.ps1 머리말과 docs/11 §21.
         lines.append("")
-        lines.append(f"ALERT files (24h, 진짜 문제): {len(alerts)}")
+        lines.append("파일 등급 4종: ALERT_=고장(고쳐라) / PLANNED_=사람이 일부러(무시) / "
+                     "NOTE_=설계대로(참고) / TRADEOFF_=시스템이 포기함(읽고 결정)")
+        lines.append(f"ALERT files (24h, 진짜 문제 — 고쳐라): {len(alerts)}")
         lines += [f"  {a}" for a in alerts]
         if not alerts:
             lines.append("  (없음 — 무인 구간에 사고 없음)")
-        lines.append(f"PLANNED files (24h, 계획된 정비): {len(planned)}")
+        lines.append(f"TRADEOFF files (24h, 시스템이 무언가를 포기함 — 고장 아님, "
+                     f"당신이 판단할 것): {len(tradeoffs)}")
+        lines += [f"  {t}" for t in tradeoffs]
+        if tradeoffs:
+            lines.append("  ↑ 각 파일에 무엇을/무엇을 위해/얼마나 오래/얼마나 가 적혀 있다. "
+                         "오래 지속돼도 ALERT_ 로 올라가지 않는다(설계) — 크기를 보고 판단할 것.")
+        lines.append(f"PLANNED files (24h, 계획된 정비 — 무시): {len(planned)}")
         lines += [f"  {p}" for p in planned]
         lines.append(f"NOTE files (24h, 설계대로 동작한 기록 — 사고 아님): {len(notes)}")
         lines += [f"  {n}" for n in notes]
