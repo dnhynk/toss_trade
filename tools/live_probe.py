@@ -14,14 +14,22 @@
 둘 다 있을 때만 일어나고, 그 둘 없이 실서버를 대상으로 하면 실행 자체를 거부한다.
 base URL 은 기본값이 없다 (계약 C-9) — `--base-url` 또는 `TOSS_BASE_URL` 필수.
 
-`force429` 는 **의도적으로 라이브 429 를 유발**하므로 `--probe all` 에 포함되지 않는다.
-`--probe force429` 로 명시해야만 실행된다. 같은 자격증명으로 컬렉터가 돌고 있으면
+`force429`·`force429_client` 은 **의도적으로 라이브 429 를 유발**하므로 `--probe all` 에
+포함되지 않는다. 이름을 명시해야만 실행된다. 같은 자격증명으로 컬렉터가 돌고 있으면
 서버 측 같은 버킷의 페널티를 공유하므로, 컬렉터 가동 중에는 실행하지 말 것.
+
+**컬렉터 가동 중에 프로브를 돌려야 하면** `--reuse-token-state <컬렉터의 token_state.json>`
+를 쓴다. 이 API 는 client 당 유효 토큰이 1개라 재발급이 곧 가동 중 토큰 살해다 —
+이 모드는 발급도, 리스 획득도, 무효화도 하지 않고 **읽어서만** 쓴다.
+레이트리밋 계약 프로브(`ratelimit_contract`·`ratelimit_boundary`·`ratelimit_groups`·
+`limiter_holds`)는 429 를 내지 않도록 설계돼 있어 이 조합으로 안전하게 돌릴 수 있다.
 
 결과는 stdout(JSON) + `--out` 경로에 쓰고, 응답 스냅샷은 tests/fixtures/live/live_*.json 으로
 마스킹해 저장한다.
 
-호출 예산: `--probe all` 기준 약 70회 (그룹별 한도의 70% 이내로 자동 조절됨).
+호출 예산: `--probe all` 기준 약 130회 (그룹별 한도의 70% 이내로 자동 조절됨).
+그중 약 60회가 레이트리밋 계약 프로브 4종이고, 이들은 컬렉터가 쓰지 않는
+MARKET_INFO(3/s)·STOCK(5/s) 에서만 돈다.
 """
 from __future__ import annotations
 
@@ -47,7 +55,7 @@ from tossmon.api.errors import (                             # noqa: E402
     TransientHTTP,
 )
 from tossmon.api.client import GuardedTransport              # noqa: E402
-from tossmon.api.endpoints import check_allowed              # noqa: E402
+from tossmon.api.endpoints import SPEC_LIMITS, check_allowed  # noqa: E402
 from tossmon.api.limiter import GroupRateLimiter             # noqa: E402
 from tossmon.api.models import iso_to_ms, ms_to_iso, ms_to_iso_et, ms_to_iso_kst  # noqa: E402
 from tossmon.api.tokens import TokenManager, lease_dir       # noqa: E402
@@ -99,6 +107,19 @@ def default_state_path() -> Path:
 
 def now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _use_utf8_stdio() -> None:
+    """Windows 콘솔 기본 cp949 대응. **출력이 있는 모든 경로에서 먼저 부른다.**
+
+    `--list` 는 이걸 안 거치고 바로 출력해서, 프로브 docstring 첫 줄에 em dash 하나만
+    들어가도 UnicodeEncodeError 로 죽었다. 출력 인코딩은 무엇을 찍느냐와 무관해야 한다.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
 
 
 def _masked_value(v):
@@ -156,6 +177,47 @@ def save_fixture(name: str, endpoint: str, case: str, status: int, body,
 def snippet(obj, limit: int = 700) -> str:
     """docs/06 근거용 스니펫 (마스킹 후 잘라내기)."""
     return json.dumps(mask(obj), ensure_ascii=False)[:limit]
+
+
+class ReusedTokenManager:
+    """**이미 발급된 토큰을 읽어서만 쓰는** TokenManager 대체물 (`--reuse-token-state`).
+
+    컬렉터가 가동 중일 때 프로브를 돌려야 하는 상황을 위한 것이다. 이 API 는 client 당
+    유효 토큰이 1개뿐이라 **새로 발급하면 컬렉터의 토큰이 즉시 죽는다.** 그래서:
+
+    - 리스(파일락)를 **잡지 않는다** — 보유자는 컬렉터다.
+    - 발급을 **하지 않는다** (`_issue` 자체가 없다).
+    - `invalidate()` 는 **아무 것도 하지 않는다** — 특히 상태파일을 지우지 않는다.
+      지우면 컬렉터가 다음 갱신 때 재발급을 하게 되어 결국 남의 토큰을 죽인 것과 같다.
+
+    만료가 임박했으면 실행을 거부한다 — 프로브 도중 만료되면 401 이 나고, 그 401 은
+    컬렉터의 정상 갱신과 구분되지 않는 소음이 된다.
+    """
+
+    MIN_REMAINING_MS = 120_000
+
+    def __init__(self, state_path: Path):
+        self.state_path = Path(state_path).expanduser().resolve()
+        self.limiter = None
+        raw = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self._token = str(raw["token"])
+        self.expires_at_ms = int(raw["expires_at_ms"])
+        left = self.expires_at_ms - now_ms()
+        if left < self.MIN_REMAINING_MS:
+            raise RuntimeError(
+                f"reused token expires in {left / 1000:.0f}s (< "
+                f"{self.MIN_REMAINING_MS / 1000:.0f}s) — 프로브 중 만료된다. "
+                "재발급은 가동 중 컬렉터의 토큰을 죽이므로 하지 않는다.")
+
+    async def get(self) -> str:
+        return self._token
+
+    async def invalidate(self, token: str | None = None) -> None:
+        print("[probe] 401 received but this run reuses another process' token — "
+              "not invalidating (상태파일을 건드리지 않는다).", file=sys.stderr)
+
+    def release(self) -> None:
+        pass
 
 
 def trunc_result(body: dict, n: int = 3) -> dict:
@@ -662,6 +724,407 @@ async def probe_ratelimit_headers(c: TossClient) -> dict:
     }
 
 
+async def probe_ratelimit_contract(c: TossClient) -> dict:
+    """레이트리밋 **계약** 실측: 창 모양(고정/슬라이딩)·한도 적용 범위(그룹/엔드포인트).
+
+    W4 의 예산 모델이 이 답 위에 세워지므로 추측이 아니라 실측이 필요하다.
+    **한도를 넘기지 않는다** — 429 를 유발하지 않도록 설계했고, 429 를 받으면 즉시 중단한다.
+    (`force429` 와 달리 컬렉터 가동 중에도 안전하다. 다만 컬렉터가 쓰지 않는 그룹
+    — MARKET_INFO(3/s)·STOCK(5/s) — 만 쓴다.)
+
+    측정 3종:
+
+    1. **같은 그룹 / 다른 엔드포인트** — `/exchange-rate` 직후 `/market-calendar/US` 를
+       같은 1초 안에 때린다. `remaining` 이 이어서 줄면 카운터가 **그룹 공유**,
+       각자 limit-1 이면 **엔드포인트별**이다. W4 의 예산 분할 방식이 여기서 갈린다.
+    2. **다른 그룹** — 이어서 `/stocks` 를 때린다. 자기 limit-1 로 나오면 그룹별 독립.
+    3. **창 모양 (슬라이딩 배제)** — A(t=0), B(t=+0.08s), C(t=+1.00s) 세 발.
+       고정 1초 창이면 C 는 **새 창의 첫 발**이라 `remaining = limit-1`.
+       슬라이딩 1초 창이면 C 의 직전 1초 안에 B 가 아직 살아 있어 `remaining = limit-2`.
+       세 발이므로 한도(3/s)를 넘지 않는다.
+    4. **고정창 vs 토큰버킷** — 3번만으로는 이 둘이 구분되지 않는다(용량=rate 인 토큰버킷도
+       1.0초 뒤엔 가득 차 있다). 한도의 83%(2.5/s)로 8초간 균등 샘플링해서
+       `remaining` 이 **서버 date 초 안에서 몇 번째 호출인가**의 함수인지 본다.
+       고정창이면 매 초 첫 발이 `limit-1`, 둘째 발이 `limit-2` 인 톱니가 **초 경계에 정렬**된다.
+       토큰버킷이면 소비(2.5/s) < 충전(3/s) 이라 버킷이 늘 차 있어 정렬이 나타나지 않는다.
+       (2번이 "그룹별 독립" 으로 나왔을 때만 실행한다 — 계정 전체 한도라면 가동 중
+       컬렉터와 버킷을 나눠 쓰는 셈이라 이 부하를 주지 않는다.)
+    """
+    import httpx
+
+    token = await c.tokens.get()
+    check_allowed("GET", "/api/v1/exchange-rate")
+    check_allowed("GET", "/api/v1/market-calendar/US")
+    check_allowed("GET", "/api/v1/stocks")
+
+    fx = ("/api/v1/exchange-rate", {"baseCurrency": "USD", "quoteCurrency": "KRW"})
+    cal = ("/api/v1/market-calendar/US", None)
+    stk = ("/api/v1/stocks", {"symbols": LIQUID})
+
+    aborted: list[str] = []
+    samples: list[dict] = []
+
+    async def hit(raw, tag: str, ep: tuple) -> dict:
+        path, params = ep
+        t0 = time.monotonic()
+        resp = await raw.get(path, params=params,
+                             headers={"Authorization": f"Bearer {token}"})
+        h = {k.lower(): v for k, v in resp.headers.items()}
+        rec = {
+            "tag": tag,
+            "path": path,
+            "status": resp.status_code,
+            "limit": h.get("x-ratelimit-limit"),
+            "remaining": h.get("x-ratelimit-remaining"),
+            "reset": h.get("x-ratelimit-reset"),
+            "retry_after": h.get("retry-after"),
+            "server_date": h.get("date"),
+            "sent_mono": round(t0, 4),
+            "rtt_ms": round((time.monotonic() - t0) * 1000, 1),
+        }
+        samples.append(rec)
+        if resp.status_code == 429:
+            # 유발할 의도가 없었다. 즉시 멈춘다 — 가동 중 컬렉터와 버킷을 공유할 수 있다.
+            aborted.append(f"{tag}: 429 (의도치 않음)")
+        return rec
+
+    async with httpx.AsyncClient(base_url=c.base_url, timeout=10.0,
+                                 transport=GuardedTransport()) as raw:
+        # 1. 같은 그룹 / 다른 엔드포인트 — 2회 반복(순서를 바꿔서)
+        same_group = []
+        for first, second in ((fx, cal), (cal, fx)):
+            if aborted:
+                break
+            await asyncio.sleep(2.5)          # 창을 비운다
+            a = await hit(raw, "same_group.a", first)
+            await asyncio.sleep(0.08)
+            b = await hit(raw, "same_group.b", second)
+            same_group.append({"a": a, "b": b,
+                               "same_server_second": a["server_date"] == b["server_date"]})
+
+        # 2. 다른 그룹 (MARKET_INFO → STOCK)
+        cross_group = None
+        if not aborted:
+            await asyncio.sleep(2.5)
+            a = await hit(raw, "cross_group.market_info", fx)
+            await asyncio.sleep(0.08)
+            b = await hit(raw, "cross_group.stock", stk)
+            cross_group = {"a": a, "b": b,
+                           "same_server_second": a["server_date"] == b["server_date"]}
+
+        # 3. 창 모양 — A, B(+0.08s), C(+1.00s)
+        window_rounds = []
+        for i in range(3):
+            if aborted:
+                break
+            await asyncio.sleep(3.0)          # 이전 라운드가 완전히 빠져나가게
+            a = await hit(raw, f"window{i}.a", fx)
+            await asyncio.sleep(0.08)
+            b = await hit(raw, f"window{i}.b", fx)
+            # C 를 A 로부터 정확히 1.00초 뒤에 (전송 시각 기준)
+            gap = 1.00 - (time.monotonic() - a["sent_mono"])
+            if gap > 0:
+                await asyncio.sleep(gap)
+            cc = await hit(raw, f"window{i}.c", fx)
+            window_rounds.append({
+                "a": a, "b": b, "c": cc,
+                "c_minus_a_s": round(cc["sent_mono"] - a["sent_mono"], 3),
+                "ab_same_server_second": a["server_date"] == b["server_date"],
+            })
+
+    def _int(v):
+        try:
+            return int(str(v).strip())
+        except (TypeError, ValueError):
+            return None
+
+    # --- 판정 -----------------------------------------------------------
+    cross = "미확인"
+    if cross_group and _int(cross_group["b"]["remaining"]) is not None:
+        b = cross_group["b"]
+        if _int(b["remaining"]) == _int(b["limit"]) - 1:
+            cross = "그룹별 독립"
+        else:
+            cross = f"공유 의심 (STOCK 첫 호출인데 remaining={b['remaining']}/{b['limit']})"
+
+    # 4. 고정창 vs 토큰버킷 — 한도의 83% 로 균등 샘플링. 그룹별 독립일 때만 (컬렉터 보호).
+    sawtooth: list[dict] = []
+    if not aborted and cross == "그룹별 독립":
+        async with httpx.AsyncClient(base_url=c.base_url, timeout=10.0,
+                                     transport=GuardedTransport()) as raw:
+            await asyncio.sleep(2.5)
+            step = 0.40                       # 2.5 req/s — MARKET_INFO 한도 3/s 의 83%
+            t_next = time.monotonic()
+            for i in range(20):
+                if aborted:
+                    break
+                gap = t_next - time.monotonic()
+                if gap > 0:
+                    await asyncio.sleep(gap)
+                sawtooth.append(await hit(raw, f"saw{i}", fx))
+                t_next += step
+
+    align = "미확인"
+    align_note = ""
+    by_second: dict[str, list[dict]] = {}
+    for s in sawtooth:
+        if s["status"] == 200 and s["server_date"]:
+            by_second.setdefault(s["server_date"], []).append(s)
+    graded = [(len(v), v) for v in by_second.values()]
+    # 초 경계 정렬 판정: 각 서버 초의 k 번째 호출이 remaining == limit-k 인가.
+    hits = miss = 0
+    for _n, group in graded:
+        for k, s in enumerate(group, start=1):
+            lim = _int(s["limit"])
+            rem = _int(s["remaining"])
+            if lim is None or rem is None:
+                continue
+            if rem == lim - k:
+                hits += 1
+            else:
+                miss += 1
+    if hits + miss >= 8:
+        ratio = hits / (hits + miss)
+        multi = sum(1 for n, _g in graded if n >= 2)
+        if ratio >= 0.9 and multi >= 2:
+            align = "고정 1초 창 (서버 초 경계에 정렬)"
+        elif ratio <= 0.5:
+            align = "고정창 아님 (토큰버킷/연속 충전으로 보임)"
+        align_note = (f"샘플 {hits + miss}개 중 '초 안 k번째 → remaining=limit-k' 적중 "
+                      f"{hits} ({ratio:.0%}), 2발 이상 들어간 초 {multi}개")
+
+    scope = "미확인"
+    scope_note = ""
+    ok_pairs = [p for p in same_group
+                if p["same_server_second"]
+                and _int(p["a"]["remaining"]) is not None
+                and _int(p["b"]["remaining"]) is not None]
+    if ok_pairs:
+        shared = all(_int(p["b"]["remaining"]) == _int(p["a"]["remaining"]) - 1
+                     for p in ok_pairs)
+        per_ep = all(_int(p["b"]["remaining"]) == _int(p["b"]["limit"]) - 1
+                     and _int(p["a"]["remaining"]) == _int(p["a"]["limit"]) - 1
+                     for p in ok_pairs)
+        if shared and not per_ep:
+            scope, scope_note = "그룹 공유", "같은 그룹의 다른 엔드포인트가 같은 카운터를 깎는다"
+        elif per_ep and not shared:
+            scope, scope_note = "엔드포인트별", "엔드포인트마다 카운터가 따로다"
+        elif shared and per_ep:
+            scope = "미확인"
+            scope_note = ("limit 이 2 라 두 해석이 같은 숫자를 낸다 — 판별 불가"
+                          if ok_pairs and _int(ok_pairs[0]["a"]["limit"]) == 2
+                          else "두 해석이 모두 성립 — 한도값이 작아 판별 불가")
+
+    window = "미확인"
+    window_note = ""
+    usable = [r for r in window_rounds
+              if r["ab_same_server_second"] and _int(r["c"]["remaining"]) is not None
+              and _int(r["c"]["limit"]) is not None]
+    if usable:
+        fixed = sum(1 for r in usable
+                    if _int(r["c"]["remaining"]) == _int(r["c"]["limit"]) - 1)
+        sliding = sum(1 for r in usable
+                      if _int(r["c"]["remaining"]) <= _int(r["c"]["limit"]) - 2)
+        if fixed and not sliding:
+            window = "고정 1초 창 (벽시계 정렬)"
+        elif sliding and not fixed:
+            window = "슬라이딩 1초 창"
+        window_note = (f"라운드 {len(usable)}개 중 고정-신호 {fixed} / 슬라이딩-신호 {sliding}. "
+                       "C 는 A 로부터 1.00초 뒤 — 고정창이면 새 창의 첫 발이라 remaining=limit-1.")
+
+    return {
+        "verdict": "확인됨" if (scope != "미확인" or window != "미확인") else "미확인",
+        "window_shape": window,
+        "window_note": window_note,
+        "window_alignment": align,
+        "window_alignment_note": align_note,
+        "limit_scope_within_group": scope,
+        "limit_scope_note": scope_note,
+        "limit_scope_across_groups": cross,
+        "aborted": aborted,
+        "same_group_rounds": same_group,
+        "cross_group_round": cross_group,
+        "window_rounds": window_rounds,
+        "sawtooth_by_second": {k: [(s["tag"], s["limit"], s["remaining"]) for s in v]
+                               for k, v in by_second.items()},
+        "all_samples": samples,
+    }
+
+
+async def probe_limiter_holds(c: TossClient) -> dict:
+    """리미터를 **전속력으로** 돌려 실제 서버 초당 카운트가 한도를 넘지 않는지 확인한다.
+
+    §9-5 가 보인 경계 2배 통과는 "우리도 그렇게 될 수 있다" 는 뜻이므로, 고친 리미터가
+    실제 서버 앞에서 그것을 막는지 라이브로 확인한다. 리미터를 우회하지 않는다 —
+    오히려 리미터가 허용하는 최대 속도로 밀어붙인다.
+
+    판정: 어떤 서버 date 초에도 호출 수가 공시 한도를 넘지 않고, 429 가 0건이어야 한다.
+    MARKET_INFO(3/s)만 쓴다.
+    """
+    per_second: dict[str, int] = {}
+    calls = 0
+    t_end = time.monotonic() + 8.0
+    while time.monotonic() < t_end:
+        try:
+            await c._request("GET", "/api/v1/exchange-rate",
+                             params={"baseCurrency": "USD", "quoteCurrency": "KRW"})
+        except RateLimited as exc:
+            return {"verdict": "미확인", "note": "429 발생 — 리미터가 계약을 못 지켰다",
+                    "evidence": exc.evidence, "per_second": per_second}
+        calls += 1
+        date = c.last_headers.get("date") or "?"
+        per_second[date] = per_second.get(date, 0) + 1
+    worst = max(per_second.values()) if per_second else 0
+    limit = int(c.limiter.limits.get("MARKET_INFO", 3))
+    return {
+        "verdict": "확인됨" if (worst <= limit and c.counters["http_429"] == 0) else "미확인",
+        "calls": calls,
+        "max_calls_in_one_server_second": worst,
+        "declared_limit": limit,
+        "http_429": c.counters["http_429"],
+        "note": (f"{calls}콜 동안 한 서버 초 최대 {worst}회 (한도 {limit}), 429 {c.counters['http_429']}건. "
+                 "리미터가 고정 1초 창을 지켰다." if worst <= limit
+                 else f"한 서버 초에 {worst}회 — 한도 {limit} 초과"),
+        "per_second": per_second,
+    }
+
+
+async def probe_ratelimit_groups(c: TossClient) -> dict:
+    """그룹마다 **한 번씩** 호출해 `x-ratelimit-limit` 을 읽는다 (SPEC_LIMITS 대조표).
+
+    `SPEC_LIMITS` 의 값들은 문서(docs/01 §2 + overview.md)에서 온 공시값이라 실측 대조가
+    필요하다. 그룹당 1콜이라 가동 중 수집기에 영향이 없다. AUTH 는 토큰 발급 경로라
+    제외한다(재발급 금지). ASSET 은 allowlist 에 엔드포인트가 없다.
+    """
+    targets = [
+        ("MARKET_DATA", "/api/v1/prices", {"symbols": LIQUID}),
+        ("MARKET_DATA_CHART", "/api/v1/candles",
+         {"symbol": LIQUID, "interval": "1d", "count": 1}),
+        ("RANKING", "/api/v1/rankings",
+         {"type": "MARKET_TRADING_VOLUME", "marketCountry": "US",
+          "duration": "realtime", "count": 1}),
+        ("STOCK", "/api/v1/stocks", {"symbols": LIQUID}),
+        ("MARKET_INFO", "/api/v1/exchange-rate",
+         {"baseCurrency": "USD", "quoteCurrency": "KRW"}),
+        ("ACCOUNT", "/api/v1/accounts", None),
+        ("ORDER_INFO", "/api/v1/commissions", None),
+    ]
+    out: dict[str, dict] = {}
+    for group, path, params in targets:
+        try:
+            await c._request("GET", path, params=params)
+        except TossApiError as exc:
+            out[group] = {"error": f"{type(exc).__name__}: {exc}"}
+            continue
+        h = {k.lower(): v for k, v in c.last_headers.items()}
+        observed = h.get("x-ratelimit-limit")
+        spec = SPEC_LIMITS.get(group)
+        out[group] = {
+            "path": path,
+            "observed_limit": observed,
+            "spec_limit": spec,
+            "matches": (observed is not None and spec is not None
+                        and float(observed) == float(spec)),
+            "reset": h.get("x-ratelimit-reset"),
+        }
+        await asyncio.sleep(0.5)
+    confirmed = [g for g, v in out.items() if v.get("matches")]
+    mismatched = [g for g, v in out.items()
+                  if v.get("observed_limit") is not None and not v.get("matches")]
+    return {
+        "verdict": "확인됨" if confirmed else "미확인",
+        "confirmed_groups": confirmed,
+        "mismatched_groups": mismatched,
+        "note": (f"공시값과 일치 {len(confirmed)}개, 불일치 {len(mismatched)}개. "
+                 "AUTH 는 토큰 발급 경로라 제외(재발급 금지), ASSET 은 allowlist 에 없음."),
+        "per_group": out,
+    }
+
+
+async def probe_ratelimit_boundary(c: TossClient) -> dict:
+    """고정 1초 창의 **경계 2배 통과**를 실측한다 (429 를 내지 않는 양성 대조).
+
+    `ratelimit_contract` 가 창을 "서버 벽시계 초에 정렬된 고정 1초" 로 확정하면, 그 창의
+    고전적 결함이 따라온다: 창 N 의 끝에 limit 발, 창 N+1 의 시작에 limit 발을 쏘면
+    **아주 짧은 구간에 2×limit 이 통과**한다. 초당 평균으로는 한도를 지켰는데도
+    서버 입장에서 순간 부하는 2배다 — 반대로 우리 쪽 버킷이 연속 시간 기준이면
+    같은 이유로 **의도치 않게** 이 상태에 빠질 수 있다.
+
+    그래서 경계를 찾아 양쪽에 limit 발씩 쏜다. 전부 200 이면 2배 통과가 실측된 것이고,
+    429 가 나면 즉시 멈춘다(경계 추정이 빗나간 것이므로 결론을 내지 않는다).
+    MARKET_INFO(3/s) 만 쓴다 — 컬렉터는 이 그룹을 캘린더 갱신에만, 그것도 TTL 로 드물게 쓴다.
+    """
+    import httpx
+
+    token = await c.tokens.get()
+    check_allowed("GET", "/api/v1/exchange-rate")
+    path, params = "/api/v1/exchange-rate", {"baseCurrency": "USD", "quoteCurrency": "KRW"}
+    limit_guess = 3
+    samples: list[dict] = []
+
+    async def hit(raw, tag: str) -> dict:
+        t0 = time.monotonic()
+        resp = await raw.get(path, params=params,
+                             headers={"Authorization": f"Bearer {token}"})
+        h = {k.lower(): v for k, v in resp.headers.items()}
+        rec = {"tag": tag, "status": resp.status_code,
+               "limit": h.get("x-ratelimit-limit"), "remaining": h.get("x-ratelimit-remaining"),
+               "retry_after": h.get("retry-after"), "server_date": h.get("date"),
+               "sent_mono": round(t0, 4), "rtt_ms": round((time.monotonic() - t0) * 1000, 1)}
+        samples.append(rec)
+        return rec
+
+    async with httpx.AsyncClient(base_url=c.base_url, timeout=10.0,
+                                 transport=GuardedTransport()) as raw:
+        # 1) 보정: 0.4초 간격(2.5/s)으로 쏘며 서버 date 초가 넘어가는 지점을 잡는다.
+        boundary = None
+        prev = None
+        for i in range(6):
+            rec = await hit(raw, f"cal{i}")
+            if rec["status"] != 200:
+                return {"verdict": "미확인", "note": f"보정 중 status={rec['status']}",
+                        "samples": samples}
+            if prev is not None and rec["server_date"] != prev["server_date"]:
+                # 경계는 (prev 수신, 이번 수신] 사이. 이번 호출의 수신 시각을 경계로 본다.
+                boundary = rec["sent_mono"] + rec["rtt_ms"] / 2000.0
+            prev = rec
+            await asyncio.sleep(0.4)
+        if boundary is None:
+            return {"verdict": "미확인", "note": "서버 초 경계를 잡지 못했다", "samples": samples}
+
+        # 2) 경계 양쪽에 limit 발씩. 여유 0.20초를 둬서 보정 오차를 흡수한다.
+        target = boundary
+        while target - time.monotonic() < 2.0:
+            target += 1.0
+        plan = [(-0.30 + 0.05 * i, f"pre{i}") for i in range(limit_guess)]
+        plan += [(0.10 + 0.05 * i, f"post{i}") for i in range(limit_guess)]
+        for offset, tag in plan:
+            gap = (target + offset) - time.monotonic()
+            if gap > 0:
+                await asyncio.sleep(gap)
+            rec = await hit(raw, tag)
+            if rec["status"] == 429:
+                return {"verdict": "미확인",
+                        "note": f"{tag} 에서 429 — 경계 추정이 빗나갔다. 즉시 중단.",
+                        "samples": samples}
+
+    burst = [s for s in samples if s["tag"].startswith(("pre", "post"))]
+    seconds = {s["server_date"] for s in burst}
+    span_s = round(burst[-1]["sent_mono"] - burst[0]["sent_mono"], 3)
+    ok = len(burst) == 2 * limit_guess and all(s["status"] == 200 for s in burst) \
+        and len(seconds) == 2
+    return {
+        "verdict": "확인됨" if ok else "미확인",
+        "calls": len(burst),
+        "span_s": span_s,
+        "distinct_server_seconds": len(seconds),
+        "note": (f"공시 {limit_guess} req/s 인데 {len(burst)}회가 {span_s}초 안에 전부 200 — "
+                 f"고정창 경계에서 2×limit 이 통과한다 (서버 초 {len(seconds)}개에 걸침)."
+                 if ok else "경계 양쪽 배치가 깔끔히 나뉘지 않았다 — 결론 보류"),
+        "samples": samples,
+    }
+
+
 async def probe_force_429(c: TossClient, burst: int = 12) -> dict:
     """429 재현 + 그때의 헤더값. MARKET_INFO(3 req/s) 를 limiter 우회로 버스트.
 
@@ -708,6 +1171,80 @@ async def probe_force_429(c: TossClient, burst: int = 12) -> dict:
             c.limiter.on_429("MARKET_INFO", float(got["retry_after_raw"]))
         except ValueError:
             c.limiter.on_429("MARKET_INFO", 2.0)
+    await asyncio.sleep(2.0)
+    return got
+
+
+async def probe_force_429_client(c: TossClient) -> dict:
+    """429 를 **TossClient 경로로** 받아 `client.last_429` 계측을 실증한다.
+
+    ⚠️ **의도적으로 라이브 429 를 유발한다.** `--probe force429_client` 로 명시해야만 실행된다.
+    `force429` 와 달리 raw httpx 가 아니라 `_request` 관문을 지나므로, 우리가 실제 운영에서
+    쓰는 계측 경로(`_record_429`)가 진짜 429 를 제대로 찍는지 확인한다.
+
+    MARKET_INFO(3/s)만 쓴다 — 실측상 한도는 **그룹별 독립**이라(docs/06 §9-4) 다른 그룹의
+    가동 중 수집기에 영향이 없고, 컬렉터가 이 그룹을 쓰는 것은 TTL 기반 캘린더 갱신뿐이다.
+
+    리미터는 이 프로브 동안만 **통째로 비활성**시킨다. 상한만 올리는 방식으로는 429 를 낼 수
+    없다 — 첫 응답의 `X-RateLimit-Limit: 3` 을 보고 리미터가 즉시 자기보정해서 도로 3/s 로
+    내려가기 때문이다(그 자체가 자기보정이 동작한다는 증거다). 여기서 확인하려는 것은
+    리미터가 아니라 **429 를 받았을 때의 기록**이므로 전송 경로만 남기고 제어를 걷어낸다.
+    """
+    class _NoLimiter:
+        limits: dict = {}
+
+        async def acquire(self, group: str) -> None:
+            return None
+
+        def update_from_headers(self, group, headers, status=None) -> None:
+            return None
+
+        def on_429(self, group, retry_after_s) -> None:
+            return None
+
+    saved_limiter = c.limiter
+    c.limiter = _NoLimiter()                            # type: ignore[assignment]
+    got: dict = {"attempts": 0, "429_at": None}
+    try:
+        for i in range(8):
+            got["attempts"] = i + 1
+            try:
+                await c._request("GET", "/api/v1/exchange-rate",
+                                 params={"baseCurrency": "USD", "quoteCurrency": "KRW"})
+            except RateLimited as exc:
+                got["429_at"] = i + 1
+                got["evidence_on_exception"] = exc.evidence
+                break
+    finally:
+        c.limiter = saved_limiter
+
+    rec = c.last_429
+    got["client_last_429"] = rec
+    got["counters"] = {k: v for k, v in c.counters.items() if "429" in k}
+    if rec is None:
+        got["verdict"] = "미확인"
+        got["note"] = f"{got['attempts']}회로 429 재현 실패"
+    else:
+        got["verdict"] = "확인됨"
+        # 429_at 이 None 이면 client 내부 재시도가 429 를 전부 흡수했다는 뜻이다
+        # (호출자는 예외를 못 본다 — 그래서 카운터·기록이 유일한 흔적이다).
+        where = (f"{got['429_at']}번째 호출에서 429 가 호출자까지 전파"
+                 if got["429_at"] else
+                 f"{got['attempts']}회 중 429 를 client 내부 재시도가 전부 흡수")
+        got["note"] = (
+            f"{where}. 기록된 status={rec['status']} "
+            f"retry_after_present={rec['retry_after_present']} "
+            f"error_code={rec['error_code']} "
+            f"그 서버 초에 우리가 보낸 요청 수={rec['own_requests_in_that_server_second']}")
+        # 픽스처로 남길 때는 기록 안의 헤더도 마스킹한다 — `mask()` 는 본문 필드만 보고
+        # 헤더 이름은 모르기 때문에, 중첩된 x-request-id 가 그대로 새어나간다.
+        safe = dict(rec)
+        safe["headers"] = mask_headers(rec["headers"])
+        save_fixture("live_429_client_record.json", "GET /api/v1/exchange-rate",
+                     "rate_limited_via_client", 429, {"record": safe},
+                     rec["headers"],
+                     "TossClient._record_429 이 찍은 진짜 429 기록 (헤더는 그 429 응답의 것)")
+    # 페널티를 반영해 두고 잠깐 쉰다 — 뒤따르는 프로브가 곧바로 다시 때리지 않도록.
     await asyncio.sleep(2.0)
     return got
 
@@ -821,14 +1358,19 @@ PROBES = {
     "fx": probe_fx,
     "commissions": probe_commissions,
     "ratelimit": probe_ratelimit_headers,
+    "ratelimit_contract": probe_ratelimit_contract,
+    "ratelimit_groups": probe_ratelimit_groups,
+    "limiter_holds": probe_limiter_holds,
+    "ratelimit_boundary": probe_ratelimit_boundary,
     "unknown_symbol": probe_empty_symbol,
     "force429": probe_force_429,
+    "force429_client": probe_force_429_client,
 }
 
 # `--probe all` 에서 제외되는 프로브 — 명시적으로 이름을 적어야만 실행된다 (감사 B-5).
 # force429 는 라이브 429 를 **의도적으로** 유발하고, 같은 자격증명을 쓰는 컬렉터가 돌고 있으면
 # 서버 측 같은 버킷의 페널티를 공유한다. 기본 실행에 섞여 있을 물건이 아니다.
-OPT_IN_ONLY = frozenset({"force429"})
+OPT_IN_ONLY = frozenset({"force429", "force429_client"})
 ALL_PROBES = [n for n in PROBES if n not in OPT_IN_ONLY]
 
 
@@ -849,7 +1391,13 @@ async def run(args) -> int:
     _IS_LIVE_TARGET[0] = LIVE_HOST_MARKER in args.base_url
 
     os.environ["TOSS_BASE_URL"] = args.base_url
-    tokens = TokenManager(Path(args.keys), Path(args.state), live=args.live)
+    if args.reuse_token_state:
+        # 가동 중 컬렉터의 토큰을 **읽어서만** 쓴다 — 발급도 무효화도 하지 않는다.
+        print(f"[probe] reusing existing token from {args.reuse_token_state} "
+              "(발급·리스 획득 안 함)", file=sys.stderr)
+        tokens = ReusedTokenManager(Path(args.reuse_token_state))
+    else:
+        tokens = TokenManager(Path(args.keys), Path(args.state), live=args.live)
     limiter = GroupRateLimiter(LIMITS, usage_ratio=args.usage_ratio)
     client = TossClient(args.base_url, tokens, limiter, timeout_s=args.timeout_s)
 
@@ -884,11 +1432,7 @@ async def run(args) -> int:
         tokens.release()
 
     payload = json.dumps(results, ensure_ascii=False, indent=2)
-    for stream in (sys.stdout, sys.stderr):   # Windows 콘솔 기본 cp949 대응
-        try:
-            stream.reconfigure(encoding="utf-8")
-        except (AttributeError, ValueError):
-            pass
+    _use_utf8_stdio()
     if args.out:
         Path(args.out).write_text(payload, encoding="utf-8")
         print(f"[probe] wrote {args.out}", file=sys.stderr)
@@ -906,6 +1450,10 @@ def main(argv: list[str] | None = None) -> int:
     # 리스 자체는 이제 자격증명 유도 경로에 잡히지만, 상태파일도 절대경로로 고정한다.
     ap.add_argument("--state", default=str(default_state_path()),
                     help="토큰 상태파일 (절대경로 권장)")
+    # 컬렉터 가동 중 프로브용. 이 API 는 client 당 토큰이 1개라 재발급이 곧 남의 토큰 살해다.
+    ap.add_argument("--reuse-token-state", default=None,
+                    help="이미 발급된 토큰을 읽어서만 쓴다 (가동 중 컬렉터의 "
+                         "token_state.json 경로). 발급·리스 획득·무효화를 하지 않는다.")
     # 기본값 없음 — 계약 C-9. TOSS_BASE_URL 이 없으면 실행을 거부한다 (감사 M-7).
     ap.add_argument("--base-url", default=os.environ.get("TOSS_BASE_URL"))
     ap.add_argument("--out", default=None, help="결과 JSON 저장 경로")
@@ -925,6 +1473,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.fast:
         POLL.update(quote_polls=3, quote_gap_s=1.0, rank_polls=2, rank_gap_s=1.0)
 
+    _use_utf8_stdio()
     if args.list:
         for n, fn in PROBES.items():
             opt = "  [--probe 로 명시해야 실행]" if n in OPT_IN_ONLY else ""
@@ -942,7 +1491,19 @@ def main(argv: list[str] | None = None) -> int:
     # 라이브 발급은 --live 와 TOSS_LIVE=1 이 **둘 다** 있을 때만. 기본은 안전한 쪽이다.
     args.live = bool(args.live and env_live)
 
-    if targets_live_host and not args.live:
+    # 토큰 재사용 모드는 **발급 권한이 아니라 실서버 접근 권한**이다. 여전히 명시적
+    # 의사표시(TOSS_LIVE=1)를 요구하되, TokenManager 자체를 만들지 않으므로 발급은 불가능하다.
+    if args.reuse_token_state:
+        if args.live:
+            print("refusing to run: --reuse-token-state 와 --live 는 함께 쓸 수 없습니다 "
+                  "(재사용 모드는 발급을 하지 않는 것이 요점입니다).", file=sys.stderr)
+            return 3
+        if not env_live:
+            print("refusing to run: --reuse-token-state 는 TOSS_LIVE=1 이 필요합니다.",
+                  file=sys.stderr)
+            return 3
+
+    if targets_live_host and not (args.live or args.reuse_token_state):
         print("refusing to run: 실서버를 대상으로 하면서 라이브 모드가 아닙니다.\n"
               "라이브 실측은 --live 플래그와 TOSS_LIVE=1 이 모두 필요하고, 라이브 리스 보유\n"
               "워커만 실행할 수 있습니다 (계약 C-11 §2·§3).", file=sys.stderr)
@@ -951,7 +1512,7 @@ def main(argv: list[str] | None = None) -> int:
         # mock 을 상대로 실발급 경로를 태우는 것은 드라이런에서 정상 — 경고만 남긴다.
         print(f"[probe] note: live=True 이지만 대상이 실서버가 아닙니다 ({args.base_url}) "
               "— 드라이런으로 간주합니다.", file=sys.stderr)
-    if not args.live:
+    if not args.live and not args.reuse_token_state:
         print(f"[probe] mock 모드 (live=False, 대상 {args.base_url}). "
               "실토큰 발급을 하지 않습니다.", file=sys.stderr)
     return asyncio.run(run(args))
