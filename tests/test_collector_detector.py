@@ -691,3 +691,71 @@ def test_fill_to_capacity_leaves_slots_empty_when_only_noise_qualifies():
     sm.on_new_data("N", 0.30, 0)             # tier3 유지선(0.42) 미만 = 노이즈
     sm.drain_changes()
     assert sm.fill_to_capacity(3, HYST_MS + 1) == []
+
+
+# --------------------------------------------------------------------------- #
+# 랭킹 타입 — 수집 목록이 바뀌면 쏠림도 피처가 조용히 0 이 된다 (2026-08-04)
+# --------------------------------------------------------------------------- #
+def test_detector_passes_the_volume_ranking_types_it_actually_collects():
+    """★ 호출부가 랭킹 타입을 명시해 넘기는지 고정한다.
+
+    안 넘기면 features.py 기본값(금액 2종)이 쓰이고, 수집은 거래량 2종만 하므로
+    두 프레임이 비어 **예외 없이** 0 이 된다. 에러가 없어서 아무도 모르는 종류의 사고다.
+    """
+    assert detector_module.RANKING_TOSS_TYPE == "TOSS_SECURITIES_TRADING_VOLUME"
+    assert detector_module.RANKING_MARKET_TYPE == "MARKET_TRADING_VOLUME"
+
+    seen: dict = {}
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return {name: 0.0 for name in feature_names()}
+
+    det = EventDetector(EventParams(), notifier=None)
+    df, truth = synth.make_scenario("coil_pop", seed=1)
+    original = detector_module.extract_precursor_features
+    detector_module.extract_precursor_features = spy
+    try:
+        det.evaluate("AAA", df, rankings=truth["rankings"])
+    finally:
+        detector_module.extract_precursor_features = original
+
+    assert seen.get("toss_type") == "TOSS_SECURITIES_TRADING_VOLUME"
+    assert seen.get("market_type") == "MARKET_TRADING_VOLUME"
+
+
+def test_detector_ranking_types_match_what_the_collector_polls():
+    """detector 는 순환 참조 때문에 loops 를 import 하지 않는다 — 어긋남은 여기서 잡는다."""
+    from tossmon.collector.loops import RANKING_TYPES
+
+    assert set(RANKING_TYPES) == {detector_module.RANKING_TOSS_TYPE,
+                                  detector_module.RANKING_MARKET_TYPE}
+
+
+def test_toss_concentration_survives_on_volume_rankings():
+    """★ kwarg 전달이 아니라 **피처가 실제로 살아있는지**를 본다.
+
+    가중치 0.18(toss_share 0.10 + toss_share_slope_30 0.04 + toss_in_ranking 0.04)이
+    걸려 있다. tier3 임계 0.60 은 이 항이 살아 있을 때 잡은 값이다.
+    """
+    df, truth = synth.make_scenario("coil_pop", seed=1, symbol="AAA")
+    rk = truth["rankings"].copy()
+    # synth 는 아직 금액 2종만 만든다(W3 소유, 미수정) — 수집 목록 이름으로 맞춘다.
+    rk["ranking_type"] = rk["ranking_type"].replace({
+        "MARKET_TRADING_AMOUNT": "MARKET_TRADING_VOLUME",
+        "TOSS_SECURITIES_TRADING_AMOUNT": "TOSS_SECURITIES_TRADING_VOLUME"})
+
+    det = EventDetector(EventParams(), notifier=None)
+    got = det.evaluate("AAA", df, rankings=rk)
+    assert got is not None
+    feats = got.feats
+
+    assert feats["toss_in_ranking"] == 1.0                  # 목록에서 심볼을 찾았다
+    assert feats["toss_share"] > 0.0                        # 비율이 계산됐다
+    assert not math.isnan(feats["toss_rank_best"])
+
+    # 옛 기본값(금액 2종)으로 부르면 같은 데이터에서 전부 0 이 된다 — 대조군.
+    dead = extract_precursor_features(
+        df, rk, int(df["ts_ms"].to_numpy()[-1]), include_t0=True, symbol="AAA")
+    assert dead["toss_in_ranking"] == 0.0
+    assert dead["toss_share"] == 0.0 or math.isnan(dead["toss_share"])
