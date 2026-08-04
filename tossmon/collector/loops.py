@@ -522,8 +522,9 @@ class CollectorContext:
         시도 수를 관측할 수 없는 클라이언트(테스트 더블)는 논리 호출 수로 폴백한다.
         """
         attempts = self._unaccounted_attempts()
-        for _ in range(max(max(1, calls), attempts)):
-            self.budget.on_request(group)
+        # 한 시각에 몰아 계상하면 초당 첨두가 가짜로 치솟는다 — 재시도는 백오프로
+        # 떨어져 나갔으므로 직전 계상 이후 구간에 펴서 센다 (총량은 보존).
+        self.budget.on_requests(group, max(max(1, calls), attempts))
         self.bump(f"req_{group}", max(1, calls))
         self.clock.observe_headers(getattr(self.client, "last_headers", None))
         self.sync_rate_limits(group)
@@ -535,8 +536,7 @@ class CollectorContext:
         호출도 실제로 예산을 태웠고, 그 429 야말로 예산 사고의 신호이기 때문이다.
         고수위 비교이므로 여러 번 불려도 중복 계상되지 않는다.
         """
-        for _ in range(self._unaccounted_attempts()):
-            self.budget.on_request(group)
+        self.budget.on_requests(group, self._unaccounted_attempts())
         seen429 = int(getattr(self.client, "counters", {}).get("http_429", 0))
         if seen429 > self._http429:
             self._http429 = seen429

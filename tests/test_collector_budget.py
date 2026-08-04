@@ -593,30 +593,75 @@ def test_grow_is_blocked_by_a_high_peak_even_when_the_average_is_low():
     assert g.should_grow() is None                               # 그래도 되돌리지 않는다
 
 
-def test_usage_ratio_above_what_the_limiter_can_honour_is_flagged():
-    """★ 0.769 의 정체 — 토큰버킷 버스트 항이 정하는 상한이다.
+def test_usage_ratio_085_is_safe_ONLY_because_the_hardcap_exists():
+    """★ 0.85 의 안전성은 **하드캡에 의존한다** — 그 의존성을 테스트가 드러낸다.
 
-    유휴 직후 1초 통과량 = rate x (1 + BURST_FRACTION). 이것이 공시 한도를 넘으면
-    정원을 아무리 줄여도 소용없다 (버스트는 예산이 아니라 리미터가 만든다).
+    하드캡이 있으면: 상한 = window_cap / WINDOW_HORIZON_S = 1/1.15 = 0.870 이고
+    최악의 초는 캡(=공시 한도)을 못 넘는다.
+    하드캡이 없으면: 상한 = 1/(1+BURST_FRACTION) = 0.769 이고 0.85 는 최악의 초에
+    10 x 0.85 x 1.3 = 11.05 로 한도 10 을 깬다.
+
+    두 번째 절반이 이 테스트의 요점이다 — 하드캡이 사라지면 여기서 실패해야 한다.
     """
-    from tossmon.api.limiter import BURST_FRACTION
+    from tossmon.api import limiter as lim
 
-    rec = Rec()
-    safe = 1.0 / (1.0 + BURST_FRACTION)
-    assert BudgetGuard(LIMITS, 0.70).max_safe_usage_ratio() == pytest.approx(safe)
-    assert safe == pytest.approx(0.769, abs=1e-3)
+    LIMIT = 10.0
 
-    ok = BudgetGuard(LIMITS, 0.70, notifier=rec)
-    assert ok.check_usage_ratio() is None
-    assert rec.alerts == []
+    # --- (1) 하드캡이 있는 지금 -------------------------------------------
+    g = BudgetGuard(LIMITS, 0.85, notifier=Rec())
+    assert g.has_window_hardcap(), "하드캡이 없다 — 0.85 는 안전하지 않다"
+    assert g.max_safe_usage_ratio() == pytest.approx(1.0 / lim.WINDOW_HORIZON_S)
+    assert g.max_safe_usage_ratio() == pytest.approx(0.870, abs=1e-3)
+    assert 0.85 <= g.max_safe_usage_ratio()
+    assert g.check_usage_ratio() is None                  # 경보 없이 통과
+    # 최악의 초가 공시 한도를 넘지 않는다 (하드캡이 창을 지킨다).
+    assert g.worst_case_1s(GROUP_MARKET_DATA) <= LIMIT
 
-    bad = BudgetGuard(LIMITS, 0.85, notifier=rec)
-    assert bad.check_usage_ratio() == pytest.approx(0.85 - safe, abs=1e-3)
-    assert rec.alerts and "하드캡" in rec.alerts[0]
+    # --- (2) 하드캡이 없다면 (의존성 노출) --------------------------------
+    horizon = lim.WINDOW_HORIZON_S
+    try:
+        del lim.WINDOW_HORIZON_S                          # 하드캡 제거를 모사
+        rec = Rec()
+        g2 = BudgetGuard(LIMITS, 0.85, notifier=rec)
+        assert not g2.has_window_hardcap()
+        assert g2.max_safe_usage_ratio() == pytest.approx(
+            1.0 / (1.0 + lim.BURST_FRACTION))
+        assert g2.max_safe_usage_ratio() == pytest.approx(0.769, abs=1e-3)
+        # 같은 0.85 가 이제는 한도를 깬다 — 11.05 > 10
+        worst = g2.worst_case_1s(GROUP_MARKET_DATA)
+        assert worst == pytest.approx(11.05, abs=1e-2)
+        assert worst > LIMIT
+        assert g2.check_usage_ratio() == pytest.approx(0.85 - 0.769, abs=1e-3)
+        assert rec.alerts and "하드캡" in rec.alerts[0]
+    finally:
+        lim.WINDOW_HORIZON_S = horizon
 
-    # 실제로 한도를 넘는지 산술로 확인한다 (경보 문구가 아니라 사실을 고정한다).
-    limit = 10.0
-    worst_at_085 = limit * 0.85 * (1 + BURST_FRACTION)
-    assert worst_at_085 > limit                       # 11.05 > 10
-    worst_at_safe = limit * safe * (1 + BURST_FRACTION)
-    assert worst_at_safe == pytest.approx(limit)      # 딱 경계
+    # 원상복구 확인 — 이후 테스트가 오염되지 않아야 한다.
+    assert BudgetGuard(LIMITS, 0.85).check_usage_ratio() is None
+
+
+def test_retry_attempts_are_spread_not_stacked_on_one_instant():
+    """★ 2026-08-04 13:10:06 허위 경보 재발 방지.
+
+    재시도 13건을 한 시각에 몰아 계상해 "1초에 13회, 리미터가 창을 못 지킨다" 경보가
+    났는데 같은 구간 http_429=0 이었다 — 서버는 그런 초를 본 적이 없다.
+    """
+    clock = FrozenClock(0)
+    g = guard(clock=clock)
+    g.on_request(GROUP_MARKET_DATA)          # 기준점
+    clock.advance(5.0)                        # 5초 동안 13번 시도했다
+    g.on_requests(GROUP_MARKET_DATA, 13)
+
+    assert g.counters[GROUP_MARKET_DATA] == 14           # 총량은 보존된다
+    peak = g.peak_1s(GROUP_MARKET_DATA)
+    assert peak <= 4, f"13건이 한 초에 뭉쳐 있다 (peak={peak})"
+    assert not g.over_limit_1s(GROUP_MARKET_DATA)        # 허위 경보가 안 난다
+
+    # 진짜로 1초 안에 몰린 경우는 여전히 잡아야 한다 (반대 방향).
+    clock2 = FrozenClock(0)
+    g2 = guard(clock=clock2)
+    for _ in range(13):
+        g2.on_request(GROUP_MARKET_DATA)
+        clock2.advance(0.01)
+    assert g2.peak_1s(GROUP_MARKET_DATA) == 13
+    assert g2.over_limit_1s(GROUP_MARKET_DATA)

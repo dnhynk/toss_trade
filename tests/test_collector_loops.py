@@ -1392,9 +1392,10 @@ def test_tier2_orderbook_yields_first_under_budget_pressure(tmp_path):
     try:
         _tier(ctx, "AAA", 2)
         _tier(ctx, "CCC", 3)
-        # 초당 첨두를 목표의 90% 위로 (target 7.0 -> 6.5). 평균이 아니라 첨두를 보는
-        # 이유는 이 루프가 예산의 마지막 여유를 쓰기 때문이다 — 버스트 순간을 피해야 한다.
-        ctx.budget.peak_1s = lambda group: 6.5
+        # 초당 첨두를 목표의 90% 위로. 값을 박아넣지 않고 target 에서 역산한다 —
+        # usage_ratio 가 바뀌면 target 도 바뀌므로(0.7 -> 0.85) 상수는 곧 낡는다.
+        over = ctx.budget.target(loops.GROUP_MARKET_DATA) * loops.TIER2_ORDERBOOK_HEADROOM
+        ctx.budget.peak_1s = lambda group: over + 0.1
 
         asyncio.run(loops.run_tier2_orderbook(ctx.client, ctx.store, ctx.cfg, ctx=ctx,
                                               cycles=3))
