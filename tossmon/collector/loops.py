@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -108,6 +109,12 @@ CURVE_TTL_MS = 3600_000
 CURVE_NONE_TTL_MS = 5 * MIN_MS
 #: `/stocks` 예산 그룹 (계약 C-3 스펙의 STOCK 그룹).
 GROUP_STOCK = "STOCK"
+
+#: 세션 전환 후 베이스라인 재계산을 이 시간에 걸쳐 **분산**한다 (초, 심볼별 결정적 오프셋).
+#: 예전에는 전환 즉시 baselines 를 통째로 비워서, 다음 라운드로빈 한 바퀴(110초) 안에
+#: tier2 정원만큼의 일봉 호출이 한꺼번에 나갔다 — 세션 시작 직후 429 의 자작 원인이다
+#: (2026-08-04: 09:00 전환 42초 안에 429 3연발). 무효화는 유지하되 시각만 흩는다.
+BASELINE_REFRESH_SPREAD_S = 900
 
 #: 테이프 포화(50건 상한 + 구간 결손) 로 인정하는 유효기간 — 이 안에 다시 포화하지 않으면
 #: 평상 주기로 돌아간다.
@@ -353,6 +360,11 @@ class CollectorContext:
     #: tier2 호가 양보 판정용 — 관측한 429 고수위와 쿨다운 종료 시각.
     _tier2_book_429_seen: int = 0
     _tier2_book_cooldown_ms: int = 0
+    #: 지금 세션에서 허용된 정원 상한 (회복의 천장). reconfigure_tiers 가 갱신한다.
+    session_caps: dict[int, int] = field(default_factory=dict)
+    #: 심볼별 베이스라인 계산 시각 + 세션 전환 에포크 (분산 재계산용).
+    baseline_ms: dict[str, int] = field(default_factory=dict)
+    baseline_epoch_ms: int = 0
     #: 티어 전이 구간 요약용 고수위 (개별 줄은 DEBUG, 사람은 이 델타를 본다).
     _last_promotions: int = 0
     _last_demotions: int = 0
@@ -474,6 +486,16 @@ class CollectorContext:
         seen429 = int(getattr(self.client, "counters", {}).get("http_429", 0))
         if seen429 > self._http429:
             self._http429 = seen429
+            # 429 **원문 헤더**를 남긴다 (2026-08-04 지시): 지금까지 카운트만 있어서
+            # "한도의 1/5 을 쓰는데 왜 429 인가" 를 판별할 수 없었다. Retry-After 나
+            # X-RateLimit-* 가 오면 우리 한도 모델(그룹별 초당)이 틀렸다는 증거가 된다.
+            hdrs = dict(getattr(self.client, "last_headers", {}) or {})
+            keep = {k: v for k, v in hdrs.items()
+                    if k.lower().startswith(("x-rate", "retry-after", "x-request",
+                                             "date", "ratelimit"))}
+            self.notifier.warn(
+                f"HTTP-429-DETAIL group={group} status="
+                f"{getattr(self.client, 'last_status', None)} headers={keep or hdrs}")
             self.budget.on_429(group)
 
     def refresh_plan(self) -> None:
@@ -526,6 +548,39 @@ class CollectorContext:
         if not force:
             self.refresh_plan()
         return orders
+
+    def restore_budget(self) -> dict[str, int] | None:
+        """429 없이 조용하면 깎였던 정원을 단계적으로 되돌린다 (래칫 해제).
+
+        천장은 지금 세션의 정원(`session_caps`)이다 — 세션 배율을 무시하고 config 최대까지
+        올리면 얇은 세션에서 빈 폴링에 예산을 태운다.
+        """
+        grows = self.budget.should_grow()
+        if not grows:
+            return None
+        uni = self.cfg.require_universe()
+        ceil2 = self.session_caps.get(2, uni.tier2_max)
+        ceil3 = self.session_caps.get(3, uni.tier3_max)
+        caps: dict[str, int | None] = {"tier2_max": None, "tier3_max": None}
+        for group, add in grows.items():
+            if group == GROUP_MARKET_DATA:
+                have = self.tiers.capacity.get(3) or uni.tier3_max
+                if have < ceil3:
+                    caps["tier3_max"] = min(ceil3, have + add)
+            elif group == GROUP_CHART:
+                have = self.tiers.capacity.get(2) or uni.tier2_max
+                if have < ceil2:
+                    caps["tier2_max"] = min(ceil2, have + add)
+        if caps["tier2_max"] is None and caps["tier3_max"] is None:
+            return None
+        self.tiers.set_capacity(ts_ms=self.clock.now_ms(), reason="budget_restore",
+                                **caps)
+        self.notifier.info(
+            f"budget restore {grows} → caps={{tier2:{self.tiers.capacity[2]}, "
+            f"tier3:{self.tiers.capacity[3]}}} (ceiling {ceil2}/{ceil3})")
+        self.bump("budget_restores")
+        self.refresh_plan()
+        return caps
 
     # ---- 이벤트 알림 등급 -------------------------------------------------
 
@@ -608,6 +663,12 @@ class CollectorContext:
             "universe_rejected": int(self.counters.get("universe_rejected", 0)),
             "tier2": len(self.tiers.at_least(2)),
             "tier3": len(self.tiers.members(3)),
+            # 정원을 로그에서 뒤지지 않고 바로 본다 (래칫 감시용).
+            "tier2_cap": int(self.tiers.capacity.get(2) or 0),
+            "tier3_cap": int(self.tiers.capacity.get(3) or 0),
+            "budget_shrinks": int(self.counters.get("budget_shrinks", 0)),
+            "budget_restores": int(self.counters.get("budget_restores", 0)),
+            "http_429": int(getattr(self.client, "counters", {}).get("http_429", 0)),
             "events": int(self.counters.get("events", 0)),
             "promotions": int(self.counters.get("promotions", 0)),
             "tape_gaps": int(self.counters.get("tape_gaps", 0)),
@@ -1000,6 +1061,7 @@ async def _loop(ctx: CollectorContext, name: str, period_s: float, body,
             continue
         await _guarded(ctx, name, body(), group)
         ctx.apply_budget()
+        ctx.restore_budget()
         ctx.save_state()
         done += 1
         if ctx.running() and (cycles is None or done < cycles):
@@ -1361,6 +1423,22 @@ def _curve_for(ctx: CollectorContext, symbol: str, df: pd.DataFrame, now_ms: int
     return curve
 
 
+def _baseline_spread_offset_ms(symbol: str) -> int:
+    """심볼별 결정적 분산 오프셋 — 같은 심볼은 항상 같은 위치라 재시작에도 안정적이다."""
+    digest = hashlib.sha1(symbol.encode("utf-8")).hexdigest()[:8]
+    # 1초 이상으로 잡아 **전환 시각에 동시에 터지는 심볼이 없게** 한다.
+    return (int(digest, 16) % BASELINE_REFRESH_SPREAD_S + 1) * 1000
+
+
+def _baseline_due(ctx: CollectorContext, symbol: str, now_ms: int) -> bool:
+    """지금 이 심볼의 일봉 베이스라인을 (재)계산해야 하는가."""
+    if ctx.baselines.get(symbol) is None:
+        return True                                   # 아예 없으면 즉시 필요하다
+    if ctx.baseline_ms.get(symbol, 0) > ctx.baseline_epoch_ms:
+        return False                                  # 이번 에포크 **이후**에 갱신됐다
+    return now_ms >= ctx.baseline_epoch_ms + _baseline_spread_offset_ms(symbol)
+
+
 async def _ensure_history(ctx: CollectorContext, symbol: str) -> None:
     """승격 직후 1회: DB(백필 결과) → API 백필로 재개 지점까지 연결 → 일봉 베이스라인.
 
@@ -1372,9 +1450,10 @@ async def _ensure_history(ctx: CollectorContext, symbol: str) -> None:
     1분봉은 수백 일 보관되므로 구멍은 알기만 하면 나중에 메울 수 있다).
     """
     buf = ctx.buffer(symbol)
-    if ctx.baselines.get(symbol) is not None and len(buf) > 0:
-        return
     now = ctx.clock.now_ms()
+    need_baseline = _baseline_due(ctx, symbol, now)
+    if not need_baseline and len(buf) > 0:
+        return
     if not len(buf):
         loaded = _load_history_from_db(ctx, symbol, now)
         ctx.bump("history_from_db", 1 if loaded else 0)
@@ -1392,7 +1471,7 @@ async def _ensure_history(ctx: CollectorContext, symbol: str) -> None:
                 pages = min(max(MAX_BACKFILL_PAGES, gap_bars // CANDLE_PAGE + 1),
                             RESUME_BACKFILL_MAX_PAGES)
             await _backfill_1m(ctx, symbol, pages=pages, stop_at_ms=resume)
-    if ctx.baselines.get(symbol) is None:
+    if need_baseline:
         await _refresh_baseline(ctx, symbol, now)
 
 
@@ -1522,6 +1601,7 @@ async def _refresh_baseline(ctx: CollectorContext, symbol: str, now_ms: int) -> 
     if not rows:
         return
     ctx.baselines[symbol] = compute_daily_baseline(candles_frame(rows))
+    ctx.baseline_ms[symbol] = now_ms                  # 분산 재계산 기준점
     raw_pc = _raw_prev_close(ctx, symbol, now_ms)
     if raw_pc is not None:
         ctx.prev_close[symbol] = raw_pc                 # 원주가 전일 정규장 마지막 종가
@@ -1779,6 +1859,7 @@ def reconfigure_tiers(ctx: CollectorContext, session: str) -> dict[str, int]:
     scale = SESSION_TIER_SCALE.get(session, 1.0)
     caps = {"tier2_max": max(1, int(uni.tier2_max * scale)) if scale > 0 else 1,
             "tier3_max": max(1, int(uni.tier3_max * scale)) if scale > 0 else 1}
+    ctx.session_caps = {2: caps["tier2_max"], 3: caps["tier3_max"]}   # 회복의 천장
     changes = ctx.tiers.set_capacity(ts_ms=ctx.clock.now_ms(), reason="session_change",
                                      **caps)
     ctx.flush_changes()
@@ -1787,7 +1868,9 @@ def reconfigure_tiers(ctx: CollectorContext, session: str) -> dict[str, int]:
     # 않았다 — 승격 시점의 ADV20·전일종가가 프로세스 수명 내내 얼어붙어, 2일차부터
     # `day` 트리거의 분모가 틀린 날의 종가가 된다. 세션 전환마다 무효화해 재계산시킨다
     # (`_ensure_history`/`_session_tick` 이 다음 사이클에 자연히 다시 채운다).
-    ctx.baselines.clear()
+    # 감사 H-6 의 무효화는 유지하되 **한꺼번에 지우지 않는다** — 에포크만 올리고 심볼별로
+    # 흩어진 시각에 재계산한다 (`_baseline_due`). 전환 직후 일봉 호출 버스트를 없앤다.
+    ctx.baseline_epoch_ms = ctx.clock.now_ms()
     ctx.prev_close.clear()
     ctx.history_days = []
     ctx.refresh_plan()

@@ -1177,18 +1177,57 @@ def test_curve_failure_is_retried_quickly_not_cached_for_an_hour(tmp_path):
 # 감사 H-6 — 세션 전환 시 베이스라인·전일종가·이력일 무효화
 # --------------------------------------------------------------------------- #
 def test_session_change_invalidates_baselines_and_prev_close(tmp_path):
-    """승격 시점 값이 프로세스 수명 내내 얼어붙으면 2일차부터 라벨 분모가 틀린다."""
+    """승격 시점 값이 프로세스 수명 내내 얼어붙으면 2일차부터 라벨 분모가 틀린다 (감사 H-6).
+
+    무효화는 유지하되 **한꺼번에 지우지 않는다** — 에포크를 올리고 심볼별로 흩어진 시각에
+    재계산한다. 전환 즉시 전부 지우면 다음 라운드로빈 한 바퀴 안에 정원만큼의 일봉 호출이
+    쏟아져 429 를 자초한다 (2026-08-04: 09:00 전환 42초 안에 429 3연발).
+    """
     ctx, _ = build_ctx(tmp_path, StubClient({}))
     try:
         ctx.baselines["AAA"] = {"adv20_qu": 1}
+        ctx.baseline_ms["AAA"] = ctx.clock.now_ms()
         ctx.prev_close["AAA"] = 1_000_000
         ctx.history_days = ["sentinel"]
         ctx.curves["AAA"] = (0, None)
 
         loops.reconfigure_tiers(ctx, "regular")
 
-        assert ctx.baselines == {} and ctx.prev_close == {}
-        assert ctx.history_days == [] and ctx.curves == {}
+        # 값이 없는 것(재계산 트리거)들은 그대로 비운다 — API 호출이 없기 때문이다.
+        assert ctx.prev_close == {} and ctx.history_days == [] and ctx.curves == {}
+        # 베이스라인은 에포크로 무효화된다 (지우지 않는다 = 버스트 없음)
+        assert ctx.baseline_epoch_ms >= ctx.baseline_ms["AAA"]
+        # 오프셋이 지나면 재계산 대상이 된다
+        late = ctx.baseline_epoch_ms + (loops.BASELINE_REFRESH_SPREAD_S + 1) * 1000
+        assert loops._baseline_due(ctx, "AAA", late) is True
+    finally:
+        ctx.store.close()
+
+
+def test_baseline_refresh_is_spread_not_a_thundering_herd(tmp_path):
+    """세션 전환 직후 **동시에** 재계산되지 않는다 — 이것이 자작 429 의 원인이었다."""
+    ctx, _ = build_ctx(tmp_path, StubClient({}))
+    try:
+        syms = [f"SYM{i:03d}" for i in range(200)]
+        now = ctx.clock.now_ms()
+        for s_ in syms:
+            ctx.baselines[s_] = {"adv20_qu": 1}
+            ctx.baseline_ms[s_] = now
+        loops.reconfigure_tiers(ctx, "regular")          # 에포크만 올린다
+        epoch = ctx.baseline_epoch_ms
+
+        due_now = sum(1 for s_ in syms if loops._baseline_due(ctx, s_, epoch))
+        assert due_now == 0, f"전환 즉시 {due_now} 종목이 한꺼번에 재계산된다 (버스트)"
+        # 분산 창이 다 지나면 전부 재계산된다 (무효화 자체는 유지)
+        end = epoch + (loops.BASELINE_REFRESH_SPREAD_S + 1) * 1000 + 1
+        assert sum(1 for s_ in syms if loops._baseline_due(ctx, s_, end)) == len(syms)
+        # 중간 시점에는 일부만 — 실제로 흩어져 있다
+        mid = epoch + loops.BASELINE_REFRESH_SPREAD_S * 1000 // 2
+        part = sum(1 for s_ in syms if loops._baseline_due(ctx, s_, mid))
+        assert 0 < part < len(syms), f"분산되지 않았다 (mid={part})"
+        # 같은 심볼은 항상 같은 자리 — 재시작에도 안정적이다
+        assert (loops._baseline_spread_offset_ms("SYM001")
+                == loops._baseline_spread_offset_ms("SYM001"))
     finally:
         ctx.store.close()
 

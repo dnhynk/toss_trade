@@ -9,7 +9,8 @@ import pytest
 
 from tests.test_collector_helpers import FrozenClock, make_config
 from tossmon.collector.budget import (GROUP_CHART, GROUP_MARKET_DATA, GROUP_RANKING,
-                                      SHRINK_TIER, BudgetGuard, TierPlan)
+                                      RECOVER_AFTER_S, SHRINK_TIER, BudgetGuard,
+                                      TierPlan)
 
 LIMITS = {"MARKET_DATA": 10, "MARKET_DATA_CHART": 5, "RANKING": 5, "MARKET_INFO": 3}
 
@@ -245,3 +246,65 @@ def test_unknown_group_falls_back_to_spec_limits():
     g = BudgetGuard({}, 0.7)
     assert g.limit_of("MARKET_INFO") == 3.0                   # SPEC_LIMITS 보강
     assert g.limit_of("NOPE") == 1.0                          # 보수적 기본값
+
+
+# --------------------------------------------------------------------------- #
+# 정원 축소 래칫 해제 (2026-08-04 실측: 429 8회에 tier2 300->76, tier3 20->2, 복귀 없음)
+# --------------------------------------------------------------------------- #
+def test_capacity_recovers_after_a_quiet_period():
+    """429 없이 조용하면 깎였던 정원을 되돌린다 — 축소만 있고 회복이 없으면 래칫이다."""
+    clock = FrozenClock(0)
+    g = guard(plan(tier3=10), clock=clock)
+    g.on_429(GROUP_MARKET_DATA)
+    assert g.should_shrink()                              # 사고 -> 축소
+    assert g.should_grow() is None                        # 사고 직후에는 안 올린다
+
+    clock.advance(RECOVER_AFTER_S + 1)                    # 조용한 구간 경과
+    grows = g.should_grow()
+    assert grows and GROUP_MARKET_DATA in grows
+    assert grows[GROUP_MARKET_DATA] >= 1
+
+
+def test_recovery_waits_while_429s_keep_coming():
+    clock = FrozenClock(0)
+    g = guard(clock=clock)
+    g.on_429(GROUP_MARKET_DATA)
+    g.should_shrink()
+    clock.advance(RECOVER_AFTER_S + 1)
+    g.on_429(GROUP_MARKET_DATA)                           # 또 맞았다
+    assert g.should_grow() is None                        # 타이머가 리셋된다
+
+
+def test_recovery_holds_off_when_usage_is_still_tight():
+    """실사용이 빡빡하면 되돌리지 않는다 — 되돌리는 순간 429 를 다시 부른다."""
+    clock = FrozenClock(0)
+    g = guard(clock=clock)
+    g.on_429(GROUP_MARKET_DATA)
+    g.should_shrink()
+    clock.advance(RECOVER_AFTER_S + 1)
+    for _ in range(360):                                  # 6 req/s (target 7.0 의 86%)
+        g.on_request(GROUP_MARKET_DATA)
+        clock.advance(1.0 / 6)
+    assert g.measured_rate(GROUP_MARKET_DATA) > 7.0 * 0.70
+    assert g.should_grow() is None
+
+
+def test_recovery_steps_are_spaced_not_continuous():
+    clock = FrozenClock(0)
+    g = guard(clock=clock)
+    g.on_429(GROUP_MARKET_DATA)
+    g.should_shrink()                                     # 먼저 깎여야 되돌릴 게 있다
+    clock.advance(RECOVER_AFTER_S + 1)
+    assert g.should_grow()                                # 1스텝
+    assert g.should_grow() is None                        # 곧바로 또 올리지 않는다
+    clock.advance(RECOVER_AFTER_S + 1)
+    assert g.should_grow()                                # 간격을 두면 다음 스텝
+
+
+def test_single_429_no_longer_cuts_a_fifth_of_capacity():
+    """429 한 건에 정원 20% 를 깎던 것이 300->76 래칫의 원인이었다."""
+    clock = FrozenClock(0)
+    g = guard(plan(tier2=120), clock=clock)
+    g.on_429(GROUP_CHART)
+    orders = g.should_shrink()
+    assert orders and orders[GROUP_CHART] <= 120 * 0.12    # 24 -> 12 수준
