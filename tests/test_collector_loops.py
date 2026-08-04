@@ -1291,13 +1291,17 @@ def test_failed_and_retried_attempts_reach_the_budget_guard(tmp_path):
     ctx, _ = build_ctx(tmp_path, client)
     try:
         base = ctx.budget.counters.get("MARKET_DATA", 0)
-        # 실패로 끝난 호출: after_call 은 불리지 않지만 시도는 3회 있었다 (재시도 2회 포함)
+        # 실패로 끝난 호출: after_call 은 불리지 않지만 시도는 3회 있었다 (재시도 2회 포함).
+        # 실제 client 는 시도마다 requests 를, 재시도마다 retries 를 올린다 (client.py
+        # `_send` 의 requests += 1 과 각 except 절의 retries += 1) — 더블도 그렇게 흉내낸다.
         client.counters["requests"] += 3
+        client.counters["retries"] = client.counters.get("retries", 0) + 2
         ctx.sync_rate_limits("MARKET_DATA")
         assert ctx.budget.counters.get("MARKET_DATA", 0) == base + 3
 
         # 성공 호출: 시도 2회(재시도 1회) → 논리 1회가 아니라 2회로 계상
         client.counters["requests"] += 2
+        client.counters["retries"] = client.counters.get("retries", 0) + 1
         ctx.after_call("MARKET_DATA")
         assert ctx.budget.counters.get("MARKET_DATA", 0) == base + 5
         assert ctx.counters["req_MARKET_DATA"] == 1       # 논리 카운터는 그대로 1
@@ -1756,5 +1760,125 @@ async def test_spreading_does_not_overrun_the_sweep_period(tmp_path):
         await loops.tier1_sweep_once(ctx)
         elapsed_s = (ctx.clock.now_ms() - start) / 1000.0
         assert elapsed_s <= 45 * 0.5 + 1e-6      # 주기 절반 이내
+    finally:
+        ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 2026-08-04 정규장 개장 사고 — 예산 거버너가 정원을 통째로 날렸다 (docs/33)
+# --------------------------------------------------------------------------- #
+def test_one_groups_burst_is_not_charged_to_another_group(tmp_path):
+    """★ 사고 1차 원인 — `_unaccounted_attempts` 는 **전역** 카운터를 본다.
+
+    실측: 22:30:38 "CHART 1초에 6회" 경보. 그때 tier2 는 18종목이고 주기는 110초라
+    CHART 자체 지속률은 0.16 req/s 다. 게다가 하드캡이 CHART 를 1.15초에 5회로 묶는다 —
+    6회는 **CHART 가 낼 수 있는 수가 아니다.** 개장에 동시 실행되던 다른 그룹(MARKET_DATA,
+    RANKING, STOCK)의 호출이 전역 델타로 CHART 에 얹힌 것이다.
+    """
+    ctx, _day = build_ctx(tmp_path, StubClient({}))
+    try:
+        ctx.client.counters["requests"] = 1
+        ctx.after_call(loops.GROUP_CHART, calls=1)         # CHART 자기 호출 1건
+        ctx.clock.advance(0.05)
+        # 그 사이 MARKET_DATA 가 10건 나갔다 — CHART 는 아무것도 안 했다.
+        ctx.client.counters["requests"] = 11
+        ctx.clock.advance(0.05)
+        ctx.after_call(loops.GROUP_CHART, calls=1)         # CHART 자기 호출 1건 더
+
+        peak = ctx.budget.peak_1s(loops.GROUP_CHART)
+        assert peak <= 2, (
+            f"CHART 가 2건만 냈는데 첨두 {peak} 로 계상됐다 — 남의 버스트가 얹혔다")
+    finally:
+        ctx.store.close()
+
+
+def test_an_open_burst_does_not_collapse_the_tier(tmp_path):
+    """★ 사고 2차 원인 — 1초 버스트가 **지속 속도 손잡이**를 돌린다.
+
+    실측 22:33:14: `budget shrink {MARKET_DATA: 9, MARKET_DATA_CHART: 299}` 로
+    한 번에 316종목이 강등됐다. tier2 종목은 1/110 = 0.00909 req/s 라 "1초에 1회 초과" 를
+    지속 초과로 환산하면 110종목을 빼라는 답이 나온다 — 산수는 맞지만 손잡이가 틀렸다.
+    """
+    ctx, _day = build_ctx(tmp_path, StubClient({}))
+    try:
+        ctx.tiers.set_capacity(ts_ms=ctx.clock.now_ms(), tier2_max=300, tier3_max=10)
+        ctx.refresh_plan()
+        # 개장의 실제 모양: **5초마다 7건이 몰리는 버스트**를 2분간 반복한다.
+        # 평균은 7/5 = 1.4 req/s 로 CHART 목표(4.25)의 3분의 1이지만, 매 순간의
+        # 초당 첨두는 7 이라 천장(4.04)을 계속 넘는다 — 버스트지 과부하가 아니다.
+        for _ in range(24):
+            for _ in range(7):
+                ctx.budget.on_request(loops.GROUP_CHART)
+                ctx.clock.advance(0.02)
+            ctx.clock.advance(5.0 - 7 * 0.02)
+            ctx.apply_budget()
+        assert ctx.budget.measured_rate(loops.GROUP_CHART) < 2.0   # 지속률은 멀쩡하다
+
+        cap2 = ctx.tiers.capacity.get(2)
+        assert cap2 is not None and cap2 >= 150, (
+            f"1초 버스트로 tier2 정원이 {cap2} 로 무너졌다 (300 에서 시작)")
+    finally:
+        ctx.store.close()
+
+
+def test_a_genuine_sustained_overload_still_shrinks(tmp_path):
+    """대조군 — 경보만 끄는 게 아니라는 증거. 진짜 지속 과부하는 여전히 깎아야 한다."""
+    ctx, _day = build_ctx(tmp_path, StubClient({}))
+    try:
+        ctx.tiers.set_capacity(ts_ms=ctx.clock.now_ms(), tier2_max=300, tier3_max=10)
+        ctx.refresh_plan()
+        before = ctx.tiers.capacity.get(2)
+        # 지속 과부하: CHART 를 6 req/s 로 3분간 (평균도 첨두도 천장 위)
+        for _ in range(18):
+            for _ in range(60):
+                ctx.budget.on_request(loops.GROUP_CHART)
+                ctx.clock.advance(1.0 / 6)
+            ctx.apply_budget()
+        after = ctx.tiers.capacity.get(2)
+        assert after < before, "진짜 지속 과부하인데 축소가 전혀 없었다"
+    finally:
+        ctx.store.close()
+
+
+def test_open_burst_keeps_filling_tier3_with_legitimate_promotions(tmp_path):
+    """★ 요구사항 2 — "전이 0" 을 안정화로 읽지 않는다 (COORDINATOR-STATE §4.4-E).
+
+    성공 기준은 **진동 0 그리고 신규 승격 > 0** 이다. 버스트 때문에 축소를 멈춘 것이
+    "아무 일도 안 하게" 만든 것이라면 그건 고친 게 아니라 죽인 것이다.
+    """
+    ctx, _day = build_ctx(tmp_path, StubClient({}))
+    try:
+        ctx.tiers.set_capacity(ts_ms=ctx.clock.now_ms(), tier2_max=300, tier3_max=10)
+        ctx.refresh_plan()
+        promoted: set[str] = set()
+        moves: dict[str, int] = {}
+
+        for step in range(40):
+            # 개장 버스트를 계속 때린다 (사고 조건 그대로)
+            for _ in range(7):
+                ctx.budget.on_request(loops.GROUP_CHART)
+                ctx.clock.advance(0.02)
+            # 진짜 뜨거운 종목들이 계속 들어온다
+            now = ctx.clock.now_ms()
+            for i in range(12):
+                sym = f"HOT{i}"
+                before = ctx.tiers.tier_of(sym)
+                ctx.tiers.on_new_data(sym, 0.95 - i * 0.01, now)
+                after = ctx.tiers.tier_of(sym)
+                if after != before:
+                    moves[sym] = moves.get(sym, 0) + 1
+                if after == 3:
+                    promoted.add(sym)
+            filled = ctx.tiers.fill_to_capacity(3, now)
+            promoted.update(filled)
+            ctx.flush_changes()
+            ctx.clock.advance(5.0)
+            ctx.apply_budget()
+
+        cap3 = ctx.tiers.capacity.get(3)
+        assert cap3 is not None and cap3 >= 8, f"tier3 정원이 {cap3} 로 깎였다"
+        assert len(promoted) > 0, "승격이 한 건도 없다 — 안정화가 아니라 동결이다"
+        flappers = {s: n for s, n in moves.items() if n > 3}
+        assert not flappers, f"진동하는 종목이 있다: {flappers}"
     finally:
         ctx.store.close()

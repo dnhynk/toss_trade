@@ -382,6 +382,7 @@ class CollectorContext:
     #: client.counters["requests"] 고수위 — 재시도·실패까지 포함한 실제 HTTP 시도를
     #: BudgetGuard 에 계상하기 위한 기준점.
     _http_requests_seen: int = 0
+    _http_retries_seen: int = 0
     #: tier2 호가 양보 판정용 — 관측한 429 고수위와 쿨다운 종료 시각.
     _tier2_book_429_seen: int = 0
     _tier2_book_cooldown_ms: int = 0
@@ -437,6 +438,8 @@ class CollectorContext:
         # 재시도·실패 계상 기준점 — ctx 생성 이전의 호출(캘린더 등)은 귀속하지 않는다.
         ctx._http_requests_seen = int(
             (getattr(client, "counters", None) or {}).get("requests", 0) or 0)
+        ctx._http_retries_seen = int(
+            (getattr(client, "counters", None) or {}).get("retries", 0) or 0)
         if resume:
             ctx.load_state()
             # 재기동 직후 억제 집합이 비면 오늘 이벤트가 전부 "신규" 로 재기록된다 (감사 F-3).
@@ -497,6 +500,19 @@ class CollectorContext:
             return hits[0], True
         return caller_group, False
 
+    def _unaccounted_retries(self) -> int:
+        """마지막 계상 이후의 **재시도** 증가분. 이것도 전역이지만 1차 호출과 달리
+        드물고, 재시도는 호출한 그룹의 것이 맞으므로 귀속 상한으로 쓰기에 적합하다."""
+        counters = getattr(self.client, "counters", None)
+        if not isinstance(counters, dict):
+            return 0
+        seen = int(counters.get("retries", 0) or 0)
+        delta = seen - self._http_retries_seen
+        if delta <= 0:
+            return 0
+        self._http_retries_seen = seen
+        return delta
+
     def _unaccounted_attempts(self) -> int:
         """마지막 계상 이후 client 가 실제로 보낸 HTTP 시도 수 (재시도 포함).
 
@@ -521,10 +537,22 @@ class CollectorContext:
         재시도가 0회로 계상되면 실사용이 과소평가되어 한도 사고를 놓친다 (감사 ②).
         시도 수를 관측할 수 없는 클라이언트(테스트 더블)는 논리 호출 수로 폴백한다.
         """
+        # `requests` 는 **전역** 카운터라 그 델타에는 동시에 도는 다른 그룹의 호출이
+        # 섞여 있다. 예전에는 그 델타 전체를 호출한 그룹에 얹었다 — 평균을 보던 시절에는
+        # "총량은 정확하고 방향은 보수적" 이라 넘어갔지만, **판정이 초당 첨두로 바뀐 뒤에는
+        # 그 근사가 그대로 사고가 됐다**: 2026-08-04 22:30 개장에 CHART 가 자기 호출
+        # 2건을 내고도 첨두 11 로 계상돼 tier2 정원 300 이 1 로 무너졌다 (docs/33).
+        #
+        # 이 호출이 실제로 낼 수 있었던 시도 수는 `논리 호출 수 + 그 사이 재시도` 가
+        # 상한이다. 전역 델타를 그 상한으로 **자른다** — 남의 1차 호출은 재시도가 아니므로
+        # 더 이상 얹히지 않는다. 잘려나간 몫은 귀속 불가로 **명시해서** 센다.
         attempts = self._unaccounted_attempts()
-        # 한 시각에 몰아 계상하면 초당 첨두가 가짜로 치솟는다 — 재시도는 백오프로
-        # 떨어져 나갔으므로 직전 계상 이후 구간에 펴서 센다 (총량은 보존).
-        self.budget.on_requests(group, max(max(1, calls), attempts))
+        own_max = max(1, calls) + self._unaccounted_retries()
+        booked = min(attempts, own_max) if attempts > 0 else max(1, calls)
+        booked = max(booked, max(1, calls))
+        if attempts > booked:
+            self.bump("budget_unattributed_attempts", attempts - booked)
+        self.budget.on_requests(group, booked)
         self.bump(f"req_{group}", max(1, calls))
         self.clock.observe_headers(getattr(self.client, "last_headers", None))
         self.sync_rate_limits(group)

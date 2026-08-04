@@ -98,6 +98,13 @@ RATE_LIMITED_SHRINK_FRAC = 0.10
 RECOVER_AFTER_S = 300.0
 #: 회복 1스텝에 되돌리는 폭 (그 티어 상한 대비).
 RECOVER_STEP_FRAC = 0.25
+#: **축소 1스텝의 상한** (현재 정원 대비). 회복 폭과 대칭이다.
+#:
+#: 2026-08-04 개장 사고: 단 한 번의 지시가 tier2 를 300 -> 1 로 만들었다(drop=299).
+#: 내려갈 땐 한 번에 299, 올라올 땐 한 스텝에 1 — 이 비대칭에 근거가 없었다.
+#: 축소 근거가 옳더라도 **한 번에 정원을 통째로 날릴 이유는 없다**: 한 스텝 깎고 다시
+#: 재면 되고, 과부하가 진짜면 다음 스텝에서 또 깎인다. 틀렸을 때의 대가만 줄어든다.
+SHRINK_MAX_STEP_FRAC = 0.25
 #: 회복은 실사용이 목표의 이 비율 아래일 때만 — 빡빡한데 되돌리면 429 를 다시 부른다.
 RECOVER_USAGE_MAX = 0.70
 
@@ -515,14 +522,23 @@ class BudgetGuard:
         for group in (GROUP_MARKET_DATA, GROUP_CHART, GROUP_RANKING):
             target = self.target(group)
             planned = self.planned_rate(group)
-            peak = float(self.peak_1s(group))         # ← 판정의 근거 (평균 아님)
-            predicted = max(planned, peak)
+            peak = float(self.peak_1s(group))         # 관측·경보용 (1초 창 위반)
+            # **정원은 지속 속도 손잡이다.** 그래서 축소의 근거는 지속률이고, 첨두가 아니다.
+            #
+            # 2026-08-04 22:33 개장 사고가 이 구분을 안 해서 났다: CHART 가 1초에 7회로
+            # 튀자 그 첨두를 지속 초과로 환산해 "299종목을 빼라" 가 나왔다. tier2 한 종목은
+            # 1/110 = 0.00909 req/s 라 1 req/s 를 줄이려면 110종목이 필요하기 때문이다 —
+            # 산수는 맞지만 손잡이가 문제에 안 맞는다. 버스트는 **타이밍** 문제이고 그건
+            # 리미터(대기)가 고친다. 정원을 깎아도 같은 버스트는 또 난다 —
+            # 경보 문구가 이미 그렇게 말하고 있었는데 코드는 반대로 행동했다 (docs/33).
+            sustained_rate = self.measured_rate(group)
+            predicted = max(planned, sustained_rate)
             forced = self._forced.get(group, 0.0)
-            ceiling = self.shrink_ceiling(group)      # 계획·첨두 공통 천장
+            ceiling = self.shrink_ceiling(group)      # 계획·지속률 공통 천장
             over_plan = planned > ceiling             # 설정 오류 — 즉시 반응
-            over_peak = peak > ceiling                # 실제 1초 창 초과
-            # 첨두 기반은 **지속성**을 요구하고 **워밍업 중에는 아예 보지 않는다**.
-            if over_peak:
+            over_rate = sustained_rate > ceiling      # 진짜 지속 과부하
+            # 지속률 기반도 **지속성**을 요구하고 **워밍업 중에는 아예 보지 않는다**.
+            if over_rate:
                 self._measured_over_since.setdefault(group, now)
                 sustained = now - self._measured_over_since[group] >= MEASURED_SUSTAIN_S
             else:
@@ -618,6 +634,8 @@ class BudgetGuard:
         n = math.ceil(excess / cost) if excess > 0 else 0
         if forced:
             n = max(n, math.ceil(have * forced))
+        # 한 스텝 상한 — 근거가 옳아도 한 번에 정원을 통째로 날리지 않는다.
+        n = min(n, max(1, math.ceil(have * SHRINK_MAX_STEP_FRAC)))
         return int(max(0, min(n, have - 1 if have > 1 else have)))
 
     # ---- 관측 덤프 ------------------------------------------------------
