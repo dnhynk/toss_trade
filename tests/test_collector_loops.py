@@ -1570,3 +1570,64 @@ def test_telemetry_reports_tier_transition_deltas(tmp_path):
         assert data2["promotions_delta"] == 0              # 구간 델타지 누적이 아니다
     finally:
         ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 429 그룹 귀속 (전역 카운터를 호출한 쪽 그룹에 귀속하면 엉뚱한 티어가 깎인다)
+# --------------------------------------------------------------------------- #
+class _FakeLimiter:
+    """limiter 의 그룹별 429 흔적만 흉내낸다 (W1 소유 파일은 읽기만 한다)."""
+
+    def __init__(self, blocked=None, backoff=None):
+        self.blocked = blocked or {}
+        self.backoff = backoff or {}
+
+    def snapshot(self, group):
+        return {"blocked_for_s": float(self.blocked.get(group, 0.0)),
+                "backoff": float(self.backoff.get(group, 1.0))}
+
+
+def test_429_is_attributed_to_the_group_that_actually_hit_it(tmp_path):
+    """CHART 가 429 를 맞았는데 MARKET_DATA 루프가 관측해도 **CHART** 로 청구한다."""
+    client = StubClient({})
+    ctx, _ = build_ctx(tmp_path, client)
+    try:
+        client.limiter = _FakeLimiter(blocked={"MARKET_DATA_CHART": 2.0})
+        client.counters["http_429"] = 1
+        ctx.sync_rate_limits("MARKET_DATA")               # 호출자는 MARKET_DATA
+        assert ctx.budget.rate_limited.get("MARKET_DATA_CHART") == 1
+        assert ctx.budget.rate_limited.get("MARKET_DATA") is None
+        assert ctx.counters.get("http_429_unattributed", 0) == 0
+    finally:
+        ctx.store.close()
+
+
+def test_ambiguous_429_is_flagged_not_silently_misattributed(tmp_path):
+    """후보가 여럿이면 귀속하지 않고 **귀속 불가를 표시**한다 (이중 청구도 없다)."""
+    client = StubClient({})
+    ctx, _ = build_ctx(tmp_path, client)
+    try:
+        client.limiter = _FakeLimiter(blocked={"MARKET_DATA": 1.0,
+                                               "MARKET_DATA_CHART": 1.0})
+        client.counters["http_429"] = 1
+        ctx.sync_rate_limits("MARKET_DATA")
+        assert ctx.counters["http_429_unattributed"] == 1
+        # 호출자 그룹으로만 1회 청구 — 두 그룹에 이중 청구되지 않는다
+        assert ctx.budget.rate_limited.get("MARKET_DATA") == 1
+        assert ctx.budget.rate_limited.get("MARKET_DATA_CHART") is None
+    finally:
+        ctx.store.close()
+
+
+def test_one_429_is_charged_once_across_loops(tmp_path):
+    """여러 루프가 같은 전역 카운터를 봐도 정원은 한 번만 깎인다."""
+    client = StubClient({})
+    ctx, _ = build_ctx(tmp_path, client)
+    try:
+        client.limiter = _FakeLimiter(blocked={"MARKET_DATA": 1.0})
+        client.counters["http_429"] = 1
+        for group in ("MARKET_DATA", "MARKET_DATA_CHART", "RANKING"):
+            ctx.sync_rate_limits(group)                   # 세 루프가 각각 관측
+        assert sum(ctx.budget.rate_limited.values()) == 1
+    finally:
+        ctx.store.close()

@@ -36,10 +36,27 @@ RANKING_TYPES = 4
 
 #: 실사용 관측 윈도우 (초).
 WINDOW_S = 60.0
-#: **실측** 사용률이 예산의 이 비율을 넘으면 축소한다 (한도에 닿기 전에 움직인다).
-#: 계획(설정값)에는 이 여유를 적용하지 않는다 — 설정이 예산 안이면 그대로 인정하고,
-#: 여유분은 계획에 없는 호출(재시도·승격 직후 백필)을 위해 남겨 둔다.
+#: **지속 사용률 상한 배수** — 축소 판정이 쓰는 천장 (target × HEADROOM).
 HEADROOM = 0.95
+#: 계획이 **반드시 비워둬야 하는 여유** (target 대비). 계획에 없는 호출이 전부 여기서
+#: 나간다: 재시도, 승격 직후 이력 백필, 세션 전환 후 베이스라인 갱신, tier2 호가
+#: (의도적으로 계획 밖). 설정 검증은 이 여유를 **포함해서** 통과해야 한다.
+#:
+#: 예전에는 계획을 target(7.00)에, 축소를 target×HEADROOM(6.65)에 대고 재는 **기준
+#: 불일치**가 있었다. 그래서 "검증은 통과했는데 축소 트리거 바로 아래 0.233 req/s"
+#: 라는 상태가 정상으로 취급됐다 (2026-08-04 실측). 이제 두 판정이 같은 천장을 쓰고,
+#: 계획은 그보다 PLAN_RESERVE_FRAC 만큼 더 아래여야 한다.
+PLAN_RESERVE_FRAC = 0.10
+
+#: 세션 전환 직후 이 시간 동안은 **측정치 기반 축소를 하지 않는다** (워밍업).
+#: 개장 직후는 원래 측정이 튀는 구간인데, 그 순간의 측정으로 정원을 깎으면 자격이
+#: 충분한 종목까지 쫓겨난다 (실측: 08-03 22:34 개장 32초 만에 점수 0.65 를 축출,
+#: 앞에 429 라인 없음 — 순수 measured-overshoot). 429(진짜 사고)와 계획 초과(설정 오류)는
+#: 워밍업과 무관하게 즉시 반응한다.
+MEASURED_WARMUP_S = 180.0
+#: 측정치 기반 축소는 초과가 이만큼 **연속으로 유지될 때만** 실행한다. 한 번 튀는 것으로
+#: 정원을 깎지 않는다. 건수가 아니라 경과 시간 기준이다 (감사 H-4 와 같은 이유).
+MEASURED_SUSTAIN_S = 60.0
 #: 축소 후 목표 사용률 — 경계에 딱 붙이면 곧바로 다시 넘는다.
 SHRINK_TO = 0.9
 #: 같은 그룹에 축소를 다시 지시하기까지의 최소 간격 (초). 플래핑 방지.
@@ -135,6 +152,8 @@ class BudgetGuard:
         self._last_shrink_s: dict[str, float] = {}
         self._last_429_s: dict[str, float] = {}
         self._last_grow_s: dict[str, float] = {}
+        self._measured_over_since: dict[str, float] = {}
+        self._warmup_until_s: float = 0.0
         self._forced: dict[str, float] = {}      # 429 로 강제 축소해야 할 비율
 
     # ---- 시간 ----------------------------------------------------------
@@ -206,15 +225,46 @@ class BudgetGuard:
         """예측 사용률 = max(계획, 실측). 재시도·백필은 실측에만, 티어 확대는 계획에만 나타난다."""
         return max(self.planned_rate(group), self.measured_rate(group))
 
+    def shrink_ceiling(self, group: str) -> float:
+        """축소 판정 천장 — 계획·실측 **둘 다** 이 값에 대고 잰다 (기준 일치)."""
+        return self.target(group) * self.headroom
+
+    def plan_ceiling(self, group: str) -> float:
+        """설정이 지켜야 할 상한 = 축소 천장에서 계획 밖 호출용 여유를 뺀 값."""
+        return self.target(group) * (self.headroom - PLAN_RESERVE_FRAC)
+
+    def note_session_change(self) -> None:
+        """세션 전환을 알린다 — 이후 `MEASURED_WARMUP_S` 동안 측정 기반 축소를 멈춘다."""
+        self._warmup_until_s = self._now_s() + MEASURED_WARMUP_S
+        self._measured_over_since.clear()
+
+    def in_warmup(self) -> bool:
+        return self._now_s() < self._warmup_until_s
+
+    def reserve_deficit(self) -> dict[str, float]:
+        """계획이 여유(PLAN_RESERVE_FRAC)를 못 남긴 그룹 → 부족분 req/s.
+
+        축소를 부르진 않지만 **경보 대상**이다: 이 상태의 설정은 계획 밖 호출이 조금만
+        나가도 곧바로 축소 트리거를 건드린다.
+        """
+        if self.plan is None:
+            return {}
+        out: dict[str, float] = {}
+        for group, rate in self.plan.rates().items():
+            ceiling = self.plan_ceiling(group)
+            if rate > ceiling:
+                out[group] = rate - ceiling
+        return out
+
     def validate_plan(self) -> dict[str, float]:
         """설정값만으로 예산 초과를 예측한다. 반환: {group: 초과 req/s} (없으면 빈 dict)."""
         if self.plan is None:
             return {}
         over: dict[str, float] = {}
         for group, rate in self.plan.rates().items():
-            target = self.target(group)
-            if rate > target:
-                over[group] = rate - target
+            ceiling = self.shrink_ceiling(group)      # 축소 판정과 **같은 천장**
+            if rate > ceiling:
+                over[group] = rate - ceiling
         return over
 
     # ---- 축소 지시 ------------------------------------------------------
@@ -235,8 +285,17 @@ class BudgetGuard:
             measured = self.measured_rate(group)
             predicted = max(planned, measured)
             forced = self._forced.get(group, 0.0)
-            # 계획은 한도 자체로, 실측은 여유분(headroom)으로 판정한다.
-            over = planned > target or measured > target * self.headroom
+            ceiling = self.shrink_ceiling(group)      # 계획·실측 공통 천장
+            over_plan = planned > ceiling             # 설정 오류 — 즉시 반응
+            over_measured = measured > ceiling
+            # 측정 기반은 **지속성**을 요구하고 **워밍업 중에는 아예 보지 않는다**.
+            if over_measured:
+                self._measured_over_since.setdefault(group, now)
+                sustained = now - self._measured_over_since[group] >= MEASURED_SUSTAIN_S
+            else:
+                self._measured_over_since.pop(group, None)
+                sustained = False
+            over = over_plan or (sustained and not self.in_warmup())
             if not over and not forced:
                 continue
             if group not in SHRINK_TIER:

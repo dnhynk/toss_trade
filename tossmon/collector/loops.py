@@ -110,6 +110,8 @@ CURVE_TTL_MS = 3600_000
 CURVE_NONE_TTL_MS = 5 * MIN_MS
 #: `/stocks` 예산 그룹 (계약 C-3 스펙의 STOCK 그룹).
 GROUP_STOCK = "STOCK"
+#: `/market-calendar` 예산 그룹 (429 귀속 판별에만 쓴다).
+GROUP_INFO = "MARKET_INFO"
 
 #: 세션 전환 후 베이스라인 재계산을 이 시간에 걸쳐 **분산**한다 (초, 심볼별 결정적 오프셋).
 #: 예전에는 전환 즉시 baselines 를 통째로 비워서, 다음 라운드로빈 한 바퀴(110초) 안에
@@ -446,6 +448,33 @@ class CollectorContext:
 
     # ---- API 호출 회계 ---------------------------------------------------
 
+    def _attribute_429(self, caller_group: str) -> tuple[str, bool]:
+        """429 를 **실제로 맞은 그룹**에 귀속한다. 반환: (그룹, 귀속 성공 여부).
+
+        `client.counters["http_429"]` 는 전역 카운터라 호출한 쪽 그룹에 귀속하면
+        엉뚱한 티어가 깎인다 (CHART 가 맞았는데 tier3 을 깎는 식). limiter 는 429 를
+        **정확한 그룹**으로 받으므로(client 가 group 을 넘긴다) 그 흔적으로 판별한다:
+        429 직후 그 그룹 버킷만 `blocked_for_s > 0` 이거나 `backoff > 1` 이다.
+        후보가 정확히 하나일 때만 귀속하고, 애매하면 호출자 그룹으로 두되 **귀속 불가를
+        표시**한다 (limiter.py 는 W1 소유라 읽기만 한다).
+        """
+        limiter = getattr(self.client, "limiter", None)
+        snapshot = getattr(limiter, "snapshot", None)
+        if snapshot is None:
+            return caller_group, False
+        hits: list[str] = []
+        for group in (GROUP_MARKET_DATA, GROUP_CHART, GROUP_RANKING, GROUP_STOCK,
+                      GROUP_INFO):
+            try:
+                snap = snapshot(group)
+            except Exception:
+                continue
+            if float(snap.get("blocked_for_s", 0.0)) > 0.0                     or float(snap.get("backoff", 1.0)) > 1.0:
+                hits.append(group)
+        if len(hits) == 1:
+            return hits[0], True
+        return caller_group, False
+
     def _unaccounted_attempts(self) -> int:
         """마지막 계상 이후 client 가 실제로 보낸 HTTP 시도 수 (재시도 포함).
 
@@ -492,14 +521,19 @@ class CollectorContext:
             # 429 **원문 헤더**를 남긴다 (2026-08-04 지시): 지금까지 카운트만 있어서
             # "한도의 1/5 을 쓰는데 왜 429 인가" 를 판별할 수 없었다. Retry-After 나
             # X-RateLimit-* 가 오면 우리 한도 모델(그룹별 초당)이 틀렸다는 증거가 된다.
+            owner, attributed = self._attribute_429(group)
             hdrs = dict(getattr(self.client, "last_headers", {}) or {})
             keep = {k: v for k, v in hdrs.items()
                     if k.lower().startswith(("x-rate", "retry-after", "x-request",
                                              "date", "ratelimit"))}
             self.notifier.warn(
-                f"HTTP-429-DETAIL group={group} status="
+                f"HTTP-429-DETAIL group={owner} caller={group} "
+                f"attributed={attributed} status="
                 f"{getattr(self.client, 'last_status', None)} headers={keep or hdrs}")
-            self.budget.on_429(group)
+            if not attributed:
+                # 귀속 불가를 **명시**한다 — 엉뚱한 티어를 깎는 것보다 낫다.
+                self.bump("http_429_unattributed")
+            self.budget.on_429(owner)
 
     def refresh_plan(self) -> None:
         """**정원이 다 찼을 때**의 호출률로 계획을 세운다 (최악 케이스 예측).
@@ -515,6 +549,13 @@ class CollectorContext:
             tier2_symbols=self.tiers.capacity.get(2) or uni.tier2_max,
             tier3_symbols=self.tiers.capacity.get(3) or uni.tier3_max)
         self.budget.set_plan(plan)
+        deficit = self.budget.reserve_deficit()
+        if deficit:
+            detail = ", ".join(f"{g} -{v:.3f} req/s" for g, v in sorted(deficit.items()))
+            self.notifier.warn(
+                f"budget: plan leaves no reserve ({detail}) — 계획 밖 호출(재시도·백필·"
+                "베이스라인·tier2 호가)이 조금만 나가도 축소 트리거를 건드린다. "
+                "주기/정원을 재검토하라")
         over = self.budget.validate_plan()
         if over:
             detail = ", ".join(f"{g}+{v:.2f} req/s" for g, v in sorted(over.items()))
@@ -1902,6 +1943,8 @@ def reconfigure_tiers(ctx: CollectorContext, session: str) -> dict[str, int]:
     caps = {"tier2_max": max(1, int(uni.tier2_max * scale)) if scale > 0 else 1,
             "tier3_max": max(1, int(uni.tier3_max * scale)) if scale > 0 else 1}
     ctx.session_caps = {2: caps["tier2_max"], 3: caps["tier3_max"]}   # 회복의 천장
+    # 개장 직후 측정치는 원래 튄다 — 그 순간의 측정으로 정원을 깎지 않는다.
+    ctx.budget.note_session_change()
     changes = ctx.tiers.set_capacity(ts_ms=ctx.clock.now_ms(), reason="session_change",
                                      **caps)
     ctx.flush_changes()
