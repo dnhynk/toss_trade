@@ -109,6 +109,14 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _as_int(raw) -> int | None:
+    """헤더 값을 int 로. 없거나 비수치면 None."""
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 def _use_utf8_stdio() -> None:
     """Windows 콘솔 기본 cp949 대응. **출력이 있는 모든 경로에서 먼저 부른다.**
 
@@ -721,6 +729,118 @@ async def probe_ratelimit_headers(c: TossClient) -> dict:
         "all_response_headers_sample": sorted(mask_headers(c.last_headers)),
         "note": ("정상 응답에도 X-RateLimit-* 가 실려 옴" if md
                  else "정상 응답에 X-RateLimit-* 없음 — limiter 자기보정 불가"),
+    }
+
+
+async def probe_group_coupling(c: TossClient) -> dict:
+    """그룹이 서버에서 **한 창을 공유하는지** 를 가동 중 수집기를 부하원으로 삼아 관측한다.
+
+    (docs/32 2단계 실험 A′. 승인 후에만 실행한다.)
+
+    착상: 수집기가 이미 MARKET_DATA 를 초당 7~9 회 쓰고 있다. 우리가 **조용한 그룹**에
+    1콜만 넣고 그 응답의 `x-ratelimit-remaining` 을 읽으면, 서버가 그 그룹을 MD 와 같은
+    창으로 세는지가 그대로 드러난다:
+
+    - **독립이면**: 그 초에 그 그룹은 우리 1콜뿐이므로 `remaining = limit - 1` 이 거의 항상.
+    - **MD 와 공유면**: 같은 초에 수집기의 MD 7~9 콜이 같은 창을 깎았으므로 `remaining` 이
+      훨씬 낮고 산포가 크다.
+
+    이 설계가 이전안(한쪽을 한도 근처까지 밀고 다른 쪽을 읽는 능동 부하)보다 나은 점:
+    **버스트를 만들지 않는다.** 부하는 이미 수집기가 만들고 있고 우리는 관측만 한다.
+    그래서 429 유발 위험이 구조적으로 없고, 예산 소모도 그룹당 0.5 req/s 뿐이다.
+    덤으로 같은 응답에서 RTT 꼬리(실험 C, 가설 라)를 공짜로 얻는다.
+
+    **429 를 받으면 즉시 중단한다.** `data/PROBE_STOP` 파일이 생겨도 중단한다.
+    """
+    stop_file = REPO_ROOT / "data" / "PROBE_STOP"
+    quiet = [
+        ("MARKET_DATA_CHART", "/api/v1/candles",
+         {"symbol": LIQUID, "interval": "1d", "count": 1}),
+        ("RANKING", "/api/v1/rankings",
+         {"type": "MARKET_TRADING_VOLUME", "marketCountry": "US",
+          "duration": "realtime", "count": 1}),
+        ("STOCK", "/api/v1/stocks", {"symbols": LIQUID}),
+        ("MARKET_INFO", "/api/v1/exchange-rate",
+         {"baseCurrency": "USD", "quoteCurrency": "KRW"}),
+    ]
+    samples_per_group = 30
+    gap_s = 2.0                       # 그룹당 0.5 req/s
+
+    out: dict[str, dict] = {}
+    aborted: str | None = None
+    for group, path, params in quiet:
+        if aborted:
+            break
+        recs: list[dict] = []
+        for _ in range(samples_per_group):
+            if stop_file.exists():
+                aborted = "PROBE_STOP 파일"
+                break
+            t0 = time.monotonic()
+            try:
+                await c._request("GET", path, params=params)
+            except RateLimited:
+                aborted = f"{group}: 429 — 즉시 중단"
+                break
+            except TossApiError as exc:
+                recs.append({"error": f"{type(exc).__name__}: {exc}"})
+                continue
+            h = {k.lower(): v for k, v in c.last_headers.items()}
+            recs.append({
+                "limit": _as_int(h.get("x-ratelimit-limit")),
+                "remaining": _as_int(h.get("x-ratelimit-remaining")),
+                "date": h.get("date"),
+                "rtt_ms": round((time.monotonic() - t0) * 1000, 1),
+            })
+            await asyncio.sleep(gap_s)
+
+        ok = [r for r in recs if r.get("remaining") is not None]
+        if not ok:
+            out[group] = {"verdict": "미확인", "samples": recs}
+            continue
+        lim = ok[0]["limit"]
+        # 우리 1콜만 들어간 초라면 remaining == limit-1 이어야 한다.
+        alone = sum(1 for r in ok if r["remaining"] == (r["limit"] or 0) - 1)
+        depressed = [r["remaining"] for r in ok if r["remaining"] < (r["limit"] or 0) - 1]
+        rtts = sorted(r["rtt_ms"] for r in ok)
+        out[group] = {
+            "limit": lim,
+            "n": len(ok),
+            "alone_pct": round(100.0 * alone / len(ok), 1),
+            "depressed_n": len(depressed),
+            "min_remaining": min(r["remaining"] for r in ok),
+            "rtt_min_ms": rtts[0],
+            "rtt_p50_ms": rtts[len(rtts) // 2],
+            "rtt_p90_ms": rtts[int(len(rtts) * 0.9)],
+            "rtt_max_ms": rtts[-1],
+            "verdict": ("MD 와 독립" if alone / len(ok) >= 0.9 else
+                        "공유 의심 — 우리 1콜뿐인데 remaining 이 더 깎였다"),
+            "samples": recs,
+        }
+
+    # 실험 C: 편도 지연폭이 CLOCK_SKEW_MARGIN_S(0.15s)를 넘는가 (가설 라).
+    all_rtt = sorted(r["rtt_ms"] for g in out.values()
+                     for r in g.get("samples", []) if r.get("rtt_ms"))
+    skew = None
+    if all_rtt:
+        spread_one_way_ms = (all_rtt[-1] - all_rtt[0]) / 2.0
+        skew = {
+            "n": len(all_rtt),
+            "rtt_min_ms": all_rtt[0], "rtt_p50_ms": all_rtt[len(all_rtt) // 2],
+            "rtt_p90_ms": all_rtt[int(len(all_rtt) * 0.9)], "rtt_max_ms": all_rtt[-1],
+            "one_way_spread_ms": round(spread_one_way_ms, 1),
+            "margin_ms": 150.0,
+            "verdict": ("여유 안 — 하드캡 상계 증명 성립"
+                        if spread_one_way_ms <= 150.0 else
+                        "여유 초과 — 하드캡의 1초 상계 증명이 이 시간대에는 깨진다 (가설 라)"),
+        }
+    return {
+        "verdict": "확인됨" if out and not aborted else "미확인",
+        "aborted": aborted,
+        "per_group": {g: {k: v for k, v in d.items() if k != "samples"}
+                      for g, d in out.items()},
+        "latency_skew": skew,
+        "detail": out,
     }
 
 
@@ -1359,6 +1479,7 @@ PROBES = {
     "commissions": probe_commissions,
     "ratelimit": probe_ratelimit_headers,
     "ratelimit_contract": probe_ratelimit_contract,
+    "group_coupling": probe_group_coupling,
     "ratelimit_groups": probe_ratelimit_groups,
     "limiter_holds": probe_limiter_holds,
     "ratelimit_boundary": probe_ratelimit_boundary,
@@ -1370,7 +1491,7 @@ PROBES = {
 # `--probe all` 에서 제외되는 프로브 — 명시적으로 이름을 적어야만 실행된다 (감사 B-5).
 # force429 는 라이브 429 를 **의도적으로** 유발하고, 같은 자격증명을 쓰는 컬렉터가 돌고 있으면
 # 서버 측 같은 버킷의 페널티를 공유한다. 기본 실행에 섞여 있을 물건이 아니다.
-OPT_IN_ONLY = frozenset({"force429", "force429_client"})
+OPT_IN_ONLY = frozenset({"force429", "force429_client", "group_coupling"})
 ALL_PROBES = [n for n in PROBES if n not in OPT_IN_ONLY]
 
 
