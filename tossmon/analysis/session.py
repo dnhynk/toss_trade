@@ -88,12 +88,21 @@ def drop_holdout(df: pd.DataFrame, ts_col: str = "ts_ms") -> dict:
 #: (승격률 110/분 -> 1/분 미만). `trades_snap` 기반 분석은 **이 경계를 넘어 뭉치면
 #: 안 된다** — 표본 구성이 바뀐 것을 시장 변화로 오독하게 된다.
 COLLECTOR_RESTART_MS = 1785769648000
-COLLECTOR_ERAS = ("pre_restart", "post_restart")
+
+#: **수집기 경계는 하나가 아니다.** 2026-08-04 00:07:28 KST 에 이어 **02:26 KST** 에도
+#: 수집 동작이 바뀌었다. 경계를 하나만 알고 있으면 두 번째 경계를 넘어 뭉치게 된다.
+COLLECTOR_BOUNDARIES_MS = (COLLECTOR_RESTART_MS, 1785777960000)
+COLLECTOR_ERAS = ("era0_pre_restart", "era1_post_restart", "era2_post_0226")
 
 
 def collector_era(ts_ms: int) -> str:
-    """수집기 재시작 **전/후**. 티어 승격 정책이 달라진 경계다."""
-    return "post_restart" if int(ts_ms) >= COLLECTOR_RESTART_MS else "pre_restart"
+    """수집기 경계로 나눈 **수집 시기**. 시기마다 조밀 수집 대상 종목이 다르다.
+
+    경계를 넘어 `trades_snap` 을 뭉치면 **표본 구성 변화를 시장 변화로 오독**한다.
+    """
+    ts = int(ts_ms)
+    idx = sum(1 for b in COLLECTOR_BOUNDARIES_MS if ts >= b)
+    return COLLECTOR_ERAS[idx]
 
 
 def eras_of(ts) -> pd.Series:
@@ -102,8 +111,8 @@ def eras_of(ts) -> pd.Series:
         return pd.Series(dtype="object")
     # 규칙은 `collector_era` 한 곳에만 둔다 — 두 군데면 언젠가 갈라진다.
     v = pd.to_numeric(ts, errors="coerce")
-    return pd.Series([collector_era(int(x)) if x == x else "pre_restart" for x in v],
-                     index=ts.index, dtype="object")
+    return pd.Series([collector_era(int(x)) if x == x else COLLECTOR_ERAS[0]
+                      for x in v], index=ts.index, dtype="object")
 
 
 def kst_minute_of_day(ts_ms: int) -> int:
