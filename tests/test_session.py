@@ -197,8 +197,17 @@ def test_collector_restart_boundary_is_the_announced_instant():
 
 
 def test_era_split_is_start_inclusive_on_the_post_side():
-    assert SS.collector_era(SS.COLLECTOR_RESTART_MS - 1) == "pre_restart"
-    assert SS.collector_era(SS.COLLECTOR_RESTART_MS) == "post_restart"
+    assert SS.collector_era(SS.COLLECTOR_RESTART_MS - 1) == "era0_pre_restart"
+    assert SS.collector_era(SS.COLLECTOR_RESTART_MS) == "era1_post_restart"
+
+
+def test_there_is_more_than_one_collector_boundary():
+    """경계를 하나만 알면 두 번째 경계를 넘어 뭉치게 된다 (02:26 KST)."""
+    assert len(SS.COLLECTOR_BOUNDARIES_MS) == len(SS.COLLECTOR_ERAS) - 1
+    assert list(SS.COLLECTOR_BOUNDARIES_MS) == sorted(SS.COLLECTOR_BOUNDARIES_MS)
+    last = SS.COLLECTOR_BOUNDARIES_MS[-1]
+    assert SS.collector_era(last - 1) == "era1_post_restart"
+    assert SS.collector_era(last) == "era2_post_0226"
 
 
 def test_vectorised_era_matches_the_scalar_rule():
