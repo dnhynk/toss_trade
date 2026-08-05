@@ -379,8 +379,11 @@ def planned_windows(log_dir: Path, state_dir: Path) -> list[tuple[int, int, str]
             a = int(marker.stat().st_mtime * 1000)
             b = (int(until.timestamp() * 1000) if until
                  else a + PLANNED_DEFAULT_MIN * 60_000)
-            raw.append((min(a, b), max(a, b),
-                        f"라이브 마커: {reason or '(사유 미기재)'}"))
+            # `until` 이 파일 시각보다 앞이면 **이미 만료된 마커**다(워치독이 다음 주기에
+            # 지운다). 그걸 [until, mtime] 구간으로 뒤집어 읽으면 **있지도 않았던 계획 창을
+            # 과거에 만들어내고**, 그 시간대의 진짜 공백이 PLANNED_ 로 삼켜진다.
+            if b > a:
+                raw.append((a, b, f"라이브 마커: {reason or '(사유 미기재)'}"))
         except OSError:
             pass
     for p in sorted(Path(log_dir).glob("PLANNED_*.txt")):
@@ -399,9 +402,11 @@ def planned_windows(log_dir: Path, state_dir: Path) -> list[tuple[int, int, str]
             b = int(dt.datetime.strptime(mu.group(1), "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
         except ValueError:
             continue
+        if b <= a:                 # 머리말이 깨진 파일 — 구간을 뒤집어 지어내지 않는다
+            continue
         mr = _PLANNED_REASON_RX.search(head)
         why = (mr.group(1).strip() if mr else "") or "(사유 미기재)"
-        raw.append((min(a, b), max(a, b), why))
+        raw.append((a, b, why))
     raw.sort()
     merged: list[tuple[int, int, list[str]]] = []
     for a, b, why in raw:
