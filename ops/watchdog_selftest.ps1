@@ -46,7 +46,7 @@ function New-Sandbox {
 # ago it was last written (the freeze), snapAgoS how long before THAT the last ranking
 # snapshot was taken.
 function Write-StateFile([string]$dir, [string]$session, [double]$savedAgoS, [double]$snapAgoS,
-                         [hashtable]$counters = $null) {
+                         [hashtable]$counters = $null, [hashtable]$tiers = $null) {
     $nowMs = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
     $savedMs = $nowMs - [long]($savedAgoS * 1000)
     $snapMs = $savedMs - [long]($snapAgoS * 1000)
@@ -54,11 +54,49 @@ function Write-StateFile([string]$dir, [string]$session, [double]$savedAgoS, [do
         $counters = @{ prices_seen = 1000; prices_missing = 0; candles_1m = 5000
                        tier2_orderbook_snaps = 900; ranking_snaps = 700 }
     }
+    if ($null -eq $tiers) { $tiers = @{} }
     $obj = @{ version = 1; session = $session; saved_ms = $savedMs
               last_ranking_snap_ms = $snapMs; counters = $counters
-              tiers = @{}; watchlist = @() }
+              tiers = $tiers; watchlist = @() }
     [IO.File]::WriteAllText((Join-Path $dir "data\collector_state.json"),
         ($obj | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+}
+
+# A tier membership map as collector_state.json carries it: symbol -> tier.
+function New-Tiers([int]$tier2, [int]$tier3) {
+    $t = @{}
+    for ($i = 0; $i -lt $tier2; $i++) { $t["T2SYM$i"] = 2 }
+    for ($i = 0; $i -lt $tier3; $i++) { $t["T3SYM$i"] = 3 }
+    return $t
+}
+
+# Drive N watchdog cycles in which tier2_orderbook_snaps NEVER advances while the rest of
+# the collector keeps working. Modelling "the rest keeps working" matters: if every counter
+# froze, the counter-freeze detector would fire first and the case under test would never
+# be reached. So candles/rankings/prices advance each cycle, exactly as they do live when
+# only the tier2 orderbook sweep is yielding.
+#
+# skipRate / skip429 are the per-cycle increments of the two deliberate-skip counters -
+# they are what separates "the collector chose to skip" from "the loop is dead".
+function Invoke-Tier2FlatCycles([string]$dir, [int]$cycles, [int]$skipRate, [int]$skip429,
+                                [hashtable]$tiers, [string[]]$logExtra = @()) {
+    $rate = 2000; $n429 = 250; $candles = 5000; $ranks = 700; $seen = 1000
+    $rc = 0
+    for ($i = 0; $i -lt $cycles; $i++) {
+        $rate += $skipRate
+        $n429 += $skip429
+        $candles += 40; $ranks += 25; $seen += 500      # everything else still moves
+        Write-StateFile $dir "regular" 20 25 @{
+            prices_seen = $seen; prices_missing = 0; candles_1m = $candles
+            ranking_snaps = $ranks
+            tier2_orderbook_snaps = 22069            # FROZEN - the observation under test
+            tier2_orderbook_skipped_rate = $rate
+            tier2_orderbook_skipped_429 = $n429
+        } $tiers
+        Write-CollectorLog $dir "regular" 25 25 0 $logExtra
+        $rc = Invoke-Watchdog $dir
+    }
+    return $rc
 }
 
 # A collector.log whose newest telemetry line is `session` and `agoS` seconds old.
@@ -428,6 +466,128 @@ function Test-S4-SymbolNotFoundIsANote {
     Assert "S4" "filed as a NOTE" (@($notes | Where-Object { $_ -match "symbol_not_found" }).Count -eq 1) ($notes -join ",")
 }
 
+# --------------------------------------------------------------------------- #
+# TRADEOFF vs FAULT (2026-08-05). The night of 08-05 produced five ALERT_ files for
+# tier2_orderbook_flat while the collector was doing exactly what it was designed to do:
+# tier3 filled to capacity for the first time and the tier2 orderbook sweep yielded its
+# budget. Two neighbouring blocks graded the same event in opposite directions.
+#
+# The TR* cases below are the fix. The TC* cases are the CONTROL GROUP and they must pass
+# both before and after - without them, "no more false ALERTs" is indistinguishable from
+# "the alarm was switched off".
+# --------------------------------------------------------------------------- #
+
+function Test-TR1-BudgetYieldIsATradeoffNotAnAlert {
+    # The 2026-08-05 night, replayed with its measured shape: snaps frozen at 22,069,
+    # skipped_rate climbing, skipped_429 flat, tier2 populated.
+    $d = New-Sandbox
+    Write-SettledOpenState $d
+    Invoke-Tier2FlatCycles $d 3 420 0 (New-Tiers 287 10) | Out-Null
+    $alerts = Get-Alerts $d "ALERT"
+    $trade = Get-Alerts $d "TRADEOFF"
+    Assert "TR1" "a TRADEOFF_ file was written" ($trade.Count -eq 1) ($trade -join ",")
+    Assert "TR1" "NO ALERT_ file at all - the morning rule survives" ($alerts.Count -eq 0) ($alerts -join ",")
+    $body = Get-AlertBody $d $trade "tier2_orderbook_yield"
+    Assert "TR1" "reason names budget pressure" ($body -match "budget pressure \(skipped_rate \+\d+\)") $body
+    Assert "TR1" "says plainly it is not a fault" ($body -match "not a fault") $body
+}
+
+function Test-TR2-Cooldown429IsATradeoffWithItsOwnReason {
+    # Same shape, different cause. The reason must be distinguishable in the body -
+    # a 429 cooldown and a budget-headroom yield call for different responses.
+    $d = New-Sandbox
+    Write-SettledOpenState $d
+    Invoke-Tier2FlatCycles $d 3 0 12 (New-Tiers 200 10) | Out-Null
+    $trade = Get-Alerts $d "TRADEOFF"
+    Assert "TR2" "a TRADEOFF_ file was written" ($trade.Count -eq 1) ($trade -join ",")
+    Assert "TR2" "no ALERT_" ((Get-Alerts $d "ALERT").Count -eq 0) ""
+    $body = Get-AlertBody $d $trade "tier2_orderbook_yield"
+    Assert "TR2" "reason names the 429 cooldown" ($body -match "429 cooldown \(skipped_429 \+\d+\)") $body
+    Assert "TR2" "does NOT claim budget pressure" ($body -notmatch "budget pressure") $body
+}
+
+function Test-TR3-TradeoffBodyCarriesAllFourMandatoryFields {
+    # A tradeoff record missing any of the four is a rumour. Each is checked for its
+    # CONTENT, not just its heading - an empty "HOW MUCH:" would pass a heading-only test.
+    $d = New-Sandbox
+    Write-SettledOpenState $d
+    Invoke-Tier2FlatCycles $d 3 420 0 (New-Tiers 287 10) | Out-Null
+    $body = Get-AlertBody $d (Get-Alerts $d "TRADEOFF") "tier2_orderbook_yield"
+    Assert "TR3" "1 WHAT was given up names the stream" ($body -match "1\. WHAT was given up\s*: tier2 orderbook snapshots") $body
+    Assert "TR3" "2 FOR WHAT carries numbers" ($body -match "2\. FOR WHAT\s*:.*\+\d+") $body
+    Assert "TR3" "2 FOR WHAT carries the MARKET_DATA budget" ($body -match "MARKET_DATA budget at this moment: \S") $body
+    Assert "TR3" "2 FOR WHAT carries tier populations" ($body -match "tier2 members waiting: \d+, tier3 members: \d+") $body
+    Assert "TR3" "3 HOW LONG is a duration in seconds" ($body -match "3\. HOW LONG\s*: \d+s continuous") $body
+    Assert "TR3" "4 HOW MUCH is a yield percentage" ($body -match "4\. HOW MUCH\s*: [\d.]+% of attempted polls yielded") $body
+    Assert "TR3" "states the no-escalation rule" ($body -match "NEVER escalates to ALERT_") $body
+}
+
+function Test-TR4-LongDurationStillDoesNotEscalate {
+    # User decision 2026-08-05: lasting is not breaking. Six cycles of continuous yield
+    # must still be a TRADEOFF_ - escalating would read as "a restart would help".
+    $d = New-Sandbox
+    Write-SettledOpenState $d
+    Invoke-Tier2FlatCycles $d 6 420 0 (New-Tiers 287 10) | Out-Null
+    Assert "TR4" "still no ALERT_ after 6 flat cycles" ((Get-Alerts $d "ALERT").Count -eq 0) ""
+    Assert "TR4" "still a TRADEOFF_" ((Get-Alerts $d "TRADEOFF").Count -ge 1) ""
+}
+
+function Test-TR5-ZeroTier2MembersIsANoteNotAnAlert {
+    # Nothing to poll is neither a fault nor a tradeoff - no data was given up because
+    # there was no candidate. It must not be filed as either.
+    $d = New-Sandbox
+    Write-SettledOpenState $d
+    Invoke-Tier2FlatCycles $d 3 0 0 (New-Tiers 0 5) | Out-Null
+    $notes = Get-Alerts $d "NOTE"
+    Assert "TR5" "no ALERT_" ((Get-Alerts $d "ALERT").Count -eq 0) ((Get-Alerts $d "ALERT") -join ",")
+    Assert "TR5" "no TRADEOFF_ either - nothing was sacrificed" ((Get-Alerts $d "TRADEOFF").Count -eq 0) ""
+    Assert "TR5" "filed as NOTE_" (@($notes | Where-Object { $_ -match "tier2_orderbook_no_members" }).Count -eq 1) ($notes -join ",")
+}
+
+# ---- CONTROL GROUP: these must be green BEFORE and AFTER the fix ----
+
+function Test-TC1-RealStallIsStillAnAlert {
+    # THE ONE THAT MATTERS. Snaps flat, BOTH skip counters flat, tier2 populated.
+    # The collector is not choosing to skip - it is not running. This must stay loud.
+    $d = New-Sandbox
+    Write-SettledOpenState $d
+    Invoke-Tier2FlatCycles $d 3 0 0 (New-Tiers 287 10) | Out-Null
+    $alerts = Get-Alerts $d "ALERT"
+    Assert "TC1" "still ALERT_" (@($alerts | Where-Object { $_ -match "tier2_orderbook_flat" }).Count -eq 1) ($alerts -join ",")
+    Assert "TC1" "not filed as TRADEOFF_" ((Get-Alerts $d "TRADEOFF").Count -eq 0) ""
+    $body = Get-AlertBody $d $alerts "tier2_orderbook_flat"
+    Assert "TC1" "body says no skip counter moved" ($body -match "did NOT record any deliberate skip") $body
+}
+
+function Test-TC2-DisabledPollingIsStillAnAlert {
+    # polling.tier2_orderbook_s = 0 makes the loop idle: no snaps, no skips, members
+    # present. Observationally identical to a stall, and it must stay ALERT_ - the body
+    # points at the cheap check rather than pretending to know which one it is.
+    $d = New-Sandbox
+    Write-SettledOpenState $d
+    $ts = (Get-Date).AddSeconds(-30).ToString("yyyy-MM-dd HH:mm:ss")
+    Invoke-Tier2FlatCycles $d 3 0 0 (New-Tiers 287 10) @(
+        "$ts,000 INFO    tier2 orderbook: disabled (polling.tier2_orderbook_s=0)") | Out-Null
+    $alerts = Get-Alerts $d "ALERT"
+    Assert "TC2" "still ALERT_" (@($alerts | Where-Object { $_ -match "tier2_orderbook_flat" }).Count -eq 1) ($alerts -join ",")
+    $body = Get-AlertBody $d $alerts "tier2_orderbook_flat"
+    Assert "TC2" "body names the disabled-config hypothesis" ($body -match "polling.tier2_orderbook_s is 0 or unset") $body
+}
+
+function Test-TC3-YieldTurningIntoAStallIsNotDedupedAway {
+    # The subtle one. If both verdicts shared a dedup key, a yield that later became a real
+    # stall would be silenced for the rest of the dedup window - suppressed by the very
+    # record that said "this is fine".
+    $d = New-Sandbox
+    Write-SettledOpenState $d
+    Invoke-Tier2FlatCycles $d 3 420 0 (New-Tiers 287 10) | Out-Null
+    Assert "TC3" "phase 1 is a TRADEOFF_" ((Get-Alerts $d "TRADEOFF").Count -eq 1) ""
+    Invoke-Tier2FlatCycles $d 3 0 0 (New-Tiers 287 10) | Out-Null   # skips stop, snaps still flat
+    $alerts = Get-Alerts $d "ALERT"
+    Assert "TC3" "phase 2 raises a real ALERT_ despite the recent TRADEOFF_" `
+        (@($alerts | Where-Object { $_ -match "tier2_orderbook_flat" }).Count -eq 1) ($alerts -join ",")
+}
+
 function Test-R1-HealthySessionIsQuiet {
     # The baseline: a normal open session with everything fresh writes no ALERT at all.
     # Without this, "no alert" in the cases above could just mean the watchdog crashed.
@@ -466,7 +626,15 @@ try {
         "Test-S1-SchemaMismatchAllStockNotFound",
         "Test-S2-SchemaMismatchRealShapeChange",
         "Test-S3-SchemaMismatchNoEvidence",
-        "Test-S4-SymbolNotFoundIsANote")
+        "Test-S4-SymbolNotFoundIsANote",
+        "Test-TR1-BudgetYieldIsATradeoffNotAnAlert",
+        "Test-TR2-Cooldown429IsATradeoffWithItsOwnReason",
+        "Test-TR3-TradeoffBodyCarriesAllFourMandatoryFields",
+        "Test-TR4-LongDurationStillDoesNotEscalate",
+        "Test-TR5-ZeroTier2MembersIsANoteNotAnAlert",
+        "Test-TC1-RealStallIsStillAnAlert",
+        "Test-TC2-DisabledPollingIsStillAnAlert",
+        "Test-TC3-YieldTurningIntoAStallIsNotDedupedAway")
     foreach ($c in $cases) {
         try { & $c } catch { Assert $c "case ran to completion" $false $_.Exception.Message }
     }

@@ -26,6 +26,52 @@
 
     If data/ops_state/STOP exists the watchdog stands down completely
     (an operator stop is intentional - never fight it).
+
+    ---------------------------------------------------------------------------
+    FILE GRADE CONTRACT - four prefixes, and what each one asks of the reader.
+    (User decision 2026-08-05. The Korean copy, the census below, and the
+    proof-of-failure table live in docs/34_alert_grades.md.)
+
+      ALERT_     A FAULT. Something is broken.          -> fix it
+      PLANNED_   A human did this on purpose.           -> ignore it
+      NOTE_      Worked as designed; recorded for info. -> read if curious
+      TRADEOFF_  The SYSTEM GAVE SOMETHING UP. Not a    -> read and decide
+                 fault, but the user must judge it.
+
+    Why TRADEOFF_ exists: on 2026-08-05 tier2_orderbook_flat fired five ALERTs
+    overnight for a collector that was working exactly as designed - tier3 had
+    filled to capacity for the first time and the tier2 orderbook sweep, which
+    this very file elsewhere calls "the designed sacrifice order", yielded its
+    budget. Two neighbouring blocks graded the same event in opposite ways
+    depending on which counter you happened to look at. That is not noise, it is
+    self-contradiction, and it re-broke the rule that any ALERT_ file means
+    trouble.
+
+    A TRADEOFF_ body MUST carry all four of these. If any is missing it is not a
+    tradeoff record, it is a rumour:
+      1. WHAT was given up  (which data stream)
+      2. FOR WHAT           (where the budget went - with numbers)
+      3. HOW LONG           (continuous duration of the yield)
+      4. HOW MUCH           (yield rate: skipped vs attempted)
+
+    TRADEOFF_ NEVER escalates to ALERT_, no matter how long it lasts (user
+    decision). Lasting a long time is not a fault - it is the design doing what
+    it does, and filing it as ALERT_ reads as "a restart would help", which
+    provokes exactly the wrong response. Record duration and yield rate instead
+    and let the size speak. Do not invent a new threshold.
+
+    The four grades are counted, with a one-line legend, in the morning report
+    (ops/daily_health.py) - do not assume the reader remembers what they mean.
+
+    ADDING A NEW CHECK? Decide its grade FIRST, and write down which observation
+    separates a fault from a designed behaviour. If your check fires on the
+    ABSENCE of something (a counter not advancing, an age exceeding a bound),
+    ask: can the collector produce this absence on purpose? If yes, you must
+    read the counter that proves it and grade accordingly - otherwise you are
+    grading a phenomenon without knowing its cause, which is how the false
+    ALERTs above happened. docs/34 section 4 holds the census of that family:
+    12 absence-triggered checks, 4 of which a designed behaviour can imitate,
+    3 of which now separate the cause. Add your check to that table.
 #>
 param(
     [ValidateSet("watchdog", "sentinel")]
@@ -193,13 +239,15 @@ function Raise-Alert($state, [string]$key, [string]$level, [string]$body,
     Set-Prop $alerts $key $NowEpoch
     Set-Prop $state "alert_last" $alerts
 
-    # Prefix decides what a morning glance means. ALERT_ must stay "something needs
-    # attention": PLANNED_ for operator-driven work, NOTE_ for INFO-level records that
-    # are explicitly not faults (designed budget yielding, the clamp branch firing).
-    # Filing those as ALERT_ re-breaks the "any ALERT_ file is trouble" rule.
+    # Prefix decides what a morning glance means. See the FILE GRADE CONTRACT in the
+    # header for the full four-grade table and the rule for adding new checks.
+    #   ALERT_ = fault, PLANNED_ = a human did it, NOTE_ = worked as designed,
+    #   TRADEOFF_ = the system gave something up and the user must judge it.
+    # Filing a designed behaviour as ALERT_ re-breaks "any ALERT_ file is trouble".
     $planned = $alwaysPlanned -or $script:PlannedNow.active
     $prefix = "ALERT"
     if ($level -eq "INFO") { $prefix = "NOTE" }
+    if ($level -eq "TRADEOFF") { $prefix = "TRADEOFF" }
     $header = ""
     if ($planned) {
         $prefix = "PLANNED"
@@ -338,6 +386,20 @@ function Get-TelemetryFromState {
     foreach ($k in @("tier2_orderbook_skipped_rate", "tier2_orderbook_skipped_429")) {
         if ($c.ContainsKey($k)) { $c["tier2_orderbook_skipped"] += $c[$k] }
     }
+    # How many symbols the tier2 orderbook sweep actually iterates. It walks members(2)
+    # ONLY - tier3 is excluded because its own loop polls far more densely - so the right
+    # population is "tier == 2", not "tier >= 2". Getting this wrong would make a busy
+    # tier3 look like a populated tier2 and hide the "nothing to poll" case.
+    $c["tier2_members"] = -1.0
+    $c["tier3_members"] = -1.0
+    if ($null -ne $j.tiers) {
+        $n2 = 0; $n3 = 0
+        foreach ($p in $j.tiers.PSObject.Properties) {
+            if ([int]$p.Value -eq 2) { $n2++ } elseif ([int]$p.Value -eq 3) { $n3++ }
+        }
+        $c["tier2_members"] = [double]$n2
+        $c["tier3_members"] = [double]$n3
+    }
     # ranking_snap_age_s is measured against saved_ms - the instant this observation was
     # taken - NOT against the wall clock. Against 'now' the value grows without bound the
     # moment the file stops being rewritten, so a perfectly healthy collector sitting in a
@@ -360,7 +422,8 @@ function Get-TelemetryFromState {
     if ($null -ne $j.session) { $sess = [string]$j.session }
     $sig = (($c.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join " ")
     return @{ ts = $ts; ts_str = $ts.ToString("yyyy-MM-dd HH:mm:ss"); session = $sess
-              counters = $c; counters_sig = $sig; source = "state"; last_snap_str = $lastSnapStr }
+              counters = $c; counters_sig = $sig; source = "state"; last_snap_str = $lastSnapStr
+              skip_split_available = $true }
 }
 
 # Read the collector's health from the best available source, and say clearly when it
@@ -410,7 +473,21 @@ function Get-CollectorSnapshot {
                                 "newest telemetry line ($($t.ts_str)); kept it as the observation, " +
                                 "session not trusted: " + ($tried -join "; ")) }
         }
+        $t["counters_raw"] = [string]$t.counters      # budget segment lives here only
         $t["counters"] = Parse-Counters $t.counters
+        # The telemetry line prints tier2 = len(at_least(2)), i.e. tier2 AND tier3, but the
+        # tier2 orderbook sweep walks members(2) only. Subtract tier3 to get the population
+        # the loop actually iterates.
+        $t.counters["tier2_members"] = -1.0
+        $t.counters["tier3_members"] = -1.0
+        if ($t.counters.ContainsKey("tier2") -and $t.counters.ContainsKey("tier3")) {
+            $t.counters["tier2_members"] = [math]::Max(0.0, $t.counters["tier2"] - $t.counters["tier3"])
+            $t.counters["tier3_members"] = $t.counters["tier3"]
+        }
+        # The log line only carries the COMBINED tier2_orderbook_skipped; the per-reason
+        # split (rate vs 429) exists solely in collector_state.json. Say so rather than
+        # letting a missing key read as "no skips".
+        $t["skip_split_available"] = $false
         $t["counters_sig"] = (($t.counters.GetEnumerator() | Sort-Object Name |
             ForEach-Object { "$($_.Name)=$($_.Value)" }) -join " ")
         $t["source"] = "log"
@@ -928,6 +1005,125 @@ function Get-ClosedByFresherSource {
             "observation ($($tele.ts_str)) and says session=closed")
 }
 
+# Counter read that keeps "absent" distinguishable from "zero" at the call site.
+# NOT named Get-Counter: that is a built-in PowerShell cmdlet (performance counters)
+# and shadowing it would make any snippet lifted out of this file call the wrong thing.
+function Get-CounterValue($counters, [string]$key, $default) {
+    if ($null -ne $counters -and $counters.ContainsKey($key)) { return $counters[$key] }
+    return $default
+}
+
+# The MARKET_DATA budget line, read from the newest telemetry line. This is the "FOR WHAT,
+# with numbers" half of a tradeoff record - without it the reader is told something was
+# sacrificed but not what won. Only the log line carries it (the state file stores counters,
+# not budget), so it is read on demand and its absence is said out loud rather than blanked.
+function Get-BudgetLine {
+    $xc = Get-CrossCheck
+    if ($null -eq $xc -or $null -eq $xc.counters) { return "(no telemetry line to read the budget from)" }
+    $raw = [string]$xc.counters
+    if ($raw -notmatch "\|(.*)$") { return "(telemetry line carries no budget segment)" }
+    return ($Matches[1].Trim())
+}
+
+# tier2 orderbook: decide WHY the snap counter stopped, then grade. Returns the level, a
+# short tag for the summary line, and the full body.
+#
+# The four mandatory fields of a TRADEOFF_ record (header contract) are assembled here:
+# WHAT was given up, FOR WHAT (budget numbers), HOW LONG (since the run started, not this
+# cycle), HOW MUCH (skipped vs attempted). A tradeoff record missing any of them is a
+# rumour, so each one is written unconditionally - "unknown" is printed where a source
+# genuinely cannot supply it.
+function Get-Tier2BookVerdict($state, $cur, $tele) {
+    $base = Get-Prop $state "t2book_flat_base" $null
+    $sinceEpoch = if ($null -ne $base) { [int](Get-Prop $base "since" $NowEpoch) } else { $NowEpoch }
+    $durS = [math]::Max($NowEpoch - $sinceEpoch, 0)
+    $b0Rate = if ($null -ne $base) { [double](Get-Prop $base "rate" 0) } else { 0 }
+    $b0429 = if ($null -ne $base) { [double](Get-Prop $base "n429" 0) } else { 0 }
+    $b0Skip = if ($null -ne $base) { [double](Get-Prop $base "skipped" 0) } else { 0 }
+    $curRate = [double](Get-CounterValue $cur "tier2_orderbook_skipped_rate" 0)
+    $cur429 = [double](Get-CounterValue $cur "tier2_orderbook_skipped_429" 0)
+    $curSkip = [double](Get-CounterValue $cur "tier2_orderbook_skipped" 0)
+    $runRate = $curRate - $b0Rate
+    $run429 = $cur429 - $b0429
+    $runSkip = $curSkip - $b0Skip
+    $members = [int](Get-CounterValue $cur "tier2_members" -1)
+    # $tele is a HASHTABLE, not a PSObject - Get-Prop walks PSObject.Properties and would
+    # silently return the default here, which would make every state-sourced verdict claim
+    # the rate/429 split was unavailable. Read the key directly.
+    $splitOk = $false
+    if ($null -ne $tele -and $tele.ContainsKey("skip_split_available")) {
+        $splitOk = [bool]$tele["skip_split_available"]
+    }
+    $snaps = [int](Get-CounterValue $cur "tier2_orderbook_snaps" 0)
+
+    # attempted = what the sweep tried this run. Snaps are flat by definition of being here,
+    # so attempts are the skips. Expressing the yield as a rate over attempts avoids needing
+    # to know polling.tier2_orderbook_s, which the watchdog cannot see.
+    $attempted = $runSkip
+    $yieldPct = if ($attempted -gt 0) { [math]::Round(100.0 * $runSkip / $attempted, 1) } else { 0.0 }
+
+    # (a) nothing to poll - not a fault and not a tradeoff either; there was no choice to make
+    if ($members -eq 0) {
+        return @{ level = "INFO"; key = "tier2_orderbook_no_members"; tag = "no_members"; body = (
+            "tier2_orderbook_snaps has not advanced (total $snaps) and there are ZERO tier2 " +
+            "members to poll, so the sweep has nothing to do. session=$session, flat for " +
+            "${durS}s.`r`n`r`nThis is not a fault and not a tradeoff - no data was given up, " +
+            "there was simply no candidate. It becomes worth asking about only if tier2 stays " +
+            "empty during an active session, which is a promotion question, not a polling one.") }
+    }
+
+    # (b) the collector deliberately yielded - the 2026-08-05 case
+    $yielded = ($runRate -gt 0 -or $run429 -gt 0 -or ($runSkip -gt 0 -and -not $splitOk))
+    if ($yielded) {
+        $why = @()
+        if ($splitOk) {
+            if ($runRate -gt 0) { $why += "budget pressure (skipped_rate +$runRate)" }
+            if ($run429 -gt 0) { $why += "429 cooldown (skipped_429 +$run429)" }
+        } else {
+            $why += ("cause split unavailable from this source - the collector.log telemetry " +
+                     "line carries only the combined tier2_orderbook_skipped (+$runSkip); the " +
+                     "rate-vs-429 split exists only in data/collector_state.json")
+        }
+        $memTxt = if ($members -lt 0) { "unknown" } else { "$members" }
+        return @{ level = "TRADEOFF"; key = "tier2_orderbook_yield"; tag = "yielded"; body = (
+            "The collector GAVE UP tier2 orderbook polling. This is not a fault - it is the " +
+            "designed sacrifice order (tier2 orderbook is the first thing dropped under " +
+            "pressure). It is filed as TRADEOFF_ because the size of the sacrifice is a " +
+            "judgement call and that call is yours, not the watchdog's.`r`n`r`n" +
+            "1. WHAT was given up : tier2 orderbook snapshots - the pre-promotion spread " +
+            "trajectory. The strategy's entry-window and exit-cost design reads this; it " +
+            "cannot be back-filled, so this window is gone for good.`r`n" +
+            "2. FOR WHAT          : " + ($why -join "; ") + "`r`n" +
+            "                       MARKET_DATA budget at this moment: " + (Get-BudgetLine) + "`r`n" +
+            "                       tier2 members waiting: $memTxt, tier3 members: " +
+            "$([int](Get-CounterValue $cur 'tier3_members' -1)) (tier3 polls the same MARKET_DATA " +
+            "budget far more densely - 4s per symbol - so a full tier3 is what crowds this out)`r`n" +
+            "3. HOW LONG          : ${durS}s continuous (snap counter frozen at $snaps since " +
+            "$([DateTimeOffset]::FromUnixTimeSeconds($sinceEpoch).LocalDateTime.ToString('yyyy-MM-dd HH:mm:ss')))`r`n" +
+            "4. HOW MUCH          : ${yieldPct}% of attempted polls yielded ($runSkip skipped / " +
+            "$attempted attempted over this run; 0 snapshots taken)`r`n`r`n" +
+            "This NEVER escalates to ALERT_ however long it lasts (user decision 2026-08-05): " +
+            "lasting is not breaking, and an ALERT_ here reads as 'a restart would help', " +
+            "which is the wrong response. If the duration or the yield rate above looks too " +
+            "expensive, that is a budget decision - raise polling.tier2_orderbook_s, cut " +
+            "tier3 capacity, or accept it.") }
+    }
+
+    # (c) genuinely stalled or misconfigured - this one MUST stay loud
+    $memTxt = if ($members -lt 0) { "unknown (could not read tier membership)" } else { "$members" }
+    return @{ level = "WARN"; key = "tier2_orderbook_flat"; tag = "flat"; body = (
+        "tier2_orderbook_snaps has not advanced (total $snaps) for ${durS}s during " +
+        "session=$session, and the collector did NOT record any deliberate skip in that " +
+        "time (skipped_rate +$runRate, skipped_429 +$run429) while tier2 members = $memTxt.`r`n`r`n" +
+        "Because no skip counter moved, this is NOT the designed budget yield - the sweep is " +
+        "not choosing to skip, it is not running. Remaining causes:`r`n" +
+        "  - polling.tier2_orderbook_s is 0 or unset in the live config (the loop idles by " +
+        "design when disabled, and logs 'tier2 orderbook: disabled' once at startup)`r`n" +
+        "  - the loop is stalled or died inside run_tier2_orderbook`r`n`r`n" +
+        "This is silent - nothing errors when it happens - which is why it is graded ALERT_. " +
+        "Check the collector.log for 'tier2 orderbook: disabled' first; it is the cheap answer.") }
+}
+
 # Evidence block shared by every alert that could conceivably be this false alarm again.
 # On 2026-08-04 the ALERT file said "the ranking loop has silently stopped ... permanent
 # data loss" when nothing at all was wrong, and it took a person a long morning to tell the
@@ -1179,27 +1375,59 @@ if ($null -ne $tele) {
             "$($cur['loop_errors'])) - something is throwing repeatedly inside the loops.") 3600 | Out-Null
     }
     # tier2 orderbook (main 4e6e24b): the pre-promotion spread trajectory the strategy's
-    # exit design needs. Flat during an open session means we are silently NOT collecting
-    # it - the failure mode is invisible otherwise, because nothing errors.
+    # exit design needs. A flat counter during an open session used to be graded WARN
+    # outright, listing three candidate causes - and on 2026-08-05 the real cause was a
+    # fourth one that was not even on the list: the collector deliberately yielded its
+    # budget because tier3 had filled to capacity. Five ALERTs overnight for a healthy
+    # collector, while the block 20 lines below called the very same event "the designed
+    # sacrifice order, not a fault".
+    #
+    # So: separate the cause BEFORE choosing the grade. Every input here is a counter that
+    # already exists - nothing in tossmon/** had to change.
+    #   snaps flat + a skip counter rising  -> TRADEOFF_ (the system gave something up)
+    #   snaps flat + no skips + members > 0 -> ALERT_    (a real stall or misconfig)
+    #   snaps flat + members == 0           -> NOTE_     (nothing to poll)
     if ($openSession -and $cur.ContainsKey("tier2_orderbook_snaps")) {
         $dT2 = Delta "tier2_orderbook_snaps"
         if ($null -ne $dT2 -and $dT2 -eq 0) {
             $strk = (Get-Prop $state "t2book_flat_strikes" 0) + 1
             Set-Prop $state "t2book_flat_strikes" $strk
+            # Anchor the run the first time it goes flat, so duration and yield rate are
+            # measured over the WHOLE yield, not over one 5-minute cycle. Without this the
+            # "how long / how much" fields would reset every cycle and a 6-hour yield would
+            # read the same as a 15-minute one.
+            if ($strk -eq 1) {
+                Set-Prop $state "t2book_flat_base" ([PSCustomObject]@{
+                    since = $NowEpoch
+                    snaps = [double]$cur["tier2_orderbook_snaps"]
+                    rate = [double](Get-CounterValue $cur "tier2_orderbook_skipped_rate" 0)
+                    n429 = [double](Get-CounterValue $cur "tier2_orderbook_skipped_429" 0)
+                    skipped = [double](Get-CounterValue $cur "tier2_orderbook_skipped" 0)
+                })
+            }
             if ($strk -ge 3) {
-                $problems += "tier2_orderbook_flat_x$strk"
-                Raise-Alert $state "tier2_orderbook_flat" "WARN" (
-                    "tier2_orderbook_snaps has not advanced for $strk cycles during session=" +
-                    "$session (total $($cur['tier2_orderbook_snaps'])). Either polling.tier2_orderbook_s " +
-                    "is 0/unset in the live config, or there are no tier2 members, or the loop " +
-                    "is stalled. This is silent - no error is logged when it happens.") 3600 | Out-Null
+                $verdict = Get-Tier2BookVerdict $state $cur $tele
+                $problems += "tier2_orderbook_$($verdict.tag)_x$strk"
+                # Each verdict owns its own dedup key. Sharing one key would mean that a
+                # yield which later turns into a genuine stall stays silent for the rest of
+                # the dedup window - the alarm would be suppressed by the very record that
+                # said "this is fine". Clearing the other two keys also lets the opposite
+                # transition re-fire immediately.
+                foreach ($k in @("tier2_orderbook_flat", "tier2_orderbook_yield",
+                                 "tier2_orderbook_no_members")) {
+                    if ($k -ne $verdict.key) { Clear-AlertKey $state $k }
+                }
+                Raise-Alert $state $verdict.key $verdict.level $verdict.body 3600 | Out-Null
             }
         } else {
             Set-Prop $state "t2book_flat_strikes" 0
-            Clear-AlertKey $state "tier2_orderbook_flat"
+            Set-Prop $state "t2book_flat_base" $null
+            foreach ($k in @("tier2_orderbook_flat", "tier2_orderbook_yield",
+                             "tier2_orderbook_no_members")) { Clear-AlertKey $state $k }
         }
     } else {
         Set-Prop $state "t2book_flat_strikes" 0
+        Set-Prop $state "t2book_flat_base" $null
     }
     # Budget yielding is by design (tier2 orderbook is the first thing sacrificed), so
     # this is INFO - it explains a lower snap count rather than reporting a fault.
