@@ -1,0 +1,1136 @@
+{
+  "meta": {
+    "started_ms": 1785901541367,
+    "started_kst": "2026-08-05T12:45:41.367+09:00",
+    "started_et": "2026-08-04T23:45:41.367-04:00",
+    "base_url": "https://openapi.tossinvest.com",
+    "probes": [
+      "group_coupling"
+    ],
+    "usage_ratio": 0.7,
+    "counters": {
+      "requests": 120,
+      "retries": 0,
+      "http_429": 0,
+      "http_5xx": 0,
+      "auth_refresh": 0,
+      "precision_rounded": 0,
+      "http_429_no_retry_after": 0,
+      "http_429_under_own_limit": 0
+    },
+    "finished_kst": "2026-08-05T12:54:54.759+09:00"
+  },
+  "group_coupling": {
+    "verdict": "확인됨",
+    "measured_groups": [
+      "STOCK",
+      "MARKET_INFO",
+      "RANKING",
+      "MARKET_DATA_CHART"
+    ],
+    "aborted": null,
+    "per_group": {
+      "STOCK": {
+        "limit": 5,
+        "n": 30,
+        "alone_pct": 100.0,
+        "depressed_n": 0,
+        "min_remaining": 4,
+        "rtt_min_ms": 54.3,
+        "rtt_p50_ms": 70.0,
+        "rtt_p90_ms": 88.1,
+        "rtt_max_ms": 430.1,
+        "verdict": "MD 와 독립"
+      },
+      "MARKET_INFO": {
+        "limit": 3,
+        "n": 30,
+        "alone_pct": 100.0,
+        "depressed_n": 0,
+        "min_remaining": 2,
+        "rtt_min_ms": 52.4,
+        "rtt_p50_ms": 62.1,
+        "rtt_p90_ms": 75.9,
+        "rtt_max_ms": 605.2,
+        "verdict": "MD 와 독립"
+      },
+      "RANKING": {
+        "limit": 5,
+        "n": 30,
+        "alone_pct": 100.0,
+        "depressed_n": 0,
+        "min_remaining": 4,
+        "rtt_min_ms": 62.9,
+        "rtt_p50_ms": 74.4,
+        "rtt_p90_ms": 171.6,
+        "rtt_max_ms": 441.8,
+        "verdict": "MD 와 독립"
+      },
+      "MARKET_DATA_CHART": {
+        "limit": 5,
+        "n": 30,
+        "alone_pct": 83.3,
+        "depressed_n": 5,
+        "min_remaining": 3,
+        "rtt_min_ms": 59.1,
+        "rtt_p50_ms": 70.8,
+        "rtt_p90_ms": 86.2,
+        "rtt_max_ms": 448.3,
+        "verdict": "공유 의심 — 우리 1콜뿐인데 remaining 이 더 깎였다"
+      }
+    },
+    "background_control": {
+      "baseline_before_probe": {
+        "window_min": 240.0,
+        "n": 49,
+        "rate_per_min": 0.2042,
+        "first_kst": "2026-08-05 09:10:10.789",
+        "last_kst": "2026-08-05 12:35:18.920",
+        "observed_span_min": 205.1,
+        "groups": [
+          "MARKET_DATA_CHART"
+        ],
+        "max_in_60s": 6,
+        "max_in_480s": 7
+      },
+      "on_window_s": 251.4,
+      "off_window_s": 300.0,
+      "collector_429_during_on": 0,
+      "collector_429_during_off": 0,
+      "collector_429_total_in_run": 0,
+      "expected_from_baseline_during_on": 0.86,
+      "coincident_within_1s_of_our_call": 0,
+      "events": [],
+      "stop_thresholds": {
+        "burst_60s": 7,
+        "run_total": 10,
+        "근거": "실측 배경의 롤링 최대치보다 엄격히 위"
+      },
+      "검정력": "배경 0.2042/분 × ON 4.2분 = 기대 0.86건. **발생률 변화를 검정할 표본이 아니다** — 이 대조는 큰 이탈을 잡고 거짓 인과를 막는 용도이지, '프로브가 429 를 늘리지 않았다'를 증명하지 않는다."
+    },
+    "arms": [
+      {
+        "group": "STOCK",
+        "arm": "off",
+        "calls": 0,
+        "start_kst": "2026-08-05T12:45:41.489+09:00",
+        "dur_s": 60.0,
+        "collector_429": 0
+      },
+      {
+        "group": "STOCK",
+        "arm": "off",
+        "calls": 0,
+        "start_kst": "2026-08-05T12:46:41.752+09:00",
+        "dur_s": 60.0,
+        "collector_429": 0
+      },
+      {
+        "group": "STOCK",
+        "arm": "on",
+        "calls": 30,
+        "start_kst": "2026-08-05T12:47:41.967+09:00",
+        "dur_s": 62.7,
+        "collector_429": 0,
+        "telemetry_at_start": {
+          "at_kst": "2026-08-05 12:47:11",
+          "age_s": 30.0,
+          "md_peak_1s": 7,
+          "chart_peak_1s": 1,
+          "http_429": 49,
+          "over_limit_1s": 111,
+          "tier2": 55,
+          "tier3": 4
+        }
+      },
+      {
+        "group": "MARKET_INFO",
+        "arm": "off",
+        "calls": 0,
+        "start_kst": "2026-08-05T12:48:44.818+09:00",
+        "dur_s": 60.0,
+        "collector_429": 0
+      },
+      {
+        "group": "MARKET_INFO",
+        "arm": "on",
+        "calls": 30,
+        "start_kst": "2026-08-05T12:49:45.012+09:00",
+        "dur_s": 62.6,
+        "collector_429": 0,
+        "telemetry_at_start": {
+          "at_kst": "2026-08-05 12:47:11",
+          "age_s": 153.1,
+          "md_peak_1s": 7,
+          "chart_peak_1s": 1,
+          "http_429": 49,
+          "over_limit_1s": 111,
+          "tier2": 55,
+          "tier3": 4
+        }
+      },
+      {
+        "group": "RANKING",
+        "arm": "off",
+        "calls": 0,
+        "start_kst": "2026-08-05T12:50:47.778+09:00",
+        "dur_s": 60.0,
+        "collector_429": 0
+      },
+      {
+        "group": "RANKING",
+        "arm": "on",
+        "calls": 30,
+        "start_kst": "2026-08-05T12:51:48.069+09:00",
+        "dur_s": 63.3,
+        "collector_429": 0,
+        "telemetry_at_start": {
+          "at_kst": "2026-08-05 12:47:11",
+          "age_s": 276.1,
+          "md_peak_1s": 7,
+          "chart_peak_1s": 1,
+          "http_429": 49,
+          "over_limit_1s": 111,
+          "tier2": 55,
+          "tier3": 4
+        }
+      },
+      {
+        "group": "MARKET_DATA_CHART",
+        "arm": "off",
+        "calls": 0,
+        "start_kst": "2026-08-05T12:52:51.472+09:00",
+        "dur_s": 60.0,
+        "collector_429": 0
+      },
+      {
+        "group": "MARKET_DATA_CHART",
+        "arm": "on",
+        "calls": 30,
+        "start_kst": "2026-08-05T12:53:51.720+09:00",
+        "dur_s": 62.8,
+        "collector_429": 0,
+        "telemetry_at_start": {
+          "at_kst": "2026-08-05 12:52:12",
+          "age_s": 99.4,
+          "md_peak_1s": 7,
+          "chart_peak_1s": 1,
+          "http_429": 49,
+          "over_limit_1s": 111,
+          "tier2": 54,
+          "tier3": 4
+        }
+      }
+    ],
+    "latency_skew": {
+      "n": 120,
+      "rtt_min_ms": 52.4,
+      "rtt_p50_ms": 68.8,
+      "rtt_p90_ms": 86.2,
+      "rtt_max_ms": 605.2,
+      "one_way_spread_ms": 276.4,
+      "margin_ms": 150.0,
+      "verdict": "여유 초과 — 하드캡의 1초 상계 증명이 이 시간대에는 깨진다 (가설 라)"
+    },
+    "detail": {
+      "STOCK": {
+        "limit": 5,
+        "n": 30,
+        "alone_pct": 100.0,
+        "depressed_n": 0,
+        "min_remaining": 4,
+        "rtt_min_ms": 54.3,
+        "rtt_p50_ms": 70.0,
+        "rtt_p90_ms": 88.1,
+        "rtt_max_ms": 430.1,
+        "verdict": "MD 와 독립",
+        "samples": [
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:47:42 GMT",
+            "sent_epoch": 1785901661.968,
+            "rtt_ms": 430.1
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:47:44 GMT",
+            "sent_epoch": 1785901664.411,
+            "rtt_ms": 66.1
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:47:46 GMT",
+            "sent_epoch": 1785901666.48,
+            "rtt_ms": 80.8
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:47:48 GMT",
+            "sent_epoch": 1785901668.562,
+            "rtt_ms": 76.2
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:47:50 GMT",
+            "sent_epoch": 1785901670.645,
+            "rtt_ms": 71.5
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:47:52 GMT",
+            "sent_epoch": 1785901672.73,
+            "rtt_ms": 70.0
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:47:54 GMT",
+            "sent_epoch": 1785901674.815,
+            "rtt_ms": 57.8
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:47:57 GMT",
+            "sent_epoch": 1785901676.878,
+            "rtt_ms": 72.0
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:47:59 GMT",
+            "sent_epoch": 1785901678.964,
+            "rtt_ms": 56.4
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:01 GMT",
+            "sent_epoch": 1785901681.029,
+            "rtt_ms": 73.4
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:03 GMT",
+            "sent_epoch": 1785901683.116,
+            "rtt_ms": 70.1
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:05 GMT",
+            "sent_epoch": 1785901685.199,
+            "rtt_ms": 67.0
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:07 GMT",
+            "sent_epoch": 1785901687.266,
+            "rtt_ms": 72.4
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:09 GMT",
+            "sent_epoch": 1785901689.346,
+            "rtt_ms": 66.6
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:11 GMT",
+            "sent_epoch": 1785901691.415,
+            "rtt_ms": 80.7
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:13 GMT",
+            "sent_epoch": 1785901693.5,
+            "rtt_ms": 68.8
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:15 GMT",
+            "sent_epoch": 1785901695.578,
+            "rtt_ms": 71.0
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:17 GMT",
+            "sent_epoch": 1785901697.66,
+            "rtt_ms": 76.9
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:19 GMT",
+            "sent_epoch": 1785901699.745,
+            "rtt_ms": 110.9
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:22 GMT",
+            "sent_epoch": 1785901701.864,
+            "rtt_ms": 88.1
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:24 GMT",
+            "sent_epoch": 1785901703.964,
+            "rtt_ms": 54.9
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:26 GMT",
+            "sent_epoch": 1785901706.031,
+            "rtt_ms": 61.6
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:28 GMT",
+            "sent_epoch": 1785901708.096,
+            "rtt_ms": 54.3
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:30 GMT",
+            "sent_epoch": 1785901710.165,
+            "rtt_ms": 65.8
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:32 GMT",
+            "sent_epoch": 1785901712.235,
+            "rtt_ms": 68.6
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:34 GMT",
+            "sent_epoch": 1785901714.314,
+            "rtt_ms": 63.1
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:36 GMT",
+            "sent_epoch": 1785901716.38,
+            "rtt_ms": 62.1
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:38 GMT",
+            "sent_epoch": 1785901718.451,
+            "rtt_ms": 65.4
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:40 GMT",
+            "sent_epoch": 1785901720.531,
+            "rtt_ms": 63.2
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:48:42 GMT",
+            "sent_epoch": 1785901722.596,
+            "rtt_ms": 80.6
+          }
+        ]
+      },
+      "MARKET_INFO": {
+        "limit": 3,
+        "n": 30,
+        "alone_pct": 100.0,
+        "depressed_n": 0,
+        "min_remaining": 2,
+        "rtt_min_ms": 52.4,
+        "rtt_p50_ms": 62.1,
+        "rtt_p90_ms": 75.9,
+        "rtt_max_ms": 605.2,
+        "verdict": "MD 와 독립",
+        "samples": [
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:49:45 GMT",
+            "sent_epoch": 1785901785.012,
+            "rtt_ms": 605.2
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:49:47 GMT",
+            "sent_epoch": 1785901787.633,
+            "rtt_ms": 63.5
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:49:49 GMT",
+            "sent_epoch": 1785901789.7,
+            "rtt_ms": 63.1
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:49:51 GMT",
+            "sent_epoch": 1785901791.768,
+            "rtt_ms": 56.3
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:49:53 GMT",
+            "sent_epoch": 1785901793.836,
+            "rtt_ms": 65.9
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:49:56 GMT",
+            "sent_epoch": 1785901795.905,
+            "rtt_ms": 57.4
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:49:58 GMT",
+            "sent_epoch": 1785901797.968,
+            "rtt_ms": 52.4
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:00 GMT",
+            "sent_epoch": 1785901800.034,
+            "rtt_ms": 64.2
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:02 GMT",
+            "sent_epoch": 1785901802.102,
+            "rtt_ms": 66.9
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:04 GMT",
+            "sent_epoch": 1785901804.172,
+            "rtt_ms": 60.2
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:06 GMT",
+            "sent_epoch": 1785901806.235,
+            "rtt_ms": 62.1
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:08 GMT",
+            "sent_epoch": 1785901808.304,
+            "rtt_ms": 66.3
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:10 GMT",
+            "sent_epoch": 1785901810.385,
+            "rtt_ms": 58.5
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:12 GMT",
+            "sent_epoch": 1785901812.454,
+            "rtt_ms": 75.9
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:14 GMT",
+            "sent_epoch": 1785901814.537,
+            "rtt_ms": 65.0
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:16 GMT",
+            "sent_epoch": 1785901816.604,
+            "rtt_ms": 52.8
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:18 GMT",
+            "sent_epoch": 1785901818.657,
+            "rtt_ms": 63.0
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:20 GMT",
+            "sent_epoch": 1785901820.722,
+            "rtt_ms": 61.8
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:22 GMT",
+            "sent_epoch": 1785901822.785,
+            "rtt_ms": 53.2
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:24 GMT",
+            "sent_epoch": 1785901824.853,
+            "rtt_ms": 53.7
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:27 GMT",
+            "sent_epoch": 1785901826.922,
+            "rtt_ms": 65.4
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:29 GMT",
+            "sent_epoch": 1785901828.988,
+            "rtt_ms": 64.0
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:31 GMT",
+            "sent_epoch": 1785901831.072,
+            "rtt_ms": 61.5
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:33 GMT",
+            "sent_epoch": 1785901833.137,
+            "rtt_ms": 53.1
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:35 GMT",
+            "sent_epoch": 1785901835.204,
+            "rtt_ms": 81.8
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:37 GMT",
+            "sent_epoch": 1785901837.287,
+            "rtt_ms": 66.6
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:39 GMT",
+            "sent_epoch": 1785901839.355,
+            "rtt_ms": 57.8
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:41 GMT",
+            "sent_epoch": 1785901841.418,
+            "rtt_ms": 59.2
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:43 GMT",
+            "sent_epoch": 1785901843.486,
+            "rtt_ms": 58.7
+          },
+          {
+            "limit": 3,
+            "remaining": 2,
+            "date": "Wed, 05 Aug 2026 03:50:45 GMT",
+            "sent_epoch": 1785901845.556,
+            "rtt_ms": 60.4
+          }
+        ]
+      },
+      "RANKING": {
+        "limit": 5,
+        "n": 30,
+        "alone_pct": 100.0,
+        "depressed_n": 0,
+        "min_remaining": 4,
+        "rtt_min_ms": 62.9,
+        "rtt_p50_ms": 74.4,
+        "rtt_p90_ms": 171.6,
+        "rtt_max_ms": 441.8,
+        "verdict": "MD 와 독립",
+        "samples": [
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:51:48 GMT",
+            "sent_epoch": 1785901908.07,
+            "rtt_ms": 395.6
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:51:50 GMT",
+            "sent_epoch": 1785901910.475,
+            "rtt_ms": 82.7
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:51:52 GMT",
+            "sent_epoch": 1785901912.577,
+            "rtt_ms": 69.0
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:51:54 GMT",
+            "sent_epoch": 1785901914.66,
+            "rtt_ms": 78.0
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:51:56 GMT",
+            "sent_epoch": 1785901916.742,
+            "rtt_ms": 68.7
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:51:58 GMT",
+            "sent_epoch": 1785901918.825,
+            "rtt_ms": 72.8
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:01 GMT",
+            "sent_epoch": 1785901920.911,
+            "rtt_ms": 68.3
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:03 GMT",
+            "sent_epoch": 1785901922.98,
+            "rtt_ms": 70.7
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:05 GMT",
+            "sent_epoch": 1785901925.061,
+            "rtt_ms": 97.6
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:07 GMT",
+            "sent_epoch": 1785901927.159,
+            "rtt_ms": 68.6
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:09 GMT",
+            "sent_epoch": 1785901929.242,
+            "rtt_ms": 77.8
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:11 GMT",
+            "sent_epoch": 1785901931.328,
+            "rtt_ms": 77.9
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:13 GMT",
+            "sent_epoch": 1785901933.408,
+            "rtt_ms": 62.9
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:15 GMT",
+            "sent_epoch": 1785901935.477,
+            "rtt_ms": 72.2
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:17 GMT",
+            "sent_epoch": 1785901937.561,
+            "rtt_ms": 74.6
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:19 GMT",
+            "sent_epoch": 1785901939.645,
+            "rtt_ms": 74.4
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:21 GMT",
+            "sent_epoch": 1785901941.728,
+            "rtt_ms": 66.9
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:23 GMT",
+            "sent_epoch": 1785901943.811,
+            "rtt_ms": 63.1
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:26 GMT",
+            "sent_epoch": 1785901945.877,
+            "rtt_ms": 81.1
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:28 GMT",
+            "sent_epoch": 1785901947.961,
+            "rtt_ms": 171.6
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:30 GMT",
+            "sent_epoch": 1785901950.142,
+            "rtt_ms": 441.8
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:32 GMT",
+            "sent_epoch": 1785901952.594,
+            "rtt_ms": 78.8
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:34 GMT",
+            "sent_epoch": 1785901954.678,
+            "rtt_ms": 67.3
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:36 GMT",
+            "sent_epoch": 1785901956.761,
+            "rtt_ms": 78.3
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:38 GMT",
+            "sent_epoch": 1785901958.845,
+            "rtt_ms": 64.3
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:41 GMT",
+            "sent_epoch": 1785901960.911,
+            "rtt_ms": 63.4
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:43 GMT",
+            "sent_epoch": 1785901962.979,
+            "rtt_ms": 84.1
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:45 GMT",
+            "sent_epoch": 1785901965.066,
+            "rtt_ms": 95.0
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:47 GMT",
+            "sent_epoch": 1785901967.163,
+            "rtt_ms": 71.5
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:52:49 GMT",
+            "sent_epoch": 1785901969.245,
+            "rtt_ms": 74.2
+          }
+        ]
+      },
+      "MARKET_DATA_CHART": {
+        "limit": 5,
+        "n": 30,
+        "alone_pct": 83.3,
+        "depressed_n": 5,
+        "min_remaining": 3,
+        "rtt_min_ms": 59.1,
+        "rtt_p50_ms": 70.8,
+        "rtt_p90_ms": 86.2,
+        "rtt_max_ms": 448.3,
+        "verdict": "공유 의심 — 우리 1콜뿐인데 remaining 이 더 깎였다",
+        "samples": [
+          {
+            "limit": 5,
+            "remaining": 3,
+            "date": "Wed, 05 Aug 2026 03:53:52 GMT",
+            "sent_epoch": 1785902031.721,
+            "rtt_ms": 448.3
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:53:54 GMT",
+            "sent_epoch": 1785902034.181,
+            "rtt_ms": 86.2
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:53:56 GMT",
+            "sent_epoch": 1785902036.283,
+            "rtt_ms": 70.8
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:53:58 GMT",
+            "sent_epoch": 1785902038.365,
+            "rtt_ms": 76.7
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:00 GMT",
+            "sent_epoch": 1785902040.451,
+            "rtt_ms": 70.2
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:02 GMT",
+            "sent_epoch": 1785902042.533,
+            "rtt_ms": 77.3
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:04 GMT",
+            "sent_epoch": 1785902044.616,
+            "rtt_ms": 67.0
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:06 GMT",
+            "sent_epoch": 1785902046.698,
+            "rtt_ms": 69.9
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:08 GMT",
+            "sent_epoch": 1785902048.782,
+            "rtt_ms": 71.4
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:10 GMT",
+            "sent_epoch": 1785902050.864,
+            "rtt_ms": 59.2
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:13 GMT",
+            "sent_epoch": 1785902052.935,
+            "rtt_ms": 69.3
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:15 GMT",
+            "sent_epoch": 1785902055.017,
+            "rtt_ms": 62.2
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:17 GMT",
+            "sent_epoch": 1785902057.082,
+            "rtt_ms": 71.0
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:19 GMT",
+            "sent_epoch": 1785902059.168,
+            "rtt_ms": 59.1
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:21 GMT",
+            "sent_epoch": 1785902061.234,
+            "rtt_ms": 64.1
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:23 GMT",
+            "sent_epoch": 1785902063.3,
+            "rtt_ms": 69.8
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:25 GMT",
+            "sent_epoch": 1785902065.385,
+            "rtt_ms": 73.8
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:27 GMT",
+            "sent_epoch": 1785902067.469,
+            "rtt_ms": 72.9
+          },
+          {
+            "limit": 5,
+            "remaining": 3,
+            "date": "Wed, 05 Aug 2026 03:54:29 GMT",
+            "sent_epoch": 1785902069.55,
+            "rtt_ms": 66.7
+          },
+          {
+            "limit": 5,
+            "remaining": 3,
+            "date": "Wed, 05 Aug 2026 03:54:31 GMT",
+            "sent_epoch": 1785902071.618,
+            "rtt_ms": 80.0
+          },
+          {
+            "limit": 5,
+            "remaining": 3,
+            "date": "Wed, 05 Aug 2026 03:54:33 GMT",
+            "sent_epoch": 1785902073.702,
+            "rtt_ms": 105.4
+          },
+          {
+            "limit": 5,
+            "remaining": 3,
+            "date": "Wed, 05 Aug 2026 03:54:35 GMT",
+            "sent_epoch": 1785902075.821,
+            "rtt_ms": 69.7
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:38 GMT",
+            "sent_epoch": 1785902077.902,
+            "rtt_ms": 64.1
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:40 GMT",
+            "sent_epoch": 1785902079.984,
+            "rtt_ms": 72.9
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:42 GMT",
+            "sent_epoch": 1785902082.068,
+            "rtt_ms": 61.3
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:44 GMT",
+            "sent_epoch": 1785902084.134,
+            "rtt_ms": 75.4
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:46 GMT",
+            "sent_epoch": 1785902086.218,
+            "rtt_ms": 81.0
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:48 GMT",
+            "sent_epoch": 1785902088.301,
+            "rtt_ms": 68.5
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:50 GMT",
+            "sent_epoch": 1785902090.382,
+            "rtt_ms": 76.0
+          },
+          {
+            "limit": 5,
+            "remaining": 4,
+            "date": "Wed, 05 Aug 2026 03:54:52 GMT",
+            "sent_epoch": 1785902092.47,
+            "rtt_ms": 63.2
+          }
+        ]
+      }
+    },
+    "_calls": 120,
+    "_elapsed_s": 553.4
+  }
+}

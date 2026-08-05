@@ -36,8 +36,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import copy
+import datetime as _dt
 import json
 import os
+import re
 import sys
 import time
 from decimal import Decimal
@@ -84,12 +86,23 @@ DAY_MS = 86_400_000
 # 폴링형 프로브의 기본 파라미터. --fast 로 줄여 mock 드라이런에 쓴다.
 POLL = {"quote_polls": 6, "quote_gap_s": 12.0, "rank_polls": 4, "rank_gap_s": 20.0}
 
+# group_coupling 의 예산. 승인받은 값이다 (docs/32 §6): 총 120콜 = 30콜 × 4그룹, 2초에 1콜.
+# --fast 는 mock 드라이런에서 **줄이는 방향으로만** 쓴다 (라이브 결론에 쓰지 말 것).
+COUPLING = {"samples_per_group": 30, "gap_s": 2.0, "off_s": 60.0}
+# md_peak_1s 게이트가 닫혀 있을 때 그룹당 최대 대기. telemetry 주기(300초)보다 길어야
+# 최소 한 번은 **새** 줄을 보고 판단한다. 넘으면 그 그룹은 스킵으로 기록한다.
+GATE_WAIT_MAX_S = 360.0
+
 # 마스킹 대상 필드 (계약 C-11 §5)
 MASK_FIELDS = {"accountNo", "accountSeq", "access_token", "requestId", "isinCode"}
 MASK_HEADERS = {"authorization", "set-cookie", "x-amz-cf-id", "x-request-id"}
 
 # save_fixture 가 source 를 판정하기 위한 플래그 (run() 에서 설정).
 _IS_LIVE_TARGET = [False]
+
+# group_coupling 이 배경 429 대조군을 뜨기 위해 **읽기만** 하는 가동 중 컬렉터 로그 (run() 에서 설정).
+COLLECTOR_LOG: Path | None = None
+BASELINE_MIN = 180.0
 
 
 def default_state_path() -> Path:
@@ -115,6 +128,105 @@ def _as_int(raw) -> int | None:
         return int(str(raw).strip())
     except (TypeError, ValueError):
         return None
+
+
+class CollectorWatch:
+    """가동 중 컬렉터 로그를 **읽기만** 해서 배경 429 를 초 단위로 뜬다 (docs/32 §9).
+
+    왜 telemetry 카운터가 아니라 로그 줄인가:
+    `TELEMETRY_EVERY_S = 300` 이라 `http_429` 카운터는 **5분에 한 번** 갱신된다.
+    4분짜리 프로브는 그 해상도로는 통째로 한 칸 안에 들어가 분해되지 않는다.
+    반면 `budget: 429 on <group> (count=N)` 은 429 **한 건마다 ms 타임스탬프**로 찍히므로
+    프로브 구간과 대조 구간을 초 단위로 가를 수 있다. 현상의 시간축은 초다.
+    """
+
+    # 로그 포맷은 레벨 이름을 폭 맞춰 채운다 ("INFO    ") — 공백을 하나로 보면 안 된다.
+    _EVT = re.compile(
+        r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),(\d{3}) \w+\s+budget: 429 on ([A-Z_]+) \(count=(\d+)\)")
+    _TEL = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),(\d{3}) \w+\s+telemetry (.*)$")
+    _TAIL_BYTES = 8 << 20
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def _tail_lines(self) -> list[str]:
+        with open(self.path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - self._TAIL_BYTES))
+            raw = fh.read()
+        text = raw.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        return lines[1:] if size > self._TAIL_BYTES else lines
+
+    @staticmethod
+    def _stamp(m: re.Match) -> float:
+        t = _dt.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+        return t.timestamp() + int(m.group(2)) / 1000.0
+
+    def events(self, since_epoch: float = 0.0) -> list[dict]:
+        """`since_epoch` 이후의 배경 429 이벤트 (epoch 초, 로컬시계 = 컬렉터와 같은 시계)."""
+        out = []
+        for line in self._tail_lines():
+            m = self._EVT.match(line)
+            if not m:
+                continue
+            ts = self._stamp(m)
+            if ts >= since_epoch:
+                out.append({"epoch": ts, "kst": m.group(1) + f".{m.group(2)}",
+                            "group": m.group(3), "count": int(m.group(4))})
+        return out
+
+    def latest_telemetry(self) -> dict | None:
+        """가장 최근 telemetry 줄의 파싱 결과 + 그 줄의 나이(초). 최대 300초 낡을 수 있다."""
+        found = None
+        for line in self._tail_lines():
+            m = self._TEL.match(line)
+            if m:
+                found = m
+        if not found:
+            return None
+        fields = {}
+        for tok in found.group(3).split("|")[0].split():
+            if "=" in tok:
+                k, v = tok.split("=", 1)
+                fields[k] = v
+        ts = self._stamp(found)
+        return {"at_kst": found.group(1), "age_s": round(time.time() - ts, 1),
+                "md_peak_1s": _as_int(fields.get("md_peak_1s")),
+                "chart_peak_1s": _as_int(fields.get("chart_peak_1s")),
+                "http_429": _as_int(fields.get("http_429")),
+                "over_limit_1s": _as_int(fields.get("over_limit_1s")),
+                "tier2": _as_int(fields.get("tier2")), "tier3": _as_int(fields.get("tier3"))}
+
+    def baseline(self, minutes: float) -> dict:
+        """프로브 **이전** 구간의 배경 429 발생률. 대조군의 정의다.
+
+        기록해 두지 않으면 나중에 "프로브가 429 를 늘렸나" 에 아무도 답할 수 없다.
+        임계값도 여기서 나온다 — 관측된 배경 최대치보다 **엄격히 위**로 잡아야
+        배경 버스트에 걸려 헛종료하지 않는다.
+        """
+        now = time.time()
+        evs = self.events(now - minutes * 60.0)
+        n = len(evs)
+        span_min = minutes if n < 2 else (evs[-1]["epoch"] - evs[0]["epoch"]) / 60.0
+        # 관측된 배경의 롤링 최대치 (임계값의 근거)
+        worst = {}
+        for w in (60, 480):
+            best = 0
+            for e in evs:
+                c = sum(1 for e2 in evs if 0 <= e2["epoch"] - e["epoch"] < w)
+                best = max(best, c)
+            worst[f"max_in_{w}s"] = best
+        return {
+            "window_min": minutes, "n": n,
+            "rate_per_min": round(n / minutes, 4),
+            "first_kst": evs[0]["kst"] if evs else None,
+            "last_kst": evs[-1]["kst"] if evs else None,
+            "observed_span_min": round(span_min, 1),
+            "groups": sorted({e["group"] for e in evs}),
+            **worst,
+        }
 
 
 def _use_utf8_stdio() -> None:
@@ -750,37 +862,121 @@ async def probe_group_coupling(c: TossClient) -> dict:
     그래서 429 유발 위험이 구조적으로 없고, 예산 소모도 그룹당 0.5 req/s 뿐이다.
     덤으로 같은 응답에서 RTT 꼬리(실험 C, 가설 라)를 공짜로 얻는다.
 
-    **429 를 받으면 즉시 중단한다.** `data/PROBE_STOP` 파일이 생겨도 중단한다.
+    **중단조건은 귀속 가능한 것부터 쓴다** (docs/32 §9-1). 1차는 **우리 응답의 429**다 —
+    우리 요청, 우리 상태코드라 남의 탓과 섞이지 않는다. 컬렉터의 `http_429` 카운터를
+    "1이라도 증가하면 종료" 로 쓰던 원안은 **폐기했다**: 그 카운터는 프로브와 무관하게
+    스스로 오르고 있어(2026-08-05 낮 배경 0.239건/분) 착수 즉시 헛종료할 뿐 아니라
+    "우리가 429 를 유발했다" 는 **거짓 인과**를 기록으로 남긴다. 컬렉터 쪽은 참고 지표로
+    강등하고, 임계값은 **실측된 배경 최대치보다 엄격히 위**로만 잡는다.
+
+    대조군도 같이 뜬다: 그룹마다 **콜 없는 OFF 구간(60s)** 을 콜 구간 앞에 끼워
+    같은 시간대의 배경 발생률을 함께 잰다. `data/PROBE_STOP` 파일이 생겨도 중단한다.
     """
     stop_file = REPO_ROOT / "data" / "PROBE_STOP"
+    if COLLECTOR_LOG is None or not Path(COLLECTOR_LOG).exists():
+        return {"verdict": "미확인",
+                "error": "--collector-log 가 필요하다. 배경 429 기준선(대조군) 없이 돌리면 "
+                         "결과가 해석 불가다 — 이 프로젝트가 반복해서 데인 지점이다."}
+    watch = CollectorWatch(Path(COLLECTOR_LOG))
+    baseline = watch.baseline(BASELINE_MIN)
+
+    # 임계값의 근거는 실측 배경이다. 배경 최대치와 같거나 낮게 잡으면 배경에 걸려 헛종료한다.
+    burst_stop = max(int(baseline.get("max_in_60s") or 0) + 1, 3)
+    total_stop = max(int(baseline.get("max_in_480s") or 0) + 3, 5)
+
+    # 순서: **대조군 먼저**. STOCK 은 docs/06 §9-4 에서 독립이 이미 확인됐고 컬렉터가
+    # 쓰지도 않는다(avg 0.00). 여기서 alone_pct 가 100 근처로 안 나오면 계측 자체가 틀린
+    # 것이므로 배경 429 를 실제로 받고 있는 MARKET_DATA_CHART 를 건드리기 전에 멈춘다.
     quiet = [
-        ("MARKET_DATA_CHART", "/api/v1/candles",
-         {"symbol": LIQUID, "interval": "1d", "count": 1}),
-        ("RANKING", "/api/v1/rankings",
-         {"type": "MARKET_TRADING_VOLUME", "marketCountry": "US",
-          "duration": "realtime", "count": 1}),
         ("STOCK", "/api/v1/stocks", {"symbols": LIQUID}),
         ("MARKET_INFO", "/api/v1/exchange-rate",
          {"baseCurrency": "USD", "quoteCurrency": "KRW"}),
+        ("RANKING", "/api/v1/rankings",
+         {"type": "MARKET_TRADING_VOLUME", "marketCountry": "US",
+          "duration": "realtime", "count": 1}),
+        ("MARKET_DATA_CHART", "/api/v1/candles",
+         {"symbol": LIQUID, "interval": "1d", "count": 1}),
     ]
-    samples_per_group = 30
-    gap_s = 2.0                       # 그룹당 0.5 req/s
+    samples_per_group = COUPLING["samples_per_group"]
+    gap_s = COUPLING["gap_s"]         # 그룹당 0.5 req/s
+    off_s = COUPLING["off_s"]         # 대조 구간은 콜 구간과 같은 길이
 
+    run_t0 = time.time()
     out: dict[str, dict] = {}
+    arms: list[dict] = []
     aborted: str | None = None
+
+    def bg_since(t0: float) -> list[dict]:
+        return [e for e in watch.events(t0) if e["epoch"] >= t0]
+
+    def gross_excursion() -> str | None:
+        """배경으로 설명되지 않는 **큰** 이탈만 잡는다 (헛종료 방지)."""
+        evs = bg_since(run_t0)
+        if len(evs) >= total_stop:
+            return (f"컬렉터 429 가 프로브 구간 누적 {len(evs)}건 — "
+                    f"임계 {total_stop} (배경 480초 최대 {baseline.get('max_in_480s')}건 기준)")
+        for e in evs:
+            n = sum(1 for e2 in evs if 0 <= e2["epoch"] - e["epoch"] < 60)
+            if n >= burst_stop:
+                return (f"컬렉터 429 가 60초에 {n}건 ({e['kst']}~) — "
+                        f"임계 {burst_stop} (배경 60초 최대 {baseline.get('max_in_60s')}건 기준)")
+        return None
+
     for group, path, params in quiet:
         if aborted:
             break
+
+        # --- OFF 구간: 콜 0. 같은 시간대의 배경 발생률을 짝지어 잰다 (대조군).
+        # md_peak_1s>=9 면 라운드를 건너뛰고 OFF 를 한 번 더 돈다. 이 값은 telemetry
+        # (300초 주기)에만 있어 최대 300초 낡으므로 **착수 게이트**로만 쓰고 나이를 함께 남긴다.
+        # 한 번 걸렸다고 그룹을 버리면 게이트가 열려 있는 시간대를 통째로 놓친다.
+        # 재시도는 **새 telemetry 줄**을 기다리는 것이어야 한다. telemetry 주기가 300초라
+        # 60초짜리 재시도 3번은 같은 줄을 세 번 읽을 뿐 새 정보가 없다.
+        tel = None
+        gate_skips: list[dict] = []
+        gate_deadline = time.time() + GATE_WAIT_MAX_S
+        while True:
+            off_t0 = time.time()
+            await asyncio.sleep(off_s)
+            arms.append({"group": group, "arm": "off", "calls": 0,
+                         "start_kst": ms_to_iso_kst(int(off_t0 * 1000)),
+                         "dur_s": round(time.time() - off_t0, 1),
+                         "collector_429": len(bg_since(off_t0))})
+            if stop_file.exists():
+                aborted = "PROBE_STOP 파일"
+                break
+            if (why := gross_excursion()):
+                aborted = why
+                break
+            tel = watch.latest_telemetry()
+            if not tel or (tel["md_peak_1s"] or 0) < 9:
+                break
+            if not gate_skips or gate_skips[-1]["telemetry_at"] != tel["at_kst"]:
+                gate_skips.append({"md_peak_1s": tel["md_peak_1s"],
+                                   "telemetry_at": tel["at_kst"], "age_s": tel["age_s"]})
+            if time.time() >= gate_deadline:
+                break
+        if aborted:
+            break
+        if tel and (tel["md_peak_1s"] or 0) >= 9:
+            out[group] = {"verdict": "미확인",
+                          "skipped": f"md_peak_1s>=9 라운드 스킵 ×{len(gate_skips)} — 게이트가 열리지 않음",
+                          "gate_skips": gate_skips, "telemetry": tel}
+            continue
+
+        # --- ON 구간: 30콜 @ 2초.
+        on_t0 = time.time()
         recs: list[dict] = []
         for _ in range(samples_per_group):
             if stop_file.exists():
                 aborted = "PROBE_STOP 파일"
                 break
             t0 = time.monotonic()
+            sent_epoch = time.time()
             try:
                 await c._request("GET", path, params=params)
             except RateLimited:
-                aborted = f"{group}: 429 — 즉시 중단"
+                aborted = f"{group}: **우리 프로브가** 429 를 받음 — 즉시 중단 (1차 중단조건)"
                 break
             except TossApiError as exc:
                 recs.append({"error": f"{type(exc).__name__}: {exc}"})
@@ -790,9 +986,17 @@ async def probe_group_coupling(c: TossClient) -> dict:
                 "limit": _as_int(h.get("x-ratelimit-limit")),
                 "remaining": _as_int(h.get("x-ratelimit-remaining")),
                 "date": h.get("date"),
+                "sent_epoch": round(sent_epoch, 3),
                 "rtt_ms": round((time.monotonic() - t0) * 1000, 1),
             })
             await asyncio.sleep(gap_s)
+        arms.append({"group": group, "arm": "on", "calls": len(recs),
+                     "start_kst": ms_to_iso_kst(int(on_t0 * 1000)),
+                     "dur_s": round(time.time() - on_t0, 1),
+                     "collector_429": len(bg_since(on_t0)),
+                     "telemetry_at_start": tel})
+        if not aborted and (why := gross_excursion()):
+            aborted = why
 
         ok = [r for r in recs if r.get("remaining") is not None]
         if not ok:
@@ -817,28 +1021,77 @@ async def probe_group_coupling(c: TossClient) -> dict:
                         "공유 의심 — 우리 1콜뿐인데 remaining 이 더 깎였다"),
             "samples": recs,
         }
+        # 대조군이 깨지면 계측을 못 믿는다 — 배경 429 를 실제로 받고 있는
+        # MARKET_DATA_CHART 에 콜을 더 넣기 전에 멈춘다.
+        if group == "STOCK" and not aborted and out[group]["alone_pct"] < 90.0:
+            aborted = (f"대조군 STOCK 이 alone_pct={out[group]['alone_pct']}% — "
+                       "독립이 이미 확인된 그룹(docs/06 §9-4)에서조차 remaining 이 깎였다. "
+                       "계측이 검증되지 않았으므로 CHART 로 진행하지 않는다.")
 
     # 실험 C: 편도 지연폭이 CLOCK_SKEW_MARGIN_S(0.15s)를 넘는가 (가설 라).
+    # **그룹별 첫 콜은 뺀다** — 연결·TLS 수립이 섞여 실측 400~600ms 가 나오는데, 이것은
+    # 웜 커넥션으로 도는 컬렉터의 요청당 지연이 아니다. 넣고 재면 꼬리를 통째로 과대평가한다.
+    cold = [r["rtt_ms"] for g in out.values()
+            for r in g.get("samples", [])[:1] if r.get("rtt_ms")]
     all_rtt = sorted(r["rtt_ms"] for g in out.values()
-                     for r in g.get("samples", []) if r.get("rtt_ms"))
+                     for r in g.get("samples", [])[1:] if r.get("rtt_ms"))
     skew = None
     if all_rtt:
         spread_one_way_ms = (all_rtt[-1] - all_rtt[0]) / 2.0
+        p90 = all_rtt[int(len(all_rtt) * 0.9)]
         skew = {
             "n": len(all_rtt),
+            "excluded_first_call_rtt_ms": sorted(cold),
             "rtt_min_ms": all_rtt[0], "rtt_p50_ms": all_rtt[len(all_rtt) // 2],
-            "rtt_p90_ms": all_rtt[int(len(all_rtt) * 0.9)], "rtt_max_ms": all_rtt[-1],
+            "rtt_p90_ms": p90, "rtt_p99_ms": all_rtt[int(len(all_rtt) * 0.99)],
+            "rtt_max_ms": all_rtt[-1],
             "one_way_spread_ms": round(spread_one_way_ms, 1),
+            "one_way_spread_p90_ms": round((p90 - all_rtt[0]) / 2.0, 1),
+            "over_margin_n": sum(1 for r in all_rtt if (r - all_rtt[0]) / 2.0 > 150.0),
             "margin_ms": 150.0,
-            "verdict": ("여유 안 — 하드캡 상계 증명 성립"
+            "verdict": ("여유 안 — 통상 구간에서는 하드캡 상계 증명 성립"
                         if spread_one_way_ms <= 150.0 else
-                        "여유 초과 — 하드캡의 1초 상계 증명이 이 시간대에는 깨진다 (가설 라)"),
+                        "통상은 여유 안이나 **꼬리가 margin 을 넘는 콜이 있다** — "
+                        "over_margin_n/n 으로 빈도를 볼 것 (가설 라)"),
         }
+    # --- 배경 429 대조 (귀속용이 아니라 **반증용**이다).
+    bg = bg_since(run_t0)
+    on_arms = [a for a in arms if a["arm"] == "on"]
+    off_arms = [a for a in arms if a["arm"] == "off"]
+    on_s = sum(a["dur_s"] for a in on_arms) or 1.0
+    off_s_tot = sum(a["dur_s"] for a in off_arms) or 1.0
+    sent = sorted(r["sent_epoch"] for g in out.values()
+                  for r in g.get("samples", []) if r.get("sent_epoch"))
+    coincident = sum(1 for e in bg
+                     if any(abs(e["epoch"] - s) <= 1.0 for s in sent))
+    exp_on = baseline["rate_per_min"] * on_s / 60.0
+    control = {
+        "baseline_before_probe": baseline,
+        "on_window_s": round(on_s, 1), "off_window_s": round(off_s_tot, 1),
+        "collector_429_during_on": sum(a["collector_429"] for a in on_arms),
+        "collector_429_during_off": sum(a["collector_429"] for a in off_arms),
+        "collector_429_total_in_run": len(bg),
+        "expected_from_baseline_during_on": round(exp_on, 2),
+        "coincident_within_1s_of_our_call": coincident,
+        "events": bg,
+        "stop_thresholds": {"burst_60s": burst_stop, "run_total": total_stop,
+                            "근거": "실측 배경의 롤링 최대치보다 엄격히 위"},
+        "검정력": (f"배경 {baseline['rate_per_min']}/분 × ON {round(on_s / 60.0, 1)}분 "
+                f"= 기대 {round(exp_on, 2)}건. **발생률 변화를 검정할 표본이 아니다** — "
+                "이 대조는 큰 이탈을 잡고 거짓 인과를 막는 용도이지, "
+                "'프로브가 429 를 늘리지 않았다'를 증명하지 않는다."),
+    }
+    # 표본이 실제로 하나라도 모인 그룹이 있어야 "확인됨" 이다. 전부 게이트 스킵이면
+    # 아무것도 재지 않은 것이고, 그것을 확인됨으로 적으면 안 읽은 것을 읽었다고 쓰는 셈이다.
+    measured = [g for g, d in out.items() if d.get("n")]
     return {
-        "verdict": "확인됨" if out and not aborted else "미확인",
+        "verdict": "확인됨" if measured and not aborted else "미확인",
+        "measured_groups": measured,
         "aborted": aborted,
         "per_group": {g: {k: v for k, v in d.items() if k != "samples"}
                       for g, d in out.items()},
+        "background_control": control,
+        "arms": arms,
         "latency_skew": skew,
         "detail": out,
     }
@@ -1506,9 +1759,12 @@ async def run(args) -> int:
         print(f"unknown probes: {unknown}. available: {sorted(PROBES)}", file=sys.stderr)
         return 2
 
-    global FIXTURE_DIR
+    global FIXTURE_DIR, COLLECTOR_LOG, BASELINE_MIN
     if args.fixture_dir:
         FIXTURE_DIR = Path(args.fixture_dir)
+    if args.collector_log:
+        COLLECTOR_LOG = Path(args.collector_log)
+    BASELINE_MIN = args.baseline_min
     _IS_LIVE_TARGET[0] = LIVE_HOST_MARKER in args.base_url
 
     os.environ["TOSS_BASE_URL"] = args.base_url
@@ -1582,6 +1838,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="픽스처 저장 경로 (기본 tests/fixtures/live). 드라이런은 임시 경로를 쓸 것")
     ap.add_argument("--timeout-s", type=float, default=15.0)
     ap.add_argument("--usage-ratio", type=float, default=0.7)
+    # group_coupling 의 대조군 입력. **읽기만** 한다 (컬렉터 미접촉).
+    ap.add_argument("--collector-log", default=None,
+                    help="가동 중 컬렉터 로그 경로. group_coupling 이 배경 429 기준선과 "
+                         "OFF 구간 대조를 뜨는 데 쓴다 (읽기 전용).")
+    ap.add_argument("--baseline-min", type=float, default=180.0,
+                    help="배경 429 기준선을 뜰 직전 구간 길이(분). 기본 180.")
     # 기본값은 **안전한 쪽**이다 (감사 B-5 / 리스 사고 방지). live 는 --live 와 TOSS_LIVE=1 이
     # 모두 있을 때만 True 가 된다. 이전에는 TokenManager(live=True) 가 하드코딩이라
     # 리스 보유자가 컬렉터를 돌리는 중에 프로브를 띄우면 토큰을 죽였다.
@@ -1593,6 +1855,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.fast:
         POLL.update(quote_polls=3, quote_gap_s=1.0, rank_polls=2, rank_gap_s=1.0)
+        COUPLING.update(samples_per_group=3, gap_s=0.2, off_s=1.0)
 
     _use_utf8_stdio()
     if args.list:
