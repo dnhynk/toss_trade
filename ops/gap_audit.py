@@ -272,6 +272,216 @@ def ranking_intervals(conn, start_ms: int, end_ms: int) -> dict[str, dict]:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# 창 **가장자리** 구멍 — 간격만 세는 도구가 구조적으로 못 보는 것
+#
+# 위의 모든 간격 통계는 **연속한 두 관측의 차이**로 만들어진다. 그래서 구멍이 창
+# 가장자리에 있으면 비교할 상대가 창 밖이라 **간격이 아예 생기지 않는다.** 08-05 아침에
+# 정확히 이 일이 났다: 08:01:46 에 수집이 멈추고 창은 08:50 에 끝났는데, 48.2분짜리
+# 구멍이 목록에 없으니 리포트는 `max_gap=3.4min` 이라고 적었다. **수집이 창 끝에서
+# 죽으면 이 도구는 이상 없다고 말한다** — 이 프로젝트가 다섯 번째로 만난 "성공을
+# 반환하는 조용한 실패"다.
+#
+# 그래서 창 시작~첫 관측, 마지막 관측~창 끝을 **따로 이름 붙여** 잰다. 이름을 나누는
+# 이유는 원인이 다르기 때문이다 — 가운데 구멍은 수집기 문제, 가장자리 구멍은 기계가
+# 자거나 창 경계를 잘못 잡은 것이다. 뭉쳐서 한 숫자로 내면 그 구분이 사라진다.
+# --------------------------------------------------------------------------- #
+
+#: `ops/watchdog.ps1` 의 `-PlannedDefaultMin` 기본값. `until=` 이 없는 라이브 마커의
+#: 유효기간이다. 값이 두 곳에 있는 것은 중복이지만 PowerShell 파라미터를 파이썬이 읽을
+#: 방법이 없다 — 대신 **가정했다는 사실을 리포트에 찍는다**(`edge_hole_lines`).
+PLANNED_DEFAULT_MIN = 30
+
+_PLANNED_UNTIL_RX = re.compile(r"window until (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+_PLANNED_REASON_RX = re.compile(r"^reason:\s*(.+?)\s*$", re.M)
+_PLANNED_NAME_RX = re.compile(r"^PLANNED_(\d{8}_\d{6})_")
+_MARKER_REASON_RX = re.compile(r"^\s*reason\s*=\s*(.+?)\s*$")
+_MARKER_UNTIL_RX = re.compile(r"^\s*until\s*=\s*(.+?)\s*$")
+
+
+@dataclass(frozen=True)
+class Hole:
+    """관측이 하나도 없었던 구간 1건. **이름이 붙어 있다**(어느 가장자리인가)."""
+    name: str        # "leading_hole" | "trailing_hole" | "whole_window"
+    start_ms: int
+    end_ms: int
+
+    @property
+    def seconds(self) -> float:
+        return max(0.0, (self.end_ms - self.start_ms) / 1000.0)
+
+    @property
+    def minutes(self) -> float:
+        return self.seconds / 60.0
+
+
+def _ts(ms: int) -> str:
+    return f"{dt.datetime.fromtimestamp(ms / 1000.0):%Y-%m-%d %H:%M:%S}"
+
+
+def _dur(seconds: float) -> str:
+    """분 단위로 찍되 1분 미만은 초로. `0.0min` 은 '0'으로도 '아주 작음'으로도 읽혀서
+    가장자리 구멍이 실제로 0인지 0.8초인지 구분되지 않는다 — 그 구분이 여기서는 중요하다."""
+    return f"{seconds:.1f}s" if seconds < 60 else f"{seconds / 60.0:.1f}min"
+
+
+def edge_holes(ts: list[int], start_ms: int, end_ms: int) -> dict:
+    """관측 시각 목록에서 **가장자리 구멍과 관측 사이 간격을 따로** 낸다.
+
+    `max_hole_s` 는 셋(앞 구멍/뒤 구멍/최대 간격) 중 최대다 — 이 값만이 "이 창의 최대
+    공백"이라고 불릴 자격이 있다. 동률이면 가장자리 이름을 먼저 쓴다(숨어 있던 쪽이다).
+    """
+    obs = sorted(t for t in ts if start_ms <= t <= end_ms)
+    inter = percentiles((b - a) / 1000.0 for a, b in zip(obs, obs[1:]))
+    if not obs:
+        # 관측이 0개면 가장자리라는 개념 자체가 없다 — 창 전체가 하나의 구멍이다.
+        holes = [Hole("whole_window", start_ms, end_ms)]
+    else:
+        holes = [Hole("leading_hole", start_ms, obs[0]),
+                 Hole("trailing_hole", obs[-1], end_ms)]
+    worst = max([h.seconds for h in holes] + ([inter["max"]] if inter["max"] is not None else []))
+    kind = next((h.name for h in holes if h.seconds >= worst), "inter_poll")
+    return {"n_obs": len(obs), "holes": holes, "inter_poll": inter,
+            "max_hole_s": worst, "max_hole_kind": kind,
+            "first_ms": obs[0] if obs else None, "last_ms": obs[-1] if obs else None}
+
+
+def planned_windows(log_dir: Path, state_dir: Path) -> list[tuple[int, int, str]]:
+    """계획 정비 창을 **디스크에 남은 기록**에서 복원한다. 겹치는 창은 합친다.
+
+    라이브 마커(`<state_dir>/PLANNED`)는 만료되면 워치독이 **지운다** — 잊힌 마커가
+    진짜 장애를 며칠씩 침묵시키지 않게 하려는 설계다. 그래서 아침 리포트가 도는 시점에
+    이미 없는 것이 정상이고, 마커만 보면 어젯밤의 계획 정비를 영영 못 본다.
+
+    지워지지 않는 기록은 그 창 동안 워치독이 쓴 `PLANNED_*.txt` 의 머리말
+    (`window until ...` + `reason:`)뿐이다. 그것을 정본으로 쓴다. 파일 시각은 창 **안의
+    한 점**이므로 `[파일 시각, until]` 이 우리가 증명할 수 있는 **최소** 구간이다 —
+    실제 창은 더 일찍 시작했을 수 있지만 그건 기록에 없으므로 주장하지 않는다.
+
+    머리말에 `window until` 이 없는 `PLANNED_` 파일(STOP 파일 같은 운영자 행위)은
+    **구간을 주장하지 않는다.** 사람이 그 순간 뭔가 했다는 증거일 뿐 창이 아니다.
+    """
+    raw: list[tuple[int, int, str]] = []
+    marker = Path(state_dir) / "PLANNED"
+    if marker.exists():
+        try:
+            reason, until = "", None
+            for line in marker.read_text(encoding="utf-8", errors="replace").splitlines():
+                m = _MARKER_REASON_RX.match(line)
+                if m:
+                    reason = m.group(1)
+                m = _MARKER_UNTIL_RX.match(line)
+                if m:
+                    try:
+                        until = dt.datetime.fromisoformat(m.group(1))
+                    except ValueError:
+                        until = None
+            a = int(marker.stat().st_mtime * 1000)
+            b = (int(until.timestamp() * 1000) if until
+                 else a + PLANNED_DEFAULT_MIN * 60_000)
+            # `until` 이 파일 시각보다 앞이면 **이미 만료된 마커**다(워치독이 다음 주기에
+            # 지운다). 그걸 [until, mtime] 구간으로 뒤집어 읽으면 **있지도 않았던 계획 창을
+            # 과거에 만들어내고**, 그 시간대의 진짜 공백이 PLANNED_ 로 삼켜진다.
+            if b > a:
+                raw.append((a, b, f"라이브 마커: {reason or '(사유 미기재)'}"))
+        except OSError:
+            pass
+    for p in sorted(Path(log_dir).glob("PLANNED_*.txt")):
+        nm = _PLANNED_NAME_RX.match(p.name)
+        if not nm:
+            continue
+        try:
+            head = p.read_text(encoding="utf-8", errors="replace")[:512]
+        except OSError:
+            continue
+        mu = _PLANNED_UNTIL_RX.search(head)
+        if not mu:
+            continue
+        try:
+            a = int(dt.datetime.strptime(nm.group(1), "%Y%m%d_%H%M%S").timestamp() * 1000)
+            b = int(dt.datetime.strptime(mu.group(1), "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
+        except ValueError:
+            continue
+        if b <= a:                 # 머리말이 깨진 파일 — 구간을 뒤집어 지어내지 않는다
+            continue
+        mr = _PLANNED_REASON_RX.search(head)
+        why = (mr.group(1).strip() if mr else "") or "(사유 미기재)"
+        raw.append((a, b, why))
+    raw.sort()
+    merged: list[tuple[int, int, list[str]]] = []
+    for a, b, why in raw:
+        if merged and a <= merged[-1][1]:
+            pa, pb, pw = merged[-1]
+            merged[-1] = (pa, max(pb, b), pw + ([why] if why not in pw else []))
+        else:
+            merged.append((a, b, [why]))
+    return [(a, b, " / ".join(w)) for a, b, w in merged]
+
+
+def uncovered_span_ms(a_ms: int, b_ms: int, windows: list[tuple[int, int, str]]) -> int:
+    """`[a,b]` 중 계획 창에 **안 덮인** 길이(ms). 창들은 겹치지 않는다고 본다(합쳐서 온다)."""
+    covered = sum(max(0, min(b_ms, wb) - max(a_ms, wa)) for wa, wb, _ in windows)
+    return max(0, (b_ms - a_ms) - covered)
+
+
+def grade_hole(hole: Hole, windows: list[tuple[int, int, str]],
+               normal_gap_s: float | None) -> tuple[str, str]:
+    """(등급, 사유). `docs/34` 의 4등급 체계 그대로 — 새 등급을 만들지 않는다.
+
+    **왜 `normal_gap_s` 로 먼저 거르는가**: 창을 어디서 자르든 가장자리에는 최대 한 폴
+    주기만큼의 공백이 생긴다. 그건 결손이 아니라 **자른 위치가 만든 것**이다. 그래서
+    "같은 창의 정상 폴 간격 상단보다 크지 않으면" 구멍이라고 부르지 않는다.
+
+    **왜 p99 이고 max 가 아닌가**: max 를 쓰면 창 **가운데**의 큰 정지 하나가 가장자리
+    판정 기준까지 끌어올려 진짜 가장자리 구멍을 삼킨다. 오늘 창이 정확히 그렇다 —
+    가운데에 3.4분짜리가 있다. 다만 폴 수가 적은 창에서는 p99 가 사실상 max 라 이
+    비교가 느슨해진다. 그때는 등급이 아니라 `max_hole` 값 자체를 보라(리포트가 늘 찍는다).
+    """
+    if normal_gap_s is not None and hole.seconds <= normal_gap_s:
+        return ("NOTE_", f"이 창의 정상 폴 간격 상단(p99={normal_gap_s}s) 이내 — "
+                         "창을 자른 위치가 만든 것이지 결손이 아니다")
+    if not windows:
+        return ("ALERT_", "계획 정비 창 기록이 없다 — 설명되지 않은 공백")
+    hit = [w for w in windows if min(hole.end_ms, w[1]) > max(hole.start_ms, w[0])]
+    left = uncovered_span_ms(hole.start_ms, hole.end_ms, windows)
+    if left <= 0:
+        return ("PLANNED_", "계획 정비 창 안 — " + "; ".join(w[2] for w in hit))
+    why = f"{round(left / 60000.0, 1)}분이 계획 창 **밖** — 설명되지 않은 공백"
+    if hit:
+        why += " (일부만 덮임: " + "; ".join(w[2] for w in hit) + ")"
+    return ("ALERT_", why)
+
+
+def edge_hole_lines(label: str, eh: dict, windows: list[tuple[int, int, str]]) -> list[str]:
+    """가장자리 구멍 절. `max_hole` 을 먼저 찍고, 그 아래에 무엇으로 이루어졌는지 편다."""
+    inter = eh["inter_poll"]
+    normal = inter["p99"]
+    lines = [
+        f"[{label} 공백] 가장자리와 가운데를 **따로** 센다 "
+        "— 간격만 세면 창 끝에서 죽은 수집이 안 보인다",
+        f"  max_hole        : {_dur(eh['max_hole_s'])}  "
+        f"[{eh['max_hole_kind']}]   <= 이 창의 진짜 최대 공백",
+    ]
+    graded = [(h, grade_hole(h, windows, normal)) for h in eh["holes"]]
+    for h, (grade, why) in graded:
+        lines.append(f"  {h.name:16s}: {_dur(h.seconds):>8s}  "
+                     f"({_ts(h.start_ms)} -> {_ts(h.end_ms)})")
+        lines.append(f"    -> {grade} {why}")
+    if inter["max"] is None:
+        lines.append("  max_inter_poll  : (관측이 2개 미만 — 간격이라는 것이 없다)")
+    else:
+        lines.append(f"  max_inter_poll  : {_dur(inter['max']):>8s}  "
+                     f"(연속한 두 관측 사이 최대, p99={inter['p99']}s) "
+                     "— **가장자리 구멍은 여기 절대 안 들어온다**")
+    lines.append(f"  관측 {eh['n_obs']}개 / 대조한 계획 정비 창 {len(windows)}개"
+                 + ("  (기록 없음 — 가장자리 공백은 전부 ALERT_)" if not windows else "")
+                 + f"  [until 없는 마커는 {PLANNED_DEFAULT_MIN}분으로 가정]")
+    if any(g == "ALERT_" for _h, (g, _w) in graded):
+        lines.append("  !! 설명되지 않은 가장자리 공백이 있다 — 기계가 잤거나 수집이 창 "
+                     "끝에서 죽었다. collector.log 와 ALERT 파일을 대조할 것.")
+    return lines
+
+
 def orderbook_intervals(conn, start_ms: int, end_ms: int,
                         timeline: dict) -> dict[str, dict]:
     """호가 스냅 간격 분포 — **티어별로 분리**해서 낸다.
@@ -589,6 +799,19 @@ def audit(cfg, start_ms: int, end_ms: int, label: str) -> str:
                 med = st["p50"]
                 break
         lines.append("")
+
+        # 위의 간격 분포는 **연속한 두 폴의 차이**만 본다 — 창 가장자리 구멍은 비교할
+        # 상대가 창 밖이라 애초에 목록에 안 들어온다. 그래서 따로 잰다.
+        eh = edge_holes(ranking_poll_times(conn, start_ms, end_ms), start_ms, end_ms)
+        pw = planned_windows(cfg.log_dir, cfg.state_dir)
+        lines += edge_hole_lines("랭킹 폴", eh, pw)
+        lines += [
+            "  ** 호가·분봉에도 같은 구조적 사각이 있다(전부 연속 관측의 차이로 잰다). "
+            "다만 그쪽 가장자리 공백은 **티어 소속 없이는 읽을 수 없다** — 창 시작 시점에 "
+            "tier3 가 아니던 종목에 스냅이 없는 것은 결손이 아니라 안 보던 것이다. "
+            "여기서는 재지 않는다(뭉치지 않는다는 원칙).",
+            "",
+        ]
 
         ob = orderbook_intervals(conn, start_ms, end_ms, timeline)
         lines.append("[호가 스냅 간격(초)] 소스: orderbook_snap.snap_ms, 티어별 분리")

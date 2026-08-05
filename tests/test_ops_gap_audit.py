@@ -39,21 +39,25 @@ MIN = GA.MINUTE_MS
 # --------------------------------------------------------------------------- #
 # 픽스처 — 살아 있는 DB 는 절대 건드리지 않는다 (메모리 SQLite + tmp_path)
 # --------------------------------------------------------------------------- #
+_SCHEMA = """
+    CREATE TABLE promotions (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT,
+        ts_ms INTEGER, from_tier INTEGER, to_tier INTEGER, reason TEXT, score REAL);
+    CREATE TABLE rankings_snap (id INTEGER PRIMARY KEY AUTOINCREMENT, snap_ms INTEGER,
+        ranking_type TEXT, duration TEXT, rank INTEGER, symbol TEXT,
+        last_u INTEGER, vol_qu INTEGER, amount_u INTEGER);
+    CREATE TABLE orderbook_snap (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT,
+        snap_ms INTEGER, ts_ms INTEGER, depth_json TEXT);
+    CREATE TABLE candles_1m (symbol TEXT, ts_ms INTEGER, open_u INTEGER, high_u INTEGER,
+        low_u INTEGER, close_u INTEGER, vol_qu INTEGER, PRIMARY KEY (symbol, ts_ms));
+    CREATE TABLE trades_snap (symbol TEXT, ts_ms INTEGER, price_u INTEGER, qty_u INTEGER,
+        PRIMARY KEY (symbol, ts_ms, price_u, qty_u));
+    CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, t0_ms INTEGER);
+"""
+
+
 def _mem_db() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
-    conn.executescript("""
-        CREATE TABLE promotions (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT,
-            ts_ms INTEGER, from_tier INTEGER, to_tier INTEGER, reason TEXT, score REAL);
-        CREATE TABLE rankings_snap (id INTEGER PRIMARY KEY AUTOINCREMENT, snap_ms INTEGER,
-            ranking_type TEXT, duration TEXT, rank INTEGER, symbol TEXT,
-            last_u INTEGER, vol_qu INTEGER, amount_u INTEGER);
-        CREATE TABLE orderbook_snap (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT,
-            snap_ms INTEGER, ts_ms INTEGER, depth_json TEXT);
-        CREATE TABLE candles_1m (symbol TEXT, ts_ms INTEGER, open_u INTEGER, high_u INTEGER,
-            low_u INTEGER, close_u INTEGER, vol_qu INTEGER, PRIMARY KEY (symbol, ts_ms));
-        CREATE TABLE trades_snap (symbol TEXT, ts_ms INTEGER, price_u INTEGER, qty_u INTEGER,
-            PRIMARY KEY (symbol, ts_ms, price_u, qty_u));
-    """)
+    conn.executescript(_SCHEMA)
     return conn
 
 
@@ -361,6 +365,300 @@ def test_ranking_intervals_split_by_type():
     assert out["MARKET_TRADING_VOLUME"]["p50"] == 12.0
     assert out["(pooled, all types)"]["p50"] != 12.0     # 풀링은 다른 값이 나온다
     conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# 8.5 창 **가장자리** 구멍 — 간격만 세는 도구가 구조적으로 못 보는 것
+#
+# 08-05 아침 실측: 08:01:46 에 수집이 멈추고 창은 08:50 에 끝났는데 리포트는
+# `max_gap=3.4min` 이라고 적었다. 48.2분짜리 구멍이 **간격 목록에 아예 안 들어왔기**
+# 때문이다 — 비교할 다음 폴이 창 밖이다. 아래 스위트가 지키는 것은 두 가지이고 **둘 다
+# 있어야** 한다:
+#   (a) 가장자리 구멍이 보고되는가
+#   (b) **가운데 구멍은 여전히 보고되는가** — 가장자리를 보게 만들면서 가운데를 잃으면
+#       고친 게 아니라 옮긴 것이다. 이 프로젝트에서 "가드를 만들었다"가 실제로는 목록에
+#       적힌 것만 검사한 사례가 세 번 있다.
+# --------------------------------------------------------------------------- #
+_W_START = int(dt.datetime(2026, 8, 4, 9, 0, 0).timestamp() * 1000)
+_W_END = int(dt.datetime(2026, 8, 5, 8, 50, 0).timestamp() * 1000)
+_CADENCE_MS = 300_000       # 5분 — 실측 12초 대신 테스트를 가볍게 하려는 값일 뿐이다
+
+
+def _polls(a_ms: int, b_ms: int, step_ms: int = _CADENCE_MS) -> list[int]:
+    """[a,b] 를 채우는 폴 시각. **끝점을 반드시 포함한다** — 안 그러면 "구멍"의 크기가
+    격자 나머지만큼 흔들려서 테스트가 무엇을 재는지 알 수 없어진다."""
+    ts = list(range(a_ms, b_ms + 1, step_ms))
+    if ts[-1] != b_ms:
+        ts.append(b_ms)
+    return ts
+
+
+def test_trailing_hole_is_reported_when_collection_dies_at_the_window_end():
+    """(a) 창 **끝**에서 수집이 죽으면 구멍이 나와야 한다 — 08-05 아침의 정확한 모양.
+
+    핵심 단언은 `max_inter_poll` 이 **여전히 작다**는 것이다. 즉 옛 계산은 이 데이터를
+    보고도 "이상 없음"이라고 말한다. 그 사실을 테스트가 직접 붙들고 있어야, 누가 나중에
+    가장자리 계산을 걷어내면 이 테스트가 죽는다.
+    """
+    dies_at = _W_END - 48 * 60_000                    # 창 끝 48분 전에 정지
+    eh = GA.edge_holes(_polls(_W_START, dies_at), _W_START, _W_END)
+    trailing = [h for h in eh["holes"] if h.name == "trailing_hole"][0]
+    assert round(trailing.minutes) == 48
+    assert eh["max_hole_kind"] == "trailing_hole"
+    assert round(eh["max_hole_s"] / 60.0) == 48
+    # 옛 계산(연속 두 폴의 차이)은 이 48분을 못 본다 — 그것이 이 버그의 전부였다.
+    assert eh["inter_poll"]["max"] == _CADENCE_MS / 1000.0
+
+
+def test_mid_window_hole_is_still_reported():
+    """(b) **대조군.** 가운데 구멍은 여전히 보여야 한다.
+
+    가장자리를 보게 만드는 수정이 가운데를 잃으면 고친 것이 아니라 옮긴 것이다.
+    """
+    hole_a = _W_START + 3 * 3_600_000
+    hole_b = hole_a + 45 * 60_000
+    ts = _polls(_W_START, hole_a) + _polls(hole_b, _W_END)
+    eh = GA.edge_holes(ts, _W_START, _W_END)
+    assert eh["max_hole_kind"] == "inter_poll"
+    assert round(eh["inter_poll"]["max"] / 60.0) == 45
+    assert round(eh["max_hole_s"] / 60.0) == 45
+    for h in eh["holes"]:                              # 가장자리는 붙어 있다
+        assert h.seconds <= _CADENCE_MS / 1000.0
+
+
+def test_leading_hole_is_reported_when_collection_starts_late():
+    """창 **앞쪽** 구멍도 같은 이유로 안 보였다 — 비교할 이전 폴이 창 밖이다."""
+    starts_at = _W_START + 30 * 60_000
+    eh = GA.edge_holes(_polls(starts_at, _W_END), _W_START, _W_END)
+    leading = [h for h in eh["holes"] if h.name == "leading_hole"][0]
+    assert round(leading.minutes) == 30
+    assert eh["max_hole_kind"] == "leading_hole"
+    assert eh["inter_poll"]["max"] == _CADENCE_MS / 1000.0    # 옛 계산은 못 본다
+
+
+def test_a_mid_window_outage_cannot_mask_an_edge_hole():
+    """가운데 큰 정지가 가장자리 **판정 기준**을 끌어올려서는 안 된다.
+
+    등급 판정의 비교 대상으로 `max` 를 쓰면, 창 가운데 60분짜리 정지가 하나 있는 것만으로
+    창 끝 50분 구멍이 "정상 범위"가 되어 다시 조용해진다. 그래서 p99 를 쓴다. 오늘 창에
+    실제로 3.4분짜리 가운데 정지가 있었으므로 가상의 걱정이 아니다.
+    """
+    mid_a = _W_START + 2 * 3_600_000
+    mid_b = mid_a + 60 * 60_000
+    dies_at = _W_END - 50 * 60_000
+    ts = _polls(_W_START, mid_a) + _polls(mid_b, dies_at)
+    eh = GA.edge_holes(ts, _W_START, _W_END)
+    trailing = [h for h in eh["holes"] if h.name == "trailing_hole"][0]
+    assert round(trailing.minutes) == 50
+    assert eh["inter_poll"]["max"] == 60 * 60.0        # 가운데 정지가 max 를 60분으로 올린다
+    grade, why = GA.grade_hole(trailing, [], eh["inter_poll"]["p99"])
+    assert grade == "ALERT_", f"가운데 정지가 가장자리 구멍을 삼켰다: {why}"
+
+
+def test_empty_window_is_one_whole_hole_not_a_clean_report():
+    """관측이 0개면 "간격 없음"이 아니라 **창 전체가 구멍**이다."""
+    eh = GA.edge_holes([], _W_START, _W_END)
+    assert eh["n_obs"] == 0
+    assert [h.name for h in eh["holes"]] == ["whole_window"]
+    assert eh["max_hole_s"] == (_W_END - _W_START) / 1000.0
+    assert eh["inter_poll"]["max"] is None
+    grade, _why = GA.grade_hole(eh["holes"][0], [], eh["inter_poll"]["p99"])
+    assert grade == "ALERT_"
+
+
+def test_single_observation_window_has_no_normal_gap_to_hide_behind():
+    """폴이 하나면 간격이 없으므로 비교 기준도 없다 — 가장자리 구멍을 그냥 인정해야 한다."""
+    only = _W_START + 60 * 60_000
+    eh = GA.edge_holes([only], _W_START, _W_END)
+    assert eh["inter_poll"]["p99"] is None
+    grades = {h.name: GA.grade_hole(h, [], None)[0] for h in eh["holes"]}
+    assert grades == {"leading_hole": "ALERT_", "trailing_hole": "ALERT_"}
+
+
+def test_tiny_edge_hole_inside_normal_cadence_is_not_called_a_hole():
+    """창을 어디서 자르든 가장자리엔 최대 한 폴 주기가 남는다 — 그건 결손이 아니다."""
+    eh = GA.edge_holes(_polls(_W_START + 1_000, _W_END - 1_000), _W_START, _W_END)
+    for h in eh["holes"]:
+        assert GA.grade_hole(h, [], eh["inter_poll"]["p99"])[0] == "NOTE_"
+
+
+# --- 등급 결정: PLANNED 창 안이면 PLANNED_, 밖이면 ALERT_ (docs/34 4등급 그대로) --- #
+def test_hole_inside_a_planned_window_is_planned_and_outside_is_alert():
+    a = _W_END - 48 * 60_000
+    hole = GA.Hole("trailing_hole", a, _W_END)
+    inside = [(a - 60_000, _W_END + 600_000, "laptop lid closed")]
+    outside = [(_W_START, _W_START + 60_000, "unrelated maintenance")]
+    assert GA.grade_hole(hole, inside, 12.0)[0] == "PLANNED_"
+    assert "laptop lid closed" in GA.grade_hole(hole, inside, 12.0)[1]
+    assert GA.grade_hole(hole, outside, 12.0)[0] == "ALERT_"
+    assert GA.grade_hole(hole, [], 12.0)[0] == "ALERT_"
+
+
+def test_partially_covered_hole_is_alert_and_says_how_much_is_unexplained():
+    """절반만 계획 창에 걸치면 나머지 절반은 **설명되지 않았다.** PLANNED_ 로 삼키지 않는다."""
+    a = _W_END - 48 * 60_000
+    hole = GA.Hole("trailing_hole", a, _W_END)
+    partial = [(a, a + 24 * 60_000, "half-covered")]
+    grade, why = GA.grade_hole(hole, partial, 12.0)
+    assert grade == "ALERT_"
+    assert "24.0분" in why and "half-covered" in why
+
+
+def test_uncovered_span_handles_multiple_disjoint_windows():
+    assert GA.uncovered_span_ms(0, 100, [(0, 40, "a"), (60, 100, "b")]) == 20
+    assert GA.uncovered_span_ms(0, 100, [(0, 100, "a")]) == 0
+    assert GA.uncovered_span_ms(0, 100, []) == 100
+
+
+# --- 계획 창 복원: 라이브 마커는 만료되면 지워진다, 남는 것은 PLANNED_*.txt 뿐 --- #
+def _write_planned(dirp: pathlib.Path, name: str, until: str | None, reason: str) -> None:
+    head = "PLANNED MAINTENANCE - this was expected, not an outage."
+    if until:
+        head += f" window until {until}"
+    (dirp / name).write_text(f"{head}\nreason: {reason}\n\n[INFO] body\n", encoding="utf-8")
+
+
+def test_planned_windows_are_reconstructed_from_alert_file_headers(tmp_path):
+    """워치독이 창 동안 쓴 `PLANNED_*.txt` 머리말이 **지워지지 않는 유일한 기록**이다.
+
+    라이브 마커(`state_dir/PLANNED`)는 만료 시 워치독이 지운다(잊힌 마커가 진짜 장애를
+    침묵시키지 않게 하려는 설계). 그래서 아침 리포트가 도는 시점엔 이미 없다.
+    """
+    _write_planned(tmp_path, "PLANNED_20260805_074559_log_tape_gap.txt",
+                   "2026-08-05 09:00:00", "laptop lid closed (announced 06:55)")
+    wins = GA.planned_windows(tmp_path, tmp_path / "state")
+    assert len(wins) == 1
+    a, b, why = wins[0]
+    assert dt.datetime.fromtimestamp(a / 1000) == dt.datetime(2026, 8, 5, 7, 45, 59)
+    assert dt.datetime.fromtimestamp(b / 1000) == dt.datetime(2026, 8, 5, 9, 0, 0)
+    assert "laptop lid closed" in why
+
+
+def test_planned_file_without_a_window_header_claims_no_interval(tmp_path):
+    """STOP 파일 같은 운영자 행위는 그 **순간**의 증거일 뿐 창이 아니다.
+
+    창이라고 우기면 아무 시각의 PLANNED_ 파일 하나가 그 근처 구멍을 전부 설명해 버린다.
+    """
+    _write_planned(tmp_path, "PLANNED_20260805_074559_watch_process_dead.txt",
+                   None, "operator-driven action (STOP file)")
+    assert GA.planned_windows(tmp_path, tmp_path / "state") == []
+
+
+def test_planned_windows_merge_when_they_overlap(tmp_path):
+    _write_planned(tmp_path, "PLANNED_20260805_070000_a.txt", "2026-08-05 08:00:00", "first")
+    _write_planned(tmp_path, "PLANNED_20260805_073000_b.txt", "2026-08-05 09:00:00", "second")
+    wins = GA.planned_windows(tmp_path, tmp_path / "state")
+    assert len(wins) == 1
+    assert dt.datetime.fromtimestamp(wins[0][1] / 1000) == dt.datetime(2026, 8, 5, 9, 0, 0)
+    assert "first" in wins[0][2] and "second" in wins[0][2]
+
+
+def test_planned_windows_reads_the_live_marker_when_it_still_exists(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    until = dt.datetime.now().replace(microsecond=0) + dt.timedelta(hours=1)
+    (state / "PLANNED").write_text(f"reason=rebase onto main\nuntil={until:%Y-%m-%d %H:%M:%S}\n",
+                                   encoding="utf-8")
+    wins = GA.planned_windows(tmp_path, state)
+    assert len(wins) == 1
+    assert dt.datetime.fromtimestamp(wins[0][1] / 1000) == until
+    assert "rebase onto main" in wins[0][2]
+
+
+def test_expired_live_marker_does_not_invent_a_past_window(tmp_path):
+    """`until` 이 파일 시각보다 앞이면 **이미 만료된** 마커다 — 워치독이 곧 지운다.
+
+    이걸 `[until, mtime]` 구간으로 뒤집어 읽으면 있지도 않았던 계획 창을 과거에 만들고,
+    그 시간대의 진짜 공백이 `PLANNED_` 로 조용히 삼켜진다. (테스트를 쓰다 실제로 이
+    동작이 나와서 고쳤다.)
+    """
+    state = tmp_path / "state"
+    state.mkdir()
+    past = dt.datetime.now() - dt.timedelta(hours=3)
+    (state / "PLANNED").write_text(f"reason=stale\nuntil={past:%Y-%m-%d %H:%M:%S}\n",
+                                   encoding="utf-8")
+    assert GA.planned_windows(tmp_path, state) == []
+
+
+def test_planned_windows_survives_missing_dirs(tmp_path):
+    assert GA.planned_windows(tmp_path / "nope", tmp_path / "also_nope") == []
+
+
+# --- 리포트 문자열: 사람이 읽는 쪽에서도 속지 않아야 한다 --- #
+def test_edge_hole_lines_name_both_edges_and_shout_when_unexplained():
+    dies_at = _W_END - 48 * 60_000
+    eh = GA.edge_holes(_polls(_W_START, dies_at), _W_START, _W_END)
+    text = "\n".join(GA.edge_hole_lines("랭킹 폴", eh, []))
+    assert "leading_hole" in text and "trailing_hole" in text
+    assert "max_hole" in text and "48.0min" in text
+    assert "ALERT_" in text
+    assert "!!" in text
+    planned = [(dies_at - 60_000, _W_END + 60_000, "laptop lid closed")]
+    quiet = "\n".join(GA.edge_hole_lines("랭킹 폴", eh, planned))
+    assert "PLANNED_" in quiet and "ALERT_" not in quiet and "!!" not in quiet
+
+
+# --- 끝에서 끝까지: 아침 리포트 본문이 실제로 달라지는가 --- #
+def _file_db(path: pathlib.Path, snap_ms: list[int]) -> None:
+    conn = sqlite3.connect(path)
+    conn.executescript(_SCHEMA)
+    conn.executemany("INSERT INTO rankings_snap (snap_ms, ranking_type, duration, rank, "
+                     "symbol, last_u, vol_qu, amount_u) VALUES (?,'MV','d',1,'AAA',1,1,1)",
+                     [(m,) for m in snap_ms])
+    conn.commit()
+    conn.close()
+
+
+def _cfg_for(tmp_path: pathlib.Path):
+    from ops.opsconfig import DiskThresholds, OpsConfig
+    return OpsConfig(
+        db_path=tmp_path / "tossmon.db", log_dir=tmp_path, state_dir=tmp_path / "state",
+        archive_dir=tmp_path / "archive", disk=DiskThresholds(0.0, 0.0),
+        stale_minutes_warn=5, stale_minutes_critical=15, log_retention_days=14,
+        log_max_bytes=1000, collector_cmd=["python", "-c", "pass"],
+        max_restarts_per_window=5, restart_window_s=600,
+        restart_backoff_base_s=1.0, restart_backoff_cap_s=10.0)
+
+
+def test_daily_health_report_shows_the_trailing_hole_and_no_longer_says_max_gap(tmp_path):
+    """**아침 리포트 본문**이 48분을 말해야 한다. 여기까지 와야 고친 것이다.
+
+    `max_gap` 이라는 이름도 같이 지킨다 — 값은 맞는데 이름이 "최대 공백"으로 읽혀서
+    48.2분을 3.4분이라고 보고하게 만든 것이 그 이름이었다.
+    """
+    dies_at = _W_END - 48 * 60_000
+    _file_db(tmp_path / "tossmon.db", _polls(_W_START, dies_at))
+    text = DH.build_summary(_cfg_for(tmp_path), "20260805")
+    assert "trailing_hole" in text and "48.0min" in text
+    assert "leading_hole" in text
+    assert "max_hole" in text
+    assert "max_gap" not in text, "속이는 이름이 아직 리포트에 남아 있다"
+    assert "ALERT_ 계획 정비 창 기록이 없다" in text or "설명되지 않은" in text
+
+
+def test_daily_health_report_grades_the_hole_planned_when_the_window_covers_it(tmp_path):
+    """오늘 아침의 실제 모양 — 사람이 노트북을 닫았고 09:00 만료 창이 걸려 있었다."""
+    dies_at = _W_END - 48 * 60_000
+    _file_db(tmp_path / "tossmon.db", _polls(_W_START, dies_at))
+    _write_planned(tmp_path, "PLANNED_20260805_074559_log_tape_gap.txt",
+                   "2026-08-05 09:00:00", "laptop lid closed (announced 06:55)")
+    text = DH.build_summary(_cfg_for(tmp_path), "20260805")
+    assert "trailing_hole" in text and "48.0min" in text
+    assert "PLANNED_ 계획 정비 창 안" in text
+    assert "laptop lid closed" in text
+    edge = [ln for ln in text.splitlines() if "trailing_hole" in ln or "-> " in ln]
+    assert not any("ALERT_" in ln for ln in edge)
+
+
+def test_daily_health_still_reports_a_mid_window_hole(tmp_path):
+    """대조군 — 아침 리포트에서도 **가운데 구멍은 여전히** 나와야 한다."""
+    hole_a = _W_START + 3 * 3_600_000
+    ts = _polls(_W_START, hole_a) + _polls(hole_a + 45 * 60_000, _W_END)
+    _file_db(tmp_path / "tossmon.db", ts)
+    text = DH.build_summary(_cfg_for(tmp_path), "20260805")
+    assert "max_inter_poll  :  45.0min" in text
+    assert "[inter_poll]" in text
+    assert "최대 공백 45.0분" in text
 
 
 # --------------------------------------------------------------------------- #
