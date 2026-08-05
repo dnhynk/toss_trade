@@ -44,20 +44,26 @@ def q1(conn, sql: str, params=()) -> int | None:
         return None
 
 
-def rankings_gaps(conn, start_ms: int, end_ms: int) -> tuple[int, float | None, float | None]:
-    """(고유 폴링 시각 수, 최대 간격 분, 중앙값 간격 초). 실패 시 (0, None, None)."""
+def rankings_gaps(conn, start_ms: int, end_ms: int) -> tuple[int, dict | None, float | None]:
+    """(고유 폴링 시각 수, 공백 요약, 중앙값 간격 초). 실패 시 (0, None, None).
+
+    **간격만 세지 않는다.** 예전 이 함수는 연속한 두 폴의 차이 중 최대만 `max_gap` 이라는
+    이름으로 냈다. 그러면 구멍이 창 가장자리에 있을 때 비교할 다음 폴이 창 밖이라 간격이
+    아예 안 만들어지고, 리포트는 이상 없다고 말한다. 08-05 아침에 그렇게 됐다 — 08:01:46
+    에 수집이 멈추고 창은 08:50 에 끝났는데 리포트에는 `max_gap=3.4min` 이 찍혔고, 진짜
+    공백 48.2분은 어디에도 없었다. 이 파일은 아침에 **가장 먼저 읽히는** 문서다.
+
+    그래서 계산 자체를 `gap_audit.edge_holes` 로 옮겼다 — 두 도구가 같은 정의를 쓰게
+    하려는 것이다. 여기서 다시 구현하면 한쪽만 고쳐지는 날이 온다.
+    """
     try:
         rows = conn.execute(
             "SELECT DISTINCT snap_ms FROM rankings_snap WHERE snap_ms BETWEEN ? AND ? "
             "ORDER BY snap_ms", (start_ms, end_ms)).fetchall()
     except Exception:
         return 0, None, None
-    ts = [r[0] for r in rows]
-    if len(ts) < 2:
-        return len(ts), None, None
-    gaps = [(b - a) / 1000.0 for a, b in zip(ts, ts[1:])]
-    gaps_sorted = sorted(gaps)
-    return len(ts), round(max(gaps) / 60.0, 1), round(gaps_sorted[len(gaps_sorted) // 2], 1)
+    eh = GA.edge_holes([r[0] for r in rows], start_ms, end_ms)
+    return eh["n_obs"], eh, eh["inter_poll"]["p50"]
 
 
 def build_summary(cfg, date_str: str | None) -> str:
@@ -77,7 +83,7 @@ def build_summary(cfg, date_str: str | None) -> str:
     try:
         n_snap = q1(conn, "SELECT COUNT(*) FROM rankings_snap WHERE snap_ms BETWEEN ? AND ?",
                     (start_ms, end_ms))
-        n_polls, max_gap_min, med_gap_s = rankings_gaps(conn, start_ms, end_ms)
+        n_polls, edge, med_gap_s = rankings_gaps(conn, start_ms, end_ms)
         n_1m = q1(conn, "SELECT COUNT(*) FROM candles_1m WHERE ts_ms BETWEEN ? AND ?",
                   (start_ms, end_ms))
         n_tr = q1(conn, "SELECT COUNT(*) FROM trades_snap WHERE ts_ms BETWEEN ? AND ?",
@@ -90,7 +96,15 @@ def build_summary(cfg, date_str: str | None) -> str:
                   (start_ms, end_ms))
         lines += [
             f"rankings_snap rows : {n_snap}",
-            f"  poll timestamps  : {n_polls}  max_gap={max_gap_min}min  median_gap={med_gap_s}s",
+            f"  poll timestamps  : {n_polls}  median_gap={med_gap_s}s",
+        ]
+        # `max_gap` 이라는 이름을 없앴다. 값이 "관측 사이 최대 간격"인데 이름은 "최대
+        # 공백"으로 읽혀서, 창 끝 48.2분을 3.4분이라고 보고했다. 이제 `max_hole`(가장자리
+        # 포함)이 먼저 나오고, 그것이 무엇으로 이루어졌는지가 아래에 펼쳐진다.
+        if edge is not None:
+            lines += ["  " + ln for ln in GA.edge_hole_lines(
+                "랭킹 폴", edge, GA.planned_windows(cfg.log_dir, cfg.state_dir))]
+        lines += [
             f"candles_1m rows    : {n_1m}",
             f"trades_snap rows   : {n_tr}",
             f"orderbook_snap rows: {n_ob}",
@@ -99,9 +113,10 @@ def build_summary(cfg, date_str: str | None) -> str:
         ]
         if n_snap == 0:
             lines.append("!! rankings_snap 0건 — 주말/휴장이 아니라면 수집 장애 흔적")
-        if max_gap_min is not None and max_gap_min > 30:
-            lines.append(f"!! 랭킹 폴링 최대 공백 {max_gap_min}분 — 세션 전환(정상) 또는 "
-                         "장애 구간인지 collector.log/ALERT 파일과 대조할 것")
+        if edge is not None and edge["max_hole_s"] > 30 * 60:
+            lines.append(f"!! 랭킹 폴링 최대 공백 {edge['max_hole_s'] / 60.0:.1f}분 "
+                         f"({edge['max_hole_kind']}) — 세션 전환(정상) 또는 장애 구간인지 "
+                         "collector.log/ALERT 파일과 대조할 것")
     finally:
         conn.close()
 
