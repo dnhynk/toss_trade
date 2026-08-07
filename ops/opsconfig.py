@@ -19,6 +19,11 @@ import yaml
 DEFAULT_CONFIG_PATH = Path("ops/ops_config.yaml")
 EXAMPLE_CONFIG_PATH = Path("ops/ops_config.example.yaml")
 
+# 결번된 아침 리포트를 며칠까지 거슬러 채울지(ops/daily_health.py). 근거: 사후 재구성이
+# 읽는 collector.log 의 회전 보존이 log_retention_days(기본 14)일이라 그 절반이면
+# [체결 tape gap] 절이 아직 살아 있고, 1일 상한은 주말을 낀 다일 정전을 못 넘긴다.
+DEFAULT_CATCHUP_DAYS = 7
+
 
 @dataclass(frozen=True)
 class DiskThresholds:
@@ -42,6 +47,9 @@ class OpsConfig:
     restart_window_s: int
     restart_backoff_base_s: float
     restart_backoff_cap_s: float
+    # 유일하게 기본값을 가진 필드 — 이 데이터클래스를 직접 만드는 기존 호출자(ops 테스트
+    # 6곳)를 건드리지 않기 위해 맨 뒤에 붙였다. 값의 근거는 DEFAULT_CATCHUP_DAYS 참조.
+    daily_health_catchup_days: int = DEFAULT_CATCHUP_DAYS
 
 
 def _as_path(data: dict, key: str, default: str) -> Path:
@@ -59,6 +67,7 @@ def load_ops_config(path: Path | str | None = None) -> OpsConfig:
 
     disk = data.get("disk") or {}
     restart = data.get("restart") or {}
+    daily_health = data.get("daily_health") or {}
     collector_cmd = data.get("collector_cmd")
     if not collector_cmd:
         collector_cmd = ["python", "-m", "tossmon.collector.main"]
@@ -77,6 +86,7 @@ def load_ops_config(path: Path | str | None = None) -> OpsConfig:
         log_retention_days=int(data.get("log_retention_days", 14)),
         log_max_bytes=int(data.get("log_max_bytes", 20_000_000)),
         collector_cmd=list(collector_cmd),
+        daily_health_catchup_days=int(daily_health.get("catchup_days", DEFAULT_CATCHUP_DAYS)),
         max_restarts_per_window=int(restart.get("max_restarts_per_window", 5)),
         restart_window_s=int(restart.get("restart_window_s", 600)),
         restart_backoff_base_s=float(restart.get("backoff_base_s", 2.0)),
