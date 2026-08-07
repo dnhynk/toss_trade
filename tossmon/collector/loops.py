@@ -436,6 +436,10 @@ class CollectorContext:
     _last_demotions: int = 0
     #: 테이프 포화(50건 상한 + 구간 결손) 관측 시각 — 적응형 폴링 주기의 입력.
     tape_saturated_ms: dict[str, int] = field(default_factory=dict)
+    #: 심볼별 직전 `/trades` 폴의 **벽시계** 시각. `last_trade_ms`(마지막 체결 ts)와
+    #: 다르다 — 한산한 종목은 체결이 몇 시간 전이어도 폴은 4초마다 돌기 때문이다.
+    #: 결손 행에 같이 남겨, 하류가 "폴링이 연속이었는가"를 임계 없이 가르게 한다.
+    last_trade_poll_ms: dict[str, int] = field(default_factory=dict)
     #: 유니버스 거부를 이미 로그한 심볼 (같은 심볼이 12초마다 로그를 도배하지 않게).
     _universe_logged: set[str] = field(default_factory=set)
     #: 재시작 시 복원한 심볼별 마지막 봉 시각 (백필 시작점 힌트).
@@ -875,6 +879,27 @@ class CollectorContext:
             # 지금 50건 상한에 걸려 있는 종목 수 — 0 이 아니면 그 종목은 적응형
             # 빠른 레인으로 옮겨져 있다 (예산 중립 재배분).
             "tape_saturated": len(self.tape_saturated_ms),
+            # ↓ 테이프 접힘·포화 (docs/43). **`raw` 와 `rows` 는 반드시 같이 읽는다** —
+            # `trades_raw_rows` = 응답 원본 합, `trades_rows` = 실제 저장 합이고,
+            # 그 차이에는 성질이 정반대인 둘이 섞여 있어 아래에서 갈라 센다.
+            #
+            # 응답을 받은 폴 수 (빈 응답 포함, 실패한 호출 제외 — 그쪽은 `api_errors`).
+            # `trades_polls_at_cap` 의 분모다.
+            "trades_polls": int(self.counters.get("trades_polls", 0)),
+            # 원본 건수가 상한(50)에 닿은 폴. ⚠️ **"잘렸을 수 있다"의 하한**이다 —
+            # API 가 원본 총 건수를 안 주므로 몇 건이 잘렸는지는 못 잰다 (docs/43 §2).
+            "trades_polls_at_cap": int(self.counters.get("trades_polls_at_cap", 0)),
+            "trades_raw_rows": int(self.counters.get("trades_raw_rows", 0)),
+            "trades_rows": int(self.counters.get("trades_rows", 0)),
+            # ★ 한 응답 안에서 PK 가 못 가른 행 = **정보가 없어진 양**. 초 단위 ts 라
+            # 같은 초·같은 가격·같은 수량이면 서로 다른 체결이 하나로 접힌다.
+            "trades_dup_same_poll": int(self.counters.get("trades_dup_same_poll", 0)),
+            # 이전 폴이 이미 저장한 행 = 재전달. 손실이 아니고, 폴 주기가 응답이 덮는
+            # 시간폭보다 짧다는 뜻이다 (커지는 것 자체는 정상).
+            "trades_dup_prev_poll": int(self.counters.get("trades_dup_prev_poll", 0)),
+            # 결손 행 쓰기 실패 — 0 이 아니면 `tape_gaps` 테이블이 카운터보다 적다.
+            "tape_gap_write_failures": int(
+                self.counters.get("tape_gap_write_failures", 0)),
             # 절대 임계를 못 넘어 비어 있던 tier3 정원을 상대 순위로 채운 횟수.
             "tier3_capacity_fills": int(self.counters.get("tier3_capacity_fills", 0)),
             "api_errors": int(self.counters.get("api_errors", 0)),
@@ -1956,11 +1981,35 @@ async def run_tier3_micro(client: TossClient, store: Store, cfg: Config, *,
 async def _poll_trades(ctx: CollectorContext, symbol: str) -> int:
     trades = await ctx.client.get_trades(symbol, count=TRADES_COUNT)
     ctx.after_call(GROUP_MARKET_DATA)
+    poll_ms = ctx.clock.now_ms()
+    prev_poll_ms = ctx.last_trade_poll_ms.get(symbol)
+    ctx.last_trade_poll_ms[symbol] = poll_ms
+    ctx.bump("trades_polls")
     if not trades:
         return 0
+    # ★ 원본 n 과 저장 stored 를 **따로** 센다 (docs/42 §5-5). 두 수 사이에서 사라지는
+    # 것에는 성질이 다른 두 가지가 섞여 있고, 뭉쳐 세면 둘 다 못 읽는다:
+    #
+    #  (1) `trades_dup_same_poll` — **한 응답 안**에서 PK `(symbol, ts_ms, price_u,
+    #      qty_u)` 가 못 가른 행. ts 가 초 단위라(docs/41 §1) 같은 초·같은 가격·같은
+    #      수량인 서로 다른 체결이 여기서 하나로 접힌다. **정보가 실제로 없어진다.**
+    #  (2) `trades_dup_prev_poll` — 이전 폴이 이미 저장한 행. 4초 폴이 수 분치를 받아
+    #      오므로 정상적으로 발생하는 **재전달**이고 손실이 아니다.
+    #
+    # (2)가 (1)보다 훨씬 크므로 `n - stored` 만 보면 (1)은 그 안에 묻힌다.
+    n_raw = len(trades)
+    n_distinct = len({(t.symbol, t.ts_ms, t.price_u, t.qty_u) for t in trades})
     stored = ctx.store.insert_trades(trades)
     stats = tape_stats(trades)
     ctx.bump("trades_rows", stored)
+    ctx.bump("trades_raw_rows", n_raw)
+    ctx.bump("trades_dup_same_poll", n_raw - n_distinct)
+    ctx.bump("trades_dup_prev_poll", n_distinct - stored)
+    # ⚠️ **하한 표시다.** `/trades` 응답은 배열 하나뿐이고 원본 총 건수를 알려주는
+    # 필드가 없다(docs/43 §2). "50건을 받았다"는 "잘렸을 수 있다"까지만 말할 수 있고
+    # "몇 건이 잘렸다"는 못 말한다. 이 카운터를 그 이상으로 읽으면 안 된다.
+    if n_raw >= TRADES_COUNT:
+        ctx.bump("trades_polls_at_cap")
 
     # A2 §2: `/trades` 는 최대 50건이라 **표본**이다. 이번 응답의 최소 ts 가 직전 응답의
     # 최대 ts 보다 크면 그 사이 체결을 놓친 것 — 구간 누락을 카운트해 남긴다.
@@ -1970,14 +2019,34 @@ async def _poll_trades(ctx: CollectorContext, symbol: str) -> int:
         # 50건 상한에 걸린 채 구간이 비면 **폴링이 체결 속도를 못 따라간 것**이다
         # (2026-08-03 실측: 결손 190건 전부 n=50, ZEO/FUSE/CIGL/PUSA 4종목 집중).
         # 그 종목만 적응형으로 더 자주 본다 — 예산은 tier3_trades_intervals 가 지킨다.
-        if int(stats["n"]) >= TRADES_COUNT:
-            ctx.tape_saturated_ms[symbol] = ctx.clock.now_ms()
+        if n_raw >= TRADES_COUNT:
+            ctx.tape_saturated_ms[symbol] = poll_ms
             ctx.bump("tape_saturated_polls")
+        # 카운터·로그와 별개로 **위치를 가진 사건**으로 DB 에 남긴다 (docs/43 §3-2).
+        # 로그는 14일 뒤 지워지는데(`ops/rotate_logs.py`) `trades_snap` 은 아무도
+        # 안 지운다 — 데이터보다 먼저 사라지는 표시는 하류가 쓸 수 없다.
+        _record_tape_gap(ctx, symbol, poll_ms, prev_poll_ms, prev_max, stats,
+                         n_raw, stored)
         ctx.notifier.warn(
             f"tape gap {symbol}: prev_max={prev_max} < this_min={stats['min_ts_ms']} "
             f"(n={stats['n']}) — 표본 사이 체결 누락")
     ctx.last_trade_ms[symbol] = max(prev_max or 0, int(stats["max_ts_ms"]))
     return stored
+
+
+def _record_tape_gap(ctx: CollectorContext, symbol: str, poll_ms: int,
+                     prev_poll_ms: int | None, prev_max: int,
+                     stats: dict[str, int | float], n_raw: int, stored: int) -> None:
+    """결손 한 건을 DB 에 남긴다. **쓰기 실패가 폴을 죽이면 안 된다** — 관측용 부산물이
+    수집 자체를 멈추는 것은 거꾸로다. 실패는 카운터로 드러낸다(`record_promotion` 과 같은 형)."""
+    try:
+        ctx.store.record_tape_gap(symbol, poll_ms, prev_poll_ms, prev_max,
+                                  int(stats["min_ts_ms"]), int(stats["max_ts_ms"]),
+                                  n_raw, stored)
+    except Exception as exc:
+        ctx.bump("tape_gap_write_failures")
+        ctx.notifier.warn(f"record_tape_gap failed for {symbol}: "
+                          f"{type(exc).__name__}: {exc}")
 
 
 def tier3_trades_intervals(members: Sequence[str], saturated: set[str], base_s: float,
