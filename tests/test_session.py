@@ -214,3 +214,49 @@ def test_vectorised_era_matches_the_scalar_rule():
     ts = pd.Series([SS.COLLECTOR_RESTART_MS - 60_000, SS.COLLECTOR_RESTART_MS,
                     SS.COLLECTOR_RESTART_MS + 60_000])
     assert SS.eras_of(ts).tolist() == [SS.collector_era(int(x)) for x in ts]
+
+
+# --------------------------------------------------------------------------- #
+# 7. 홀드아웃 봉인 — 봉 라벨은 **종료 시각**이다
+#    (docs/12 §6.1 봉 라벨 규약 · §6.2 항목 5, 2026-08-07 개정, 사용자 승인)
+# --------------------------------------------------------------------------- #
+def utc_ms(iso: str) -> int:
+    """UTC ISO 문자열 -> epoch ms.
+
+    **합성 픽스처를 쓰지 않는다.** 기존 1분봉 테스트가 이 결함을 놓친 이유는
+    생성기와 소비자가 **같은 규약**을 써서 어느 쪽으로 틀려도 초록이었기 때문이다
+    (`docs/36` §4). 그래서 여기서는 경계를 **절대 시각으로 못 박는다.**
+    """
+    return int(pd.Timestamp(iso).value // 1_000_000)
+
+
+@pytest.mark.parametrize("label,sealed", [
+    # 앞 경계 — 라벨 05-01T00:00Z 봉이 담는 것은 사이클 04-30 이라 **봉인 밖**이다.
+    ("2026-04-30T23:59:00Z", False),        # 담는 구간 23:58-23:59 -> 04-30
+    ("2026-05-01T00:00:00Z", False),        # 담는 구간 23:59-00:00 -> 04-30  <- 개정 전 과보수
+    ("2026-05-01T00:01:00Z", True),         # 담는 구간 00:00-00:01 -> 05-01, 봉인 첫 봉
+    # 뒷 경계 — 라벨 07-30T00:00Z 봉이 담는 것은 사이클 07-29 라 **봉인 안**이다.
+    ("2026-07-29T23:59:00Z", True),         # 담는 구간 23:58-23:59 -> 07-29
+    ("2026-07-30T00:00:00Z", True),         # 담는 구간 23:59-00:00 -> 07-29  <- 개정 전 누출
+    ("2026-07-30T00:01:00Z", False),        # 담는 구간 00:00-00:01 -> 07-30, 봉인 밖 첫 봉
+])
+def test_holdout_seal_reads_the_bar_label_as_an_end_time(label, sealed):
+    """`ts_ms = T` 인 봉은 `[T-60초, T)` 를 담는다 — 소속은 `T` 가 아니라 `T-60초`."""
+    assert SS.is_holdout(utc_ms(label)) is sealed, label
+
+
+def test_the_two_boundary_labels_move_in_opposite_directions():
+    """**어느 봉이 어느 쪽으로 갔는지**를 고정한다 — 개수만 세면 둘 다 1/1 이라 안 잡힌다."""
+    front, back = utc_ms("2026-05-01T00:00:00Z"), utc_ms("2026-07-30T00:00:00Z")
+    got = SS.drop_holdout(pd.DataFrame({"ts_ms": [front, back]}))
+    assert got["n_dropped"] == 1 and got["n_kept"] == 1
+    assert got["kept"]["ts_ms"].tolist() == [front]      # 앞 경계는 **되돌려받는다**
+
+
+def test_the_offset_is_a_full_minute_not_one_millisecond():
+    """개정 문언이 `ts_ms - 60_000` 이다. 분 정렬 봉에서는 `- 1` 과 동등하지만
+    `drop_holdout` 은 `trades_snap`(체결 시각, 분 정렬 아님)에도 걸리므로 갈린다.
+    문언과 코드가 갈라지면 다음 사람이 또 헷갈린다 — 이번 사고가 정확히 그것이었다.
+    """
+    assert SS.is_holdout(utc_ms("2026-05-01T00:00:30Z")) is False
+    assert SS.is_holdout(utc_ms("2026-07-30T00:00:30Z")) is True
