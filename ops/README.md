@@ -16,6 +16,7 @@
 | `watchdog.ps1` | 5분 주기 무인 감시(프로세스·텔레메트리·W4 계약 카운터·디스크·전원·상호 하트비트) + 자동 재기동. 역할 `-Role sentinel` 은 워치독 자체를 감시. 판정 근거·문턱은 `docs/11 §14~20`. |
 | `watchdog_selftest.ps1` | 위 스크립트의 샌드박스 자기시험. 진짜 `watchdog.ps1` 을 임시 DataDir 에서 `-DryRunRestart` 로 돌려 경보/재시작 판정을 검증한다. **가동 중 수집기는 건드리지 않는다.** |
 | `register_task_scheduler.ps1` | 위 3개를 Windows 작업 스케줄러에 등록/해제/상태조회. **기본은 DryRun.** |
+| `dispatch_sweep.py` | 디스패치된 워커를 훑어 **하트비트·브랜치·보고 매니페스트를 대조**한다. 완료 보고를 믿지 않고 커밋을 기계가 확인한다. 읽기 전용(상태 변경 없음). 배경·판정표는 `docs/38_dispatch_sweep.md`. |
 | `hooks/pre_commit_secret_scan.py` | 커밋 전 시크릿 문자열/파일 차단 (`docs/09_secret_hygiene.md`). |
 
 ## 빠른 시작 (Windows)
@@ -28,6 +29,9 @@ python -m ops.rotate_logs
 
 # 워치독을 고친 뒤에는 반드시 이걸 돌린다 (44 케이스, 라이브 무접촉)
 powershell -NoProfile -ExecutionPolicy Bypass -File ops\watchdog_selftest.ps1
+
+# 워커를 수거하기 직전에 돌린다 — 보고가 왔어도 커밋 안 됐으면 여기서 걸린다
+python -m ops.dispatch_sweep            # 종료코드 0=조치불필요 1=조치필요 2=못 잰 것 있음
 
 # 예약 작업 등록 계획만 확인(아무 것도 등록되지 않음)
 powershell -File ops\register_task_scheduler.ps1 -Action Register
