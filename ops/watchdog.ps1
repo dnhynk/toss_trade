@@ -1638,17 +1638,41 @@ if ($null -ne $restartReason) {
     # let the morning reader decide in 30 seconds whether it was justified. Before
     # 2026-08-04 this body was one line and a person spent a morning on a restart that
     # should never have happened.
+    #
+    # There are TWO families of restart reason and only one of them rests on session
+    # freshness. Process-absence (process_dead / supervisor_dead / collector_dead) is
+    # decided by the sup/col counts alone - an absent process cannot be defended by a
+    # session reading. Until 2026-08-06 both families carried the freshness wording, so
+    # ALERT_20260806_094100_watch_process_dead (sup=0 col=0, restart correct, collection
+    # actually resumed at 09:41) told the morning reader the restart was "probably wrong"
+    # and sent them hunting a watchdog defect that did not exist. The progress-stall
+    # wording below is UNCHANGED - it was bought expensively on 2026-08-04.
+    $judgeLines =
+        if (@("process_dead", "supervisor_dead", "collector_dead") -contains $restartReason) {
+            "WAS THIS RESTART JUSTIFIED? Read the evidence above:`r`n" +
+            "  - this reason rests on PROCESS COUNTS, not on session freshness: " +
+            "sup=$($sup.Count) col=$($col.Count) is the whole basis. Both 0 means nothing " +
+            "was running, and then the restart was right - a 'session NOT TRUSTED' line " +
+            "above does NOT weaken it, because a process that is absent cannot be " +
+            "defended by a session reading.`r`n" +
+            "  - if sup or col is non-zero above, the watchdog restarted something that " +
+            "was still running -> check -SupervisorPattern/-CollectorPattern first; that " +
+            "would be a watchdog defect worth reporting.`r`n" +
+            "  - what this does NOT tell you is WHY they were gone (machine reboot, crash, " +
+            "someone stopped them). data/watchdog.log and the Windows event log answer that."
+        } else {
+            "WAS THIS RESTART JUSTIFIED? Read the evidence above:`r`n" +
+            "  - if 'session' is marked NOT TRUSTED, or 'cross-check' disagrees with " +
+            "'session', the reading this decision rests on was stale -> the restart was " +
+            "probably wrong, and that is a watchdog defect worth reporting.`r`n" +
+            "  - if 'session open' or 'collector up' is small, the collector had not had " +
+            "time to do the work it is being blamed for.`r`n" +
+            "  - otherwise the observation was fresh and current, and the fault is real."
+        }
     Raise-Alert $state "watch_$restartReason" "CRIT" (
         "Watchdog detected: $($problems -join ', ') (session=$session age_min=$ageMin " +
         "sup=$($sup.Count) col=$($col.Count)). Restarting via $LauncherCmd`r`n`r`n" +
-        (Get-EvidenceBlock) + "`r`n`r`n" +
-        "WAS THIS RESTART JUSTIFIED? Read the evidence above:`r`n" +
-        "  - if 'session' is marked NOT TRUSTED, or 'cross-check' disagrees with 'session', " +
-        "the reading this decision rests on was stale -> the restart was probably wrong, " +
-        "and that is a watchdog defect worth reporting.`r`n" +
-        "  - if 'session open' or 'collector up' is small, the collector had not had time " +
-        "to do the work it is being blamed for.`r`n" +
-        "  - otherwise the observation was fresh and current, and the fault is real.") 60 | Out-Null
+        (Get-EvidenceBlock) + "`r`n`r`n" + $judgeLines) 60 | Out-Null
     Invoke-Restart $state $restartReason | Out-Null
     Set-Prop $state "collector_missing_strikes" 0
     Set-Prop $state "freeze_strikes" 0

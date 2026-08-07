@@ -365,6 +365,11 @@ function Test-T1-RealStallStillRestarts {
     $body = Get-AlertBody $d $alerts "watch_ranking_snap_stalled"
     Assert "T1" "the restart alert carries the EVIDENCE block" ($body -match "EVIDENCE:") $body
     Assert "T1" "the restart alert says how to judge it" ($body -match "WAS THIS RESTART JUSTIFIED") $body
+    # Presence of the heading is not enough - it was present on 2026-08-06 too, saying the
+    # wrong thing. A progress-stall verdict genuinely does rest on session freshness, so
+    # this family must keep the 2026-08-04 wording.
+    Assert "T1" "a progress-stall restart is judged on session freshness" ($body -match "NOT TRUSTED.*probably wrong") $body
+    Assert "T1" "and NOT on the process counts" ($body -notmatch "PROCESS COUNTS") $body
 }
 
 function Test-T2-StaleObservationStillRestartsOnLogStale {
@@ -382,14 +387,27 @@ function Test-T2-StaleObservationStillRestartsOnLogStale {
 
 function Test-T3-DeadProcessStillRestarts {
     # The plainest fault of all still works with the dummy processes gone.
+    #
+    # The session here is deliberately NOT TRUSTED (state file 3000s old, log fallback the
+    # same) - this is ALERT_20260806_094100 replayed: session=unknown, sup=0, col=0, and
+    # the restart was exactly right (it revived collection at 09:41). The shared
+    # self-assessment used to fire its first bullet on that file and tell the morning
+    # reader the restart was "probably wrong, a watchdog defect worth reporting".
     $d = New-Sandbox
-    Write-StateFile $d "day" 20 20
-    Write-CollectorLog $d "day" 25 20
+    Write-StateFile $d "day" 3000 20
+    Write-CollectorLog $d "day" 3000 20
     Write-SettledOpenState $d
     $rc = Invoke-Watchdog $d @{ CollectorPattern = "NOTHING_MATCHES_THIS_XYZZY"
                                 SupervisorPattern = "NOTHING_MATCHES_THIS_XYZZY" }
     $log = Get-WatchdogLog $d
+    $alerts = Get-Alerts $d "ALERT"
     Assert "T3" "a restart was performed for process_dead" ($log -match "RESTART-DRYRUN reason=process_dead") $log
+    Assert "T3" "the session really was untrusted" ($log -match "session=unknown\(raw=day") $log
+    $body = Get-AlertBody $d $alerts "watch_process_dead"
+    Assert "T3" "the restart alert says how to judge it" ($body -match "WAS THIS RESTART JUSTIFIED") $body
+    Assert "T3" "a process-absence restart is judged on the sup/col counts" ($body -match "PROCESS COUNTS.*sup=0 col=0") $body
+    Assert "T3" "it does not blame the stale session reading" ($body -notmatch "probably wrong") $body
+    Assert "T3" "it says an absent process cannot be defended by a session reading" ($body -match "cannot be\s+defended by a session reading") $body
 }
 
 function Test-S1-SchemaMismatchAllStockNotFound {
