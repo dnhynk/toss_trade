@@ -4,11 +4,16 @@ import re
 from pathlib import Path
 
 LOG = Path(r"C:\Users\dongh\orca\workspaces\toss_trade\w5-ops\data\collector.log")
+# 2026-08-08 (W1): 이 줄의 출처가 `client.last_headers` → `client.last_429` 로 바뀌면서
+# `since=` 와 서버측 진단 필드(`under_own_limit` 등)가 붙었다 (docs/45 §5). 옛 줄과 새 줄을
+# **둘 다** 읽어야 한다 — 로그가 회전되지 않는 단일 파일이라 두 형식이 섞여 있다.
 LINE = re.compile(
     r"^(?P<ts>[\d-]+ [\d:,]+) WARNING HTTP-429-DETAIL group=(?P<group>\S+) "
-    r"caller=(?P<caller>\S+) attributed=(?P<attr>\S+) status=(?P<status>\S+)"
+    r"caller=(?P<caller>\S+) attributed=(?P<attr>\S+)(?: since=(?P<since>\d+))? "
+    r"status=(?P<status>\S+)"
     r"(?: peak1s=(?P<peaks>\{[^}]*\}) own_within_limit=(?P<own>\S+) "
-    r"md_plus_chart=(?P<fam>\d+))? headers=(?P<hdrs>\{.*\})\s*$")
+    r"md_plus_chart=(?P<fam>\d+))?"
+    r"(?P<extra>(?: [a-z_]+=\S+)*) headers=(?P<hdrs>\{.*\})\s*$")
 
 LIMITS = {"MARKET_DATA": 10, "MARKET_DATA_CHART": 5, "RANKING": 5}
 

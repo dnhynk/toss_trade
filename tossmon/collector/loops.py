@@ -609,15 +609,42 @@ class CollectorContext:
         self.budget.on_requests(group, self._unaccounted_attempts())
         seen429 = int(getattr(self.client, "counters", {}).get("http_429", 0))
         if seen429 > self._http429:
+            since = seen429 - self._http429
             self._http429 = seen429
             # 429 **원문 헤더**를 남긴다 (2026-08-04 지시): 지금까지 카운트만 있어서
             # "한도의 1/5 을 쓰는데 왜 429 인가" 를 판별할 수 없었다. Retry-After 나
             # X-RateLimit-* 가 오면 우리 한도 모델(그룹별 초당)이 틀렸다는 증거가 된다.
-            owner, attributed = self._attribute_429(group)
-            hdrs = dict(getattr(self.client, "last_headers", {}) or {})
-            keep = {k: v for k, v in hdrs.items()
-                    if k.lower().startswith(("x-rate", "retry-after", "x-request",
-                                             "date", "ratelimit"))}
+            #
+            # 2026-08-08 정정 (W1): 여기서 읽던 `client.last_headers` 는 **마지막 응답**이라
+            # 429 뒤 재시도가 성공하면 `status=200` 인 "429 기록" 이 남았다. 그래서 지금까지
+            # 429 응답의 진짜 헤더를 한 번도 본 적이 없고, 그 때문에 "서버가 그룹 한도를
+            # 공유하는가" 를 확정도 기각도 못 했다 (docs/32 §3.6, docs/37 §3.6).
+            # client 는 429 를 받은 **그 자리에서** `last_429` 에 원문을 남긴다 — 그쪽을 읽는다.
+            rec = getattr(self.client, "last_429", None)
+            if isinstance(rec, dict):
+                # 429 를 실제로 맞은 그룹이 기록에 있다 — 추정할 이유가 없다.
+                owner, attributed = str(rec.get("group") or group), True
+                keep = dict(rec.get("headers") or {})
+                status = rec.get("status")
+                # 서버 `date` 초 기준으로 client 가 직접 센 값. 예산 첨두(peak1s)와 **독립**이라
+                # 둘이 어긋나면 어느 쪽이 틀렸는지 가를 수 있다.
+                server_side = (
+                    f"own_in_server_s={rec.get('own_requests_in_that_server_second')} "
+                    f"limit_hdr={rec.get('limit_header')} "
+                    f"under_own_limit={rec.get('under_own_limit')} "
+                    f"err={rec.get('error_code')} "
+                    f"retry_after_s={rec.get('retry_after_s')} "
+                    f"retry_after_present={rec.get('retry_after_present')} "
+                    f"path={rec.get('path')}")
+            else:
+                # `last_429` 가 없는 client(테스트 더블)만 옛 추정 경로로 내려간다.
+                owner, attributed = self._attribute_429(group)
+                hdrs = dict(getattr(self.client, "last_headers", {}) or {})
+                keep = {k: v for k, v in hdrs.items()
+                        if k.lower().startswith(("x-rate", "retry-after", "x-request",
+                                                 "date", "ratelimit"))}
+                status = getattr(self.client, "last_status", None)
+                server_side = "own_in_server_s=? (last_429 없음 — 추정 귀속)"
             # 429 **순간의 초당 첨두**를 그룹별로 같이 남긴다. 이것이 "CHART 는 자기
             # 한도(5) 한참 아래인데 왜 429 인가" 를 가르는 유일한 관측이다:
             #   own >  limit  -> 그 그룹이 진짜 넘겼다 (리미터 결함)
@@ -630,10 +657,9 @@ class CollectorContext:
             own_ok = peaks.get(owner, 0) <= self.budget.limit_of(owner)
             self.notifier.warn(
                 f"HTTP-429-DETAIL group={owner} caller={group} "
-                f"attributed={attributed} status="
-                f"{getattr(self.client, 'last_status', None)} "
+                f"attributed={attributed} since={since} status={status} "
                 f"peak1s={peaks} own_within_limit={own_ok} md_plus_chart={family} "
-                f"headers={keep or hdrs}")
+                f"{server_side} headers={keep}")
             if own_ok:
                 # 자기 한도 안인데 맞았다 — 우리 한도 모델이 틀렸다는 뜻이다.
                 self.bump("http_429_under_own_limit")
