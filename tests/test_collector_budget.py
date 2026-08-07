@@ -50,7 +50,7 @@ def test_plan_rates_reproduce_the_config_arithmetic():
     assert rates[GROUP_MARKET_DATA] == pytest.approx(8 / 45 + 10 / 4 + 10 / 4, rel=1e-9)
     assert rates[GROUP_MARKET_DATA] == pytest.approx(5.1778, abs=1e-3)
     assert rates[GROUP_CHART] == pytest.approx(300 / 110, abs=1e-6)
-    assert rates[GROUP_RANKING] == pytest.approx(2 / 12, abs=1e-6)
+    assert rates[GROUP_RANKING] == pytest.approx(3 / 12, abs=1e-6)   # 2026-08-07: 3종
     assert guard().validate_plan() == {}                     # 예산 안
 
 
@@ -449,12 +449,40 @@ def test_shipped_tier3_settings_are_the_decided_ones():
     assert SHIPPED.polling.tier3_trades_s == 4                # 체결 주기는 건드리지 않았다
 
 
-def test_ranking_budget_counts_two_lists_not_four():
-    """랭킹 2종화는 RANKING 그룹 호출률을 절반으로 만든다 (디스크가 목적, 예산은 덤)."""
-    two = guard(plan()).plan.rates()[GROUP_RANKING]
-    four = guard(plan(ranking_types=4)).plan.rates()[GROUP_RANKING]
-    assert two == pytest.approx(2 / SHIPPED.polling.ranking_snap_s)
-    assert four == pytest.approx(2 * two)
+def test_ranking_budget_is_linear_in_the_number_of_lists():
+    """RANKING 호출률은 목록 수에 정비례한다 — 타입을 더하면 예산도 그만큼 는다.
+
+    2026-08-04 에 4종 → 2종(디스크 목적), 2026-08-07 에 `TOP_GAINERS` 를 더해 3종.
+    한 타입의 값이 `1/ranking_snap_s` 라는 것을 고정해두면, 앞으로 목록이 몇 종이 되든
+    예산이 따라 움직이는지 이 한 줄로 확인된다.
+    """
+    from tossmon.collector.loops import RANKING_TYPES as POLLED
+
+    per_type = 1 / SHIPPED.polling.ranking_snap_s
+    polled = guard(plan()).plan.rates()[GROUP_RANKING]
+    assert polled == pytest.approx(len(POLLED) * per_type)
+    for n in (2, 3, 4):
+        assert guard(plan(ranking_types=n)).plan.rates()[GROUP_RANKING] == \
+            pytest.approx(n * per_type)
+
+
+def test_third_ranking_type_stays_far_under_the_ranking_budget():
+    """★ 2026-08-07 D-11 — `TOP_GAINERS` 추가가 RANKING 예산을 건드리지 않는다.
+
+    타입 하나는 `1/12 = 0.083 req/s` 다. 이 그룹은 축소 대상이 아니므로(과거 조회 불가)
+    넘치면 자동 조정이 아니라 **경보**가 나간다 — 그래서 기동 전에 여기서 못박는다.
+    """
+    from tossmon.collector.loops import RANKING_TYPES as POLLED
+
+    assert len(POLLED) == 3
+    g = guard(plan())
+    rate = g.plan.rates()[GROUP_RANKING]
+    before = guard(plan(ranking_types=2)).plan.rates()[GROUP_RANKING]
+    assert rate - before == pytest.approx(1 / SHIPPED.polling.ranking_snap_s, abs=1e-9)
+    assert rate == pytest.approx(0.25, abs=1e-3)              # 3 / 12s
+    # 계획 천장은 축소 천장에서 계획 밖 호출용 여유를 뺀 값이다. 3종은 그 아래로 한참이다.
+    assert rate < g.plan_ceiling(GROUP_RANKING)
+    assert g.validate_plan() == {} and g.reserve_deficit() == {}
 
 
 def test_budget_ranking_count_matches_the_list_the_collector_actually_polls():

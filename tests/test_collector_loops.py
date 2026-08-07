@@ -1644,37 +1644,165 @@ def test_one_429_is_charged_once_across_loops(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# 2026-08-04 전환: 랭킹 2종 + 수집 설정 지문 (분석이 경계를 찾는 열쇠)
+# 2026-08-04 전환: 랭킹 2종 → 2026-08-07 전환: + TOP_GAINERS(1d) = 3종
+# (수집 설정 지문이 분석이 경계를 찾는 열쇠다)
 # --------------------------------------------------------------------------- #
-def test_only_the_two_count_based_ranking_lists_are_polled():
-    """금액 목록 2종은 더 이상 받지 않는다.
+def test_the_collected_lists_are_the_two_volume_lists_plus_top_gainers():
+    """금액 목록 2종은 여전히 안 받고, 등락률 급상승 1종이 더해졌다.
 
     `amount_u` 가 micro-KRW 오염 필드라 금액 용도로 못 쓰는데도 하루 80만 행을 쓰고
-    있었다. 남긴 두 종은 **건수 기준**이고, 둘의 순위 대비가 "개미만 몰린 종목" 신호다.
+    있었다 (2026-08-04 제거). 남긴 두 종은 **건수 기준**이고, 둘의 순위 대비가 "개미만
+    몰린 종목" 신호다.
+
+    2026-08-07 사용자 결정(D-11)으로 `TOP_GAINERS` 가 더해졌다. 근거는 W1 실측:
+    `TOP_GAINERS` 100종 중 **35% 는 우리 랭킹 이력에 한 번도 없다** (`docs/35` §5-6a).
     """
+    assert loops.FEATURE_RANKING_TYPES == ("MARKET_TRADING_VOLUME",
+                                           "TOSS_SECURITIES_TRADING_VOLUME")
     assert loops.RANKING_TYPES == ("MARKET_TRADING_VOLUME",
-                                   "TOSS_SECURITIES_TRADING_VOLUME")
+                                   "TOSS_SECURITIES_TRADING_VOLUME",
+                                   "TOP_GAINERS")
     assert not any("AMOUNT" in t for t in loops.RANKING_TYPES)
 
 
+def test_duration_is_a_function_of_ranking_type_not_a_free_argument():
+    """★ 섞임 방지 장치의 **뿌리**. 이 성질이 깨지면 읽는 쪽의 분리가 통째로 무너진다.
+
+    한 `ranking_type` 이 정확히 한 `duration` 을 결정하므로, `rankings_snap` 을
+    `ranking_type` 으로 가르면 `duration` 은 자동으로 갈린다. 분석이 `GROUP BY
+    ranking_type` 만 해도 집계창이 섞이지 않는 것은 이 성질 덕분이다.
+    """
+    from tossmon.api.models import RANKING_DURATIONS, duration_for
+
+    # (1) 수집하는 모든 타입이 등록돼 있다 — 미등록 타입은 추측하지 않고 즉시 실패한다.
+    for rtype in loops.RANKING_TYPES:
+        assert rtype in RANKING_DURATIONS
+        assert duration_for(rtype)
+    with pytest.raises(KeyError):
+        duration_for("NOT_A_RANKING_TYPE")
+
+    # (2) 실제로 섞여 있다 — 이 테스트가 지키는 상황이 가정이 아니라는 확인.
+    durations = {duration_for(t) for t in loops.RANKING_TYPES}
+    assert durations == {"realtime", "1d"}
+
+    # (3) 피처 목록은 **한 가지 집계창**이라야 한다. 토스 쏠림도는 두 목록의 순위 대비라
+    #     서로 다른 창을 비교하면 그대로 틀린다 (실측 15.4배 차).
+    assert {duration_for(t) for t in loops.FEATURE_RANKING_TYPES} == {"realtime"}
+    assert duration_for("TOP_GAINERS") == "1d"                 # realtime 은 400 (W1 실측)
+
+
 @pytest.mark.asyncio
-async def test_rankings_loop_calls_exactly_the_two_lists(tmp_path):
-    """상수만 줄이고 루프가 옛 목록을 계속 부르면 디스크 절감이 안 일어난다."""
+async def test_rankings_loop_asks_each_list_with_its_own_duration(tmp_path):
+    """상수만 늘리고 루프가 옛 목록·옛 duration 을 부르면 아무것도 안 바뀐다.
+
+    `TOP_GAINERS` 에 `realtime` 을 보내면 400 이라 **한 행도 안 들어온다** (W1 실측).
+    그래서 타입만이 아니라 **타입마다의 duration**과 깊이까지 고정한다.
+    """
     class RankClient(StubClient):
         def __init__(self):
             super().__init__({})
-            self.asked: list[str] = []
+            self.asked: list[tuple[str, str, int]] = []
 
-        async def get_rankings(self, rtype, **kw):
-            self.asked.append(rtype)
-            return RankingPage(ranking_type=rtype, duration="realtime",
+        async def get_rankings(self, rtype, duration="realtime", market="US",
+                               count=100, **kw):
+            self.asked.append((rtype, duration, count))
+            return RankingPage(ranking_type=rtype, duration=duration,
                                ranked_at_ms=DAY0, rows=[])
 
     client = RankClient()
     ctx, _day = build_ctx(tmp_path, client)
     await loops.rankings_once(ctx)
-    assert client.asked == list(loops.RANKING_TYPES)
-    assert len(client.asked) == 2
+    assert [a[0] for a in client.asked] == list(loops.RANKING_TYPES)
+    assert len(client.asked) == 3
+    assert client.asked == [("MARKET_TRADING_VOLUME", "realtime", 100),
+                            ("TOSS_SECURITIES_TRADING_VOLUME", "realtime", 100),
+                            ("TOP_GAINERS", "1d", 100)]
+    assert ctx.counters["ranking_snaps"] == 3          # 세 종 모두 스냅으로 계상된다
+    assert ctx.counters.get("ranking_duration_mismatch", 0) == 0
+    ctx.store.close()
+
+
+@pytest.mark.asyncio
+async def test_a_duration_the_server_did_not_honour_is_alerted(tmp_path):
+    """타입→duration 전제가 서버 쪽에서 깨지면 조용히 넘어가면 안 된다.
+
+    저장은 한다 (랭킹은 과거 조회 불가라 버리면 영구 유실). 다만 분석의 duration 분리가
+    이 전제 위에 서 있으므로 카운터·경보로 반드시 드러낸다.
+    """
+    class LyingClient(StubClient):
+        async def get_rankings(self, rtype, duration="realtime", **kw):
+            # 서버가 요청과 다른 duration 을 돌려주는 상황.
+            return RankingPage(ranking_type=rtype, duration="5d",
+                               ranked_at_ms=DAY0, rows=[])
+
+    ctx, _day = build_ctx(tmp_path, LyingClient({}))
+    alerts: list[str] = []
+    ctx.notifier.alert = alerts.append                 # type: ignore[method-assign]
+    await loops.rankings_once(ctx)
+    assert ctx.counters["ranking_duration_mismatch"] == len(loops.RANKING_TYPES)
+    assert any("duration" in m for m in alerts)
+    ctx.store.close()
+
+
+@pytest.mark.asyncio
+async def test_the_1d_list_never_enters_the_realtime_feature_path(tmp_path):
+    """★ 섞임 방지 장치. `TOP_GAINERS`(1d)는 DB 까지만 가고 실시간 경로에 안 들어간다.
+
+    실시간 버퍼는 토스 쏠림도(realtime 두 목록의 순위 대비)를 계산하려고 존재한다.
+    같은 순간·같은 심볼인데 `1d` 의 `vol_qu` 가 `realtime` 의 중앙값 15.4배라
+    (2026-08-07 실측), 버퍼에 섞이면 그 피처가 **예외 없이 조용히** 틀린다.
+    검사보다 아예 안 들여보내는 쪽이 확실하다.
+    """
+    def rows(sym):
+        return [RankingRow(rank=1, symbol=sym, last_u=3_000_000, base_u=3_000_000,
+                           change_rate=0.5, vol_qu=1_000_000, amount_u=1_000_000)]
+
+    class ThreeListClient(StubClient):
+        async def get_rankings(self, rtype, duration="realtime", **kw):
+            # 목록마다 다른 심볼을 담아 어느 목록이 버퍼에 들어갔는지 구분한다.
+            sym = {"TOP_GAINERS": "GAINONLY"}.get(rtype, "VOLBOTH")
+            return RankingPage(ranking_type=rtype, duration=duration,
+                               ranked_at_ms=DAY0, rows=rows(sym))
+
+    ctx, _day = build_ctx(tmp_path, ThreeListClient({}))
+    # 버퍼에 **무엇이 건네지는가**를 직접 본다. 최종 `ctx.rankings.rows` 를 보면
+    # 루프 끝의 `prune(keep=watchlist)` 가 섞여 들어와(스텁 심볼은 tier0 미통과)
+    # "안 들어갔다" 와 "들어갔다가 정리됐다" 를 구분하지 못한다.
+    handed: list[tuple[str, str]] = []
+    real_add = ctx.rankings.add
+
+    def spy_add(snap_ms, page, keep=None):
+        handed.append((page.ranking_type, page.duration))
+        return real_add(snap_ms, page, keep=keep)
+
+    ctx.rankings.add = spy_add                         # type: ignore[method-assign]
+    await loops.rankings_once(ctx)
+
+    # ★ 1d 페이지는 실시간 버퍼에 **한 번도** 건네지지 않는다.
+    assert handed == [("MARKET_TRADING_VOLUME", "realtime"),
+                      ("TOSS_SECURITIES_TRADING_VOLUME", "realtime")]
+    assert {d for _t, d in handed} == {"realtime"}
+    # 승격 트리거(`_ranking_triggers` → `ctx.watch`)도 realtime 목록에만 돈다.
+    # `_universe_logged` 는 watch 시도에서 걸러진 심볼이 남는 곳이라, "시도조차 안 했다" 와
+    # "시도했는데 걸러졌다" 를 가른다 — 대조군이 있어야 이 단언이 공허하지 않다.
+    assert ctx._universe_logged == {"VOLBOTH"}
+
+    # DB 에는 세 종이 전부 있다 — 수집이 목적이므로 저장은 빠지면 안 된다.
+    stored = dict(ctx.store._conn.execute(
+        "SELECT ranking_type, COUNT(*) FROM rankings_snap GROUP BY 1").fetchall())
+    assert set(stored) == set(loops.RANKING_TYPES)
+    assert stored["TOP_GAINERS"] == 1
+    # duration 도 타입별로 정확히 하나씩만 들어가 있다 (읽는 쪽이 기대는 성질).
+    pairs = ctx.store._conn.execute(
+        "SELECT ranking_type, COUNT(DISTINCT duration) FROM rankings_snap "
+        "GROUP BY 1").fetchall()
+    assert all(n == 1 for _t, n in pairs)
+    assert ctx.store._conn.execute(
+        "SELECT duration FROM rankings_snap WHERE ranking_type='TOP_GAINERS'"
+    ).fetchone()[0] == "1d"
+
+    # 승격 트리거도 1d 목록에서는 돌지 않는다 (승격 정책은 이번 결정에 없다).
+    assert "GAINONLY" not in ctx.watchlist
     ctx.store.close()
 
 
@@ -1685,7 +1813,26 @@ def test_config_signature_records_the_collection_shape(tmp_path):
     assert sig == ctx.telemetry()["config_sig"]                # 5분마다 나가는 리포트에 실린다
     assert " " not in sig                                      # 한 줄 파싱을 깨지 않는다
     # 결정된 값이 지문에 그대로 보여야 사람이 로그만 보고 확인할 수 있다.
-    assert "rank2:" in sig and "t3max10" in sig and "ob4s" in sig and "tr4s" in sig
+    assert "rank3:" in sig and "t3max10" in sig and "ob4s" in sig and "tr4s" in sig
+    ctx.store.close()
+
+
+def test_config_signature_spells_out_the_duration_of_every_list(tmp_path):
+    """★ D-11 요구 2 — 경계를 **데이터에 남긴다**. duration 이 지문에 없으면 안 된다.
+
+    2026-08-07 부터 한 테이블에 `realtime` 과 `1d` 가 섞인다. 지문이 타입 수·타입명만
+    담으면 분석은 이 경계 전후를 가를 수 있어도 **한 구간 안에서 집계창이 둘이라는 것**을
+    모른다. `usage_ratio` 가 `config_sig` 에 없어서 08-04 밤의 0.85→0.70→0.85 가 데이터에
+    안 남은 전례가 있다 (`DATA-QUALITY-PROGRAM` 규칙 3). 반복하지 않는다.
+    """
+    ctx, _day = build_ctx(tmp_path, StubClient({}))
+    sig = ctx.config_signature()
+    assert "rank3:" in sig
+    assert "GAIN/1d" in sig                                    # 등락률 목록과 그 duration
+    assert "MVOLUME/rt" in sig and "TVOLUME/rt" in sig         # 거래량 2종은 realtime
+    assert f"@{loops.RANKING_COUNT}" in sig                    # 깊이도 경계다
+    # 이 지문은 변경 **이전** 지문과 반드시 달라야 한다 — 안 그러면 뭉쳐서 분석된다.
+    assert "rank2:M+T" not in sig
     ctx.store.close()
 
 

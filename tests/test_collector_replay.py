@@ -66,7 +66,13 @@ def _build(tmp_path):
     rankings = rankings.assign(ranking_type=rankings["ranking_type"].replace({
         "MARKET_TRADING_AMOUNT": "MARKET_TRADING_VOLUME",
         "TOSS_SECURITIES_TRADING_AMOUNT": "TOSS_SECURITIES_TRADING_VOLUME"}))
-    assert set(rankings["ranking_type"]) == set(loops.RANKING_TYPES)
+    # 2026-08-07 부터 수집 목록에 `TOP_GAINERS`(1d)가 더해졌지만 synth 는 그것을 만들지
+    # 않는다. 그래도 이 테스트가 지키려는 것은 그대로다 — 리플레이가 검증하는 것은 승격과
+    # 토스 쏠림도이고 그 둘은 **realtime 2종의 일**이다. 그래서 고정할 목록은 수집 전체가
+    # 아니라 `FEATURE_RANKING_TYPES` 다. (수집 목록으로 고정하면 synth 가 만들 수 없는
+    # 이름 때문에 테스트가 영구히 빨갛고, 그걸 피하려고 assert 를 지우면 위의 무의미한
+    # 테스트로 되돌아간다.)
+    assert set(rankings["ranking_type"]) == set(loops.FEATURE_RANKING_TYPES)
 
     cfg = make_config(tmp_path)
     store = Store(cfg.store.db_path)
