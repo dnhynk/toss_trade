@@ -430,11 +430,17 @@ class BudgetGuard:
             return
         self.counters["over_limit_1s"] = self.counters.get("over_limit_1s", 0) + 1
         if self.notifier is not None:
+            # 2026-08-08 정정 (docs/45 → docs/46). 예전 문구는 "리미터가 1초 창을 못
+            # 지키고 있다" 였고 그것이 운영에서 580건 났다. **전부 허위였다** — 리미터는
+            # 1.15초 하드캡으로 어떤 1초 창도 못 넘고(docs/45 §2 구조적 증명 + 한도
+            # 1/3/5/10 포화 테스트), 그 580건은 같은 호출을 두 번 센 결과였다.
+            # 계상을 고친 지금 이 경보가 다시 오르면 원인은 리미터가 **아니라** 리미터
+            # 밖의 송신이다. 문구가 엉뚱한 곳을 가리키면 엉뚱한 곳을 고친다.
             self.notifier.alert(
                 f"budget: {group} 1초에 {int(peak)}회 — 공시 한도 "
-                f"{self.limit_of(group):.0f} 초과. 429 를 안 맞았다면 운이다. "
-                "정원이 아니라 **리미터가 1초 창을 못 지키고 있다** — 티어를 깎아도 "
-                "같은 버스트는 또 난다")
+                f"{self.limit_of(group):.0f} 초과. 리미터 하드캡은 이 값을 낼 수 없다 "
+                "(docs/45 §2) — 수집기 다중 기동이나 리미터를 안 거치는 송신 경로를 "
+                "의심하라. 티어를 깎아도 고쳐지지 않는다")
 
     def over_limit_1s(self, group: str) -> bool:
         """**서버 한도 자체를 넘긴 1초가 있었나.**
@@ -613,8 +619,24 @@ class BudgetGuard:
             target = self.target(group)
             if target <= 0:
                 continue
-            if self.peak_1s(group) > target * RECOVER_USAGE_MAX:
-                continue                                  # 초당 첨두가 아직 빡빡하다
+            # **축소와 같은 양을 본다.** 2026-08-04 수정이 축소를 지속률(`measured_rate`)로
+            # 옮기면서 복원은 `peak_1s` 에 남겨뒀는데, 그 비대칭에 근거가 없었다:
+            # 지속률로 깎고 첨두로 복원을 막으면 정원은 **내려가기만 한다.**
+            #
+            # 게다가 그 비교는 단위가 안 맞았다. `peak_1s` 는 관측 지평(60초) 중 **최악의
+            # 1초**이고 `target` 은 **지속 속도** 예산(8.5 req/s)이다. 최댓값을 평균 예산에
+            # 대고 재면 리미터가 완벽해도 트립한다 — tier3 루프가 4초마다 20건을 몰아 쏘는
+            # 실제 모양에서 지속률은 5.0(목표의 59%)인데 첨두는 9 이고, 문턱은 5.95 다.
+            # 오프라인 재생(939 표본, docs/46 §5): 이 조건이 **93.8% 의 표본**에서
+            # 불만족이었고, 정원을 1 까지 깎아도 중앙 첨두가 문턱 위였다.
+            if self.measured_rate(group) > target * RECOVER_USAGE_MAX:
+                continue                                  # 지속 사용률이 아직 빡빡하다
+            # 첨두를 여기서 버리지는 않는다 — **단위가 맞는 곳에** 쓴다. 1초 최댓값은
+            # 1초 **한도**에 대고 잰다. 하드캡이 있는 한 이 조건은 구조적으로 성립하지
+            # 않지만(docs/45 §2), 성립한다면 그것은 다중 프로세스처럼 리미터 밖에서
+            # 송신이 나갔다는 뜻이고 그때는 정원을 되돌릴 때가 아니다.
+            if self.peak_1s(group) > self.limit_of(group):
+                continue                                  # 진짜 1초 창 위반이 관측됐다
             if self.planned_rate(group) > target:
                 continue                                  # 계획 자체가 초과 상태
             have = self.plan.symbols_of(group)

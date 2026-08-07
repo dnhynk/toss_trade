@@ -15,12 +15,17 @@
   1. 하드캡은 **어떤 1초 구간에서도** 공시 한도를 넘기지 않는다 — 한도 10 규모에서도.
      (기존 `test_api_ratelimit_contract.py` 는 한도 3 에서만 고정하고 있었다.)
   2. 429 재시도도 리미터를 **다시** 통과한다 — 하드캡을 우회하는 경로가 아니다.
-  3. 그런데 예산 계측은 송신과 1:1 이 아니다. `_guarded` 의 `finally` 가 부르는
+  3. 그런데 예산 계측은 송신과 1:1 이 아니었다. `_guarded` 의 `finally` 가 부르는
      `sync_rate_limits()` 가 **전역 시도 델타를 클램프 없이** 자기 그룹에 얹고,
-     그 사이 남의 그룹은 `after_call` 의 바닥값으로 **또** 계상한다. 같은 호출이
+     그 사이 남의 그룹은 `after_call` 의 바닥값으로 **또** 계상했다. 같은 호출이
      두 번 계상된다 → `peak_1s` 가 실제 송신보다 커진다.
 
-즉 1·2 가 (가)를 반증하고, 3 이 (나)를 재현한다.
+즉 1·2 가 (가)를 반증하고, 3 이 (나)를 재현했다.
+
+**2026-08-08 (W4, docs/46)**: 3 의 원인 두 개(D1·D2)를 고쳤다. 계상 근거가 `client` 의
+**그룹별 송신 카운터**로 바뀌어 남의 송신이 얹히지도, 같은 송신이 두 번 세지지도 않는다.
+그래서 아래 3번 테스트는 이제 **고쳐졌음을 지키는 쪽**이다 — 시나리오는 그대로 두고
+기대값만 뒤집었다. 계상 쪽 계약은 `tests/test_double_billing.py` 가 전수로 고정한다.
 """
 from __future__ import annotations
 
@@ -177,12 +182,16 @@ class _CountingClient:
 
     def __init__(self) -> None:
         self.counters = {"requests": 0, "http_429": 0, "retries": 0}
+        # 2026-08-08 (docs/46): 실제 `_send` 는 전역 `requests` 와 **그룹별** 송신 수를
+        # 같은 자리에서 올린다. 그룹별 쪽이 예산 계상의 유일한 귀속 근거다.
+        self.sent_by_group: dict[str, int] = {}
         self.last_headers: dict[str, str] = {}
         self.last_status: int | None = None
         self.last_429: dict | None = None
 
-    def send(self, n: int = 1) -> None:
+    def send(self, group: str, n: int = 1) -> None:
         self.counters["requests"] += n
+        self.sent_by_group[group] = self.sent_by_group.get(group, 0) + n
 
     async def get_us_calendar(self, date=None):
         return calendar_dict([simple_day("2026-07-30", DAY0)], 0)
@@ -203,20 +212,22 @@ def _build_ctx(tmp_path):
 
 
 def test_sync_rate_limits_books_other_groups_calls_into_market_data(tmp_path):
-    """`_guarded` 의 `finally` 가 **남의 그룹 송신**을 MARKET_DATA 로 계상한다.
+    """`_guarded` 의 `finally` 가 **남의 그룹 송신**을 MARKET_DATA 로 계상하지 않는다.
 
     재현하는 실제 순서 (단일 이벤트루프, `loops.py` 그대로):
 
       1. tier3 가 MARKET_DATA 1건을 보내고 완료 → `after_call(MARKET_DATA)`
       2. 그 코루틴이 DB 를 쓰는 **동안** tier2(CHART) 가 3건을 소켓으로 내보낸다.
          아직 응답 전이라 CHART 의 `after_call` 은 안 돌았다.
-      3. tier3 의 `_guarded` 가 끝나며 `finally: sync_rate_limits(MARKET_DATA)` —
-         여기서 전역 시도 델타 3 을 **클램프 없이** MARKET_DATA 에 얹는다.
-      4. 뒤늦게 CHART 의 `after_call` 3건이 돈다. 델타는 이미 0 이지만
-         `booked = max(booked, calls)` 바닥값 때문에 **각각 1건씩 또** 계상된다.
+      3. tier3 의 `_guarded` 가 끝나며 `finally: sync_rate_limits(MARKET_DATA)`
+      4. 뒤늦게 CHART 의 `after_call` 3건이 돈다.
 
-    결과: 실제 송신 4건이 예산에는 7건으로 잡히고, 그 중 4건이 MARKET_DATA 몫이 된다 —
-    MARKET_DATA 는 1건만 보냈는데도.
+    **2026-08-08 (W4, docs/46): 이 테스트는 원래 결함을 재현하는 쪽이었다.**
+    당시 값은 MD 4 / CHART 3 / 합 7 — 실제 송신 4건에 7건 계상이었다. 3 에서 전역 시도
+    델타를 클램프 없이 MD 에 얹었고(D1), 4 에서 진짜 주인이 `max(booked, calls)`
+    바닥값으로 또 셌다(D2). 지금은 계상 근거가 **그룹별 송신 카운터**뿐이라
+    같은 순서에서 MD 1 / CHART 3 / 합 4 가 나온다. 시나리오는 그대로 두고
+    기대값만 뒤집어, 결함이 되살아나면 여기서 잡히게 한다.
     """
     ctx, client = _build_ctx(tmp_path)
     budget = ctx.budget
@@ -224,11 +235,11 @@ def test_sync_rate_limits_books_other_groups_calls_into_market_data(tmp_path):
     md_before = budget.counters.get(GROUP_MARKET_DATA, 0)
     chart_before = budget.counters.get(GROUP_CHART, 0)
 
-    client.send(1)                                   # 1. MARKET_DATA 가 보냈다
+    client.send(GROUP_MARKET_DATA, 1)                # 1. MARKET_DATA 가 보냈다
     ctx.after_call(GROUP_MARKET_DATA)                #    완료 → 계상
 
-    client.send(3)                                   # 2. CHART 3건이 나갔다 (완료 전)
-    ctx.sync_rate_limits(GROUP_MARKET_DATA)          # 3. _guarded finally — 무클램프
+    client.send(GROUP_CHART, 3)                      # 2. CHART 3건이 나갔다 (완료 전)
+    ctx.sync_rate_limits(GROUP_MARKET_DATA)          # 3. _guarded finally
 
     for _ in range(3):                               # 4. 뒤늦은 CHART 완료
         ctx.after_call(GROUP_CHART)
@@ -237,12 +248,13 @@ def test_sync_rate_limits_books_other_groups_calls_into_market_data(tmp_path):
     chart_booked = budget.counters.get(GROUP_CHART, 0) - chart_before
 
     assert client.counters["requests"] == 4, "실제 송신은 4건이다"
-    assert md_booked == 4, (
+    assert md_booked == 1, (
         f"MARKET_DATA 는 1건만 보냈는데 {md_booked}건 계상 — "
-        "sync_rate_limits 가 남의 그룹 송신을 가져갔다")
-    assert chart_booked == 3, "CHART 는 바닥값으로 자기 3건을 또 계상한다"
-    assert md_booked + chart_booked == 7 > client.counters["requests"], (
-        "총 계상이 실제 송신보다 커야 이중 계상이 재현된 것이다")
+        "sync_rate_limits 가 남의 그룹 송신을 가져갔다 (D1)")
+    assert chart_booked == 3, f"CHART 는 3건 보냈는데 {chart_booked}건 계상"
+    assert md_booked + chart_booked == client.counters["requests"], (
+        f"총 계상 {md_booked + chart_booked} != 실제 송신 "
+        f"{client.counters['requests']} — 같은 호출이 두 번 계상된다")
 
 
 def test_peak_1s_can_exceed_the_limit_although_the_limiter_never_did(tmp_path):

@@ -646,17 +646,44 @@ def test_exceeding_the_declared_limit_alerts_once_per_episode():
     assert "1초에 14회" in over[0]
 
 
-def test_grow_is_blocked_by_a_high_peak_even_when_the_average_is_low():
-    """회복도 첨두를 본다 — 평균만 보면 버스트 중에 정원을 되돌린다."""
+def test_grow_is_blocked_by_a_one_second_violation_but_not_by_a_mere_burst():
+    """회복 판정이 보는 것은 **지속률**이고, 첨두는 **1초 한도**에만 대고 잰다.
+
+    2026-08-08 정정 (docs/45 → docs/46). 예전 계약은 "회복도 첨두를 본다" 였고 문턱이
+    `peak_1s > target × 0.70` 이었다. 두 가지가 틀렸다:
+
+      1. **단위가 안 맞는다.** `peak_1s` 는 60초 중 최악의 1초이고 `target` 은 지속
+         속도 예산이다. 최댓값을 평균 예산에 대고 재면 리미터가 완벽해도 트립한다 —
+         실측 927 표본에서 복원이 93.1% 의 시간 동안 막혀 있었다.
+      2. **비대칭이다.** 축소는 2026-08-04 에 지속률(`measured_rate`)로 옮겼는데 복원만
+         첨두에 남았다. 지속률로 깎고 첨두로 복원을 막으면 정원은 내려가기만 한다.
+
+    그래서 아래 두 절이 새 계약이다.
+    """
     clock = FrozenClock(0)
+
+    # (1) 한도 아래의 버스트는 더 이상 복원을 막지 않는다 — 지속률이 거의 0 이므로.
     g = guard(clock=clock)
     g._last_shrink_s[GROUP_MARKET_DATA] = 0.0                    # 깎인 적이 있다고 표시
     clock.advance(RECOVER_AFTER_S + 10)
-    for _ in range(6):                                           # 첨두 6 > 7.0 x 0.70
+    for _ in range(6):                                           # 첨두 6, 한도 10 아래
         g.on_request(GROUP_MARKET_DATA)
         clock.advance(0.01)
     assert g.measured_rate(GROUP_MARKET_DATA) < 1.0              # 평균은 거의 0
-    assert g.should_grow() is None                               # 그래도 되돌리지 않는다
+    assert g.peak_1s(GROUP_MARKET_DATA) == 6
+    assert g.should_grow(), "한도 아래 버스트로 복원이 막혔다"
+
+    # (2) 한도 자체를 넘긴 1초가 관측되면 여전히 막는다 — 단위가 맞는 유일한 용법.
+    clock2 = FrozenClock(0)
+    g2 = guard(clock=clock2)
+    g2._last_shrink_s[GROUP_MARKET_DATA] = 0.0
+    clock2.advance(RECOVER_AFTER_S + 10)
+    for _ in range(11):                                          # 첨두 11 > 한도 10
+        g2.on_request(GROUP_MARKET_DATA)
+        clock2.advance(0.01)
+    assert g2.measured_rate(GROUP_MARKET_DATA) < 1.0             # 지속률은 여전히 낮다
+    assert g2.peak_1s(GROUP_MARKET_DATA) > g2.limit_of(GROUP_MARKET_DATA)
+    assert g2.should_grow() is None, "1초 한도를 넘긴 것이 관측됐는데 되돌렸다"
 
 
 def test_usage_ratio_085_is_safe_ONLY_because_the_hardcap_exists():

@@ -680,19 +680,26 @@ def test_valid_key_formats_still_parse(tmp_path):
 async def test_client_counts_every_http_attempt_not_logical_calls(mock_server, tmp_path):  # noqa: F811
     """W4 의 `after_call` 이 재시도까지 예산에 계상하려면 client 가 **시도 수**를 노출해야 한다.
 
-    감사 B-3 은 재시도가 0회로 계상되던 문제였고 W4 가 `_unaccounted_attempts()` 로 고쳤다.
-    그 구현이 읽는 것이 `counters["requests"]` 이므로, 이 불변식이 깨지면 B-3 이 조용히 재발한다.
+    감사 B-3 은 재시도가 0회로 계상되던 문제였고 W4 가 시도 수 계상으로 고쳤다.
+
+    2026-08-08 (docs/46): 예산이 읽는 것이 전역 `counters["requests"]` 에서
+    **그룹별 `sent_by_group`** 으로 바뀌었다 (전역 델타는 남의 그룹 송신이 섞여 이중
+    계상을 만들었다). 그래서 둘 다 시도 수를 노출해야 한다 — **그룹별 쪽이 멈추면
+    예산이 재시도를 못 보고 B-3 이 조용히 재발한다.**
     """
     from tossmon.api.errors import TransientHTTP
 
     c = make_client(mock_server.url, tmp_path, timeout_s=3)
     try:
         before = c.counters["requests"]
+        before_md = c.sent_by_group.get("MARKET_DATA", 0)
         with pytest.raises(TransientHTTP):
             await c._request("GET", "/api/v1/prices", params={"symbols": "AAPL"},
                              headers={"X-Mock-Inject": "500"})
         assert c.counters["requests"] - before == 4, \
             "논리 호출 1건의 HTTP 시도 수(1+재시도3)가 노출되지 않는다 — B-3 재발 위험"
+        assert c.sent_by_group.get("MARKET_DATA", 0) - before_md == 4, \
+            "그룹별 송신 수가 시도를 다 세지 않는다 — 예산이 재시도를 못 본다 (B-3 재발)"
     finally:
         await c.aclose()
 

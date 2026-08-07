@@ -417,10 +417,10 @@ class CollectorContext:
     _last_telemetry_ms: int = 0
     _max_digits_seen: int = 0
     _http429: int = 0
-    #: client.counters["requests"] 고수위 — 재시도·실패까지 포함한 실제 HTTP 시도를
-    #: BudgetGuard 에 계상하기 위한 기준점.
-    _http_requests_seen: int = 0
-    _http_retries_seen: int = 0
+    #: client.sent_by_group 의 **그룹별** 고수위 — 재시도·실패까지 포함한 실제 HTTP
+    #: 송신을 BudgetGuard 에 계상하기 위한 기준점. 전역 고수위였을 때는 동시에 도는
+    #: 다른 그룹의 송신이 델타에 섞여 이중 계상이 났다 (docs/46 D1·D2).
+    _sent_seen: dict[str, int] = field(default_factory=dict)
     #: tier2 호가 양보 판정용 — 관측한 429 고수위와 쿨다운 종료 시각.
     _tier2_book_429_seen: int = 0
     _tier2_book_cooldown_ms: int = 0
@@ -478,10 +478,7 @@ class CollectorContext:
                   state_path=Path(state_path) if state_path
                   else _default_state_path(cfg))
         # 재시도·실패 계상 기준점 — ctx 생성 이전의 호출(캘린더 등)은 귀속하지 않는다.
-        ctx._http_requests_seen = int(
-            (getattr(client, "counters", None) or {}).get("requests", 0) or 0)
-        ctx._http_retries_seen = int(
-            (getattr(client, "counters", None) or {}).get("retries", 0) or 0)
+        ctx._sent_seen = dict(getattr(client, "sent_by_group", None) or {})
         if resume:
             ctx.load_state()
             # 재기동 직후 억제 집합이 비면 오늘 이벤트가 전부 "신규" 로 재기록된다 (감사 F-3).
@@ -542,34 +539,33 @@ class CollectorContext:
             return hits[0], True
         return caller_group, False
 
-    def _unaccounted_retries(self) -> int:
-        """마지막 계상 이후의 **재시도** 증가분. 이것도 전역이지만 1차 호출과 달리
-        드물고, 재시도는 호출한 그룹의 것이 맞으므로 귀속 상한으로 쓰기에 적합하다."""
-        counters = getattr(self.client, "counters", None)
-        if not isinstance(counters, dict):
-            return 0
-        seen = int(counters.get("retries", 0) or 0)
-        delta = seen - self._http_retries_seen
-        if delta <= 0:
-            return 0
-        self._http_retries_seen = seen
-        return delta
+    def _own_sends(self, group: str) -> int | None:
+        """이 **그룹이** 마지막 계상 이후 소켓으로 내보낸 HTTP 시도 수 (재시도 포함).
 
-    def _unaccounted_attempts(self) -> int:
-        """마지막 계상 이후 client 가 실제로 보낸 HTTP 시도 수 (재시도 포함).
+        그룹별 송신을 못 세는 client(테스트 더블·구버전)면 `None` — 호출자가 논리
+        호출 수로 폴백한다. "0 건 보냄" 과 "셀 수 없음" 은 다른 답이라 갈라서 돌려준다.
 
-        고수위 비교라 여러 번 불려도 같은 시도를 두 번 세지 않는다. 여러 루프가
-        한 이벤트루프에서 겹칠 때 드물게 다른 그룹의 시도가 이쪽에 귀속될 수 있는데,
-        총량은 정확하고 방향은 보수적(과대 계상)이라 예산 감시 목적에는 안전하다.
+        2026-08-08 (docs/45 → docs/46). 예전에는 **전역** `counters["requests"]` 의
+        증가분을 봤다. 그 델타에는 동시에 도는 다른 그룹의 송신이 섞여 있어서,
+        `_guarded` 의 `finally` 가 부르는 `sync_rate_limits` 가 남의 송신을 자기 몫으로
+        가져갔고(D1), 뒤늦게 완료된 진짜 주인이 바닥값으로 **또** 계상했다(D2).
+        실제 송신 4건이 예산에 7건으로 잡혔고, 운영에서는 그것이 "MARKET_DATA 1초에
+        11~14회" ERROR 580건이 됐다 — 서버가 본 적 없는 초과다.
+
+        고칠 방법은 근사를 더 정교하게 만드는 것이 아니라 **귀속 근거를 만드는 것**이다.
+        `client._send` 는 소켓 직전에 자기가 어느 그룹인지 알고 있다(`_request` 가
+        allowlist 로 정한 값). 거기서 그룹별로 세면 추정이 사라진다.
+
+        고수위 비교라 여러 번 불려도 같은 송신을 두 번 세지 않는다.
         """
-        counters = getattr(self.client, "counters", None)
-        if not isinstance(counters, dict):
-            return 0
-        seen = int(counters.get("requests", 0) or 0)
-        delta = seen - self._http_requests_seen
+        sent = getattr(self.client, "sent_by_group", None)
+        if not isinstance(sent, dict):
+            return None
+        seen = int(sent.get(group, 0) or 0)
+        delta = seen - self._sent_seen.get(group, 0)
         if delta <= 0:
             return 0
-        self._http_requests_seen = seen
+        self._sent_seen[group] = seen
         return delta
 
     def after_call(self, group: str, calls: int = 1) -> None:
@@ -578,35 +574,36 @@ class CollectorContext:
         예산에는 논리 호출 수가 아니라 **실제 HTTP 시도 수**(재시도 포함)를 계상한다 —
         재시도가 0회로 계상되면 실사용이 과소평가되어 한도 사고를 놓친다 (감사 ②).
         시도 수를 관측할 수 없는 클라이언트(테스트 더블)는 논리 호출 수로 폴백한다.
+
+        **바닥값(`max(booked, calls)`)은 없다.** 그 바닥값은 "논리 호출은 최소 1건은
+        나갔다" 는 뜻이었지만, 그 송신이 이미 다른 경로에서 계상된 뒤에는 같은 송신의
+        두 번째 계상이 된다 (D2). 이제 계상 근거가 송신 카운터 하나뿐이라 바닥값을 둘
+        자리가 없다 — 이 호출의 송신이 앞선 `sync_rate_limits` 에서 이미 계상됐다면
+        여기서는 0 건이고, 그것이 맞다.
         """
-        # `requests` 는 **전역** 카운터라 그 델타에는 동시에 도는 다른 그룹의 호출이
-        # 섞여 있다. 예전에는 그 델타 전체를 호출한 그룹에 얹었다 — 평균을 보던 시절에는
-        # "총량은 정확하고 방향은 보수적" 이라 넘어갔지만, **판정이 초당 첨두로 바뀐 뒤에는
-        # 그 근사가 그대로 사고가 됐다**: 2026-08-04 22:30 개장에 CHART 가 자기 호출
-        # 2건을 내고도 첨두 11 로 계상돼 tier2 정원 300 이 1 로 무너졌다 (docs/33).
-        #
-        # 이 호출이 실제로 낼 수 있었던 시도 수는 `논리 호출 수 + 그 사이 재시도` 가
-        # 상한이다. 전역 델타를 그 상한으로 **자른다** — 남의 1차 호출은 재시도가 아니므로
-        # 더 이상 얹히지 않는다. 잘려나간 몫은 귀속 불가로 **명시해서** 센다.
-        attempts = self._unaccounted_attempts()
-        own_max = max(1, calls) + self._unaccounted_retries()
-        booked = min(attempts, own_max) if attempts > 0 else max(1, calls)
-        booked = max(booked, max(1, calls))
-        if attempts > booked:
-            self.bump("budget_unattributed_attempts", attempts - booked)
-        self.budget.on_requests(group, booked)
+        booked = self._own_sends(group)
+        if booked is None:
+            booked = max(1, calls)     # 그룹별 송신을 못 세는 client — 논리 호출 수로
+        if booked > 0:
+            self.budget.on_requests(group, booked)
         self.bump(f"req_{group}", max(1, calls))
         self.clock.observe_headers(getattr(self.client, "last_headers", None))
         self.sync_rate_limits(group)
 
     def sync_rate_limits(self, group: str = GROUP_MARKET_DATA) -> None:
-        """client 가 관측한 429 증가분·미계상 시도를 예산 가드에 반영한다.
+        """client 가 관측한 429 증가분·**그 그룹의** 미계상 송신을 예산 가드에 반영한다.
 
         **실패로 끝난 호출에서도** 반드시 불려야 한다 — 재시도까지 실패해 예외로 빠져나간
         호출도 실제로 예산을 태웠고, 그 429 야말로 예산 사고의 신호이기 때문이다.
         고수위 비교이므로 여러 번 불려도 중복 계상되지 않는다.
+
+        `group` 은 `_guarded` 가 받은 루프의 그룹이다. 예전에는 여기서 **전역** 델타를
+        얹었기 때문에, 이 함수가 모든 루프 몸통마다 불리고 기본 그룹이 MARKET_DATA 라는
+        사실이 그대로 D1 이 됐다. 이제 자기 그룹의 송신만 본다.
         """
-        self.budget.on_requests(group, self._unaccounted_attempts())
+        pending = self._own_sends(group)
+        if pending:
+            self.budget.on_requests(group, pending)
         seen429 = int(getattr(self.client, "counters", {}).get("http_429", 0))
         if seen429 > self._http429:
             since = seen429 - self._http429
@@ -953,9 +950,11 @@ class CollectorContext:
             # tier2 저빈도 호가 — 켜져 있으면 snaps 가 늘어야 하고, 예산 압박으로
             # 양보하면 skipped 가 는다 (조용한 미수집 방지, W5 워치독 판독용).
             "tier2_orderbook_snaps": int(self.counters.get("tier2_orderbook_snaps", 0)),
-            "tier2_orderbook_skipped": int(
-                self.counters.get("tier2_orderbook_skipped_rate", 0)
-                + self.counters.get("tier2_orderbook_skipped_429", 0)),
+            # 사유별 키를 **전부** 더한다. 예전에는 `_rate` 와 `_429` 만 더해서, 사유가
+            # 하나 늘 때마다 총계가 조용히 과소보고될 자리가 있었다.
+            "tier2_orderbook_skipped": sum(
+                int(v) for k, v in self.counters.items()
+                if k.startswith("tier2_orderbook_skipped_")),
             "precision_rounded": int(getattr(self.client, "counters", {})
                                      .get("precision_rounded", 0)),
             "precision_parsed": parsed,
@@ -2146,11 +2145,24 @@ def tier2_orderbook_allowed(ctx: CollectorContext) -> tuple[bool, str]:
     if now < ctx._tier2_book_cooldown_ms:
         return False, "429"
     target = ctx.budget.target(GROUP_MARKET_DATA)
-    # 평균이 아니라 **초당 첨두**를 본다 — 이 루프는 예산의 마지막 여유를 쓰는 쪽이라
-    # 버스트가 있는 순간에 끼어들면 안 된다. 평균만 보면 그 순간이 안 보인다.
-    if target > 0 and ctx.budget.peak_1s(GROUP_MARKET_DATA) >= \
+    # **지속 사용률**을 본다. 예전에는 `peak_1s` 를 봤고 그 이유는 "이 루프는 예산의
+    # 마지막 여유를 쓰는 쪽이라 버스트 순간에 끼어들면 안 된다" 였다. 의도는 옳지만
+    # 재는 양이 의도와 달랐다: `peak_1s` 는 "지금 버스트인가" 가 아니라 **지난 60초 중
+    # 최악의 1초**이고, 그것을 지속 속도 예산(8.5 req/s)에 대고 쟀다. tier3 루프가
+    # 4초마다 20건을 몰아 쏘는 실제 모양에서는 지속률이 목표의 59% 여도 첨두가 9 라
+    # 문턱(7.65)을 넘는다 — **리미터가 완벽해도 닫힌다.** 오프라인 재생(939 표본,
+    # docs/46 §5): 69.3% 의 표본에서 닫혀 있었고 수율이 11.5% 였다 (양보 55,314건).
+    #
+    # 버스트 순간의 보호는 리미터가 이미 한다: 창이 꽉 차 있으면 `acquire` 가 이 호출을
+    # 대기시킨다. 여기서 스킵하면 그 호출은 늦는 게 아니라 **영영 없어진다** —
+    # 승격 전후 스프레드 궤적은 과거 조회가 안 되기 때문이다.
+    if target > 0 and ctx.budget.measured_rate(GROUP_MARKET_DATA) >= \
             target * TIER2_ORDERBOOK_HEADROOM:
         return False, "rate"
+    # 첨두는 **단위가 맞는 곳에** 남긴다 — 1초 최댓값 vs 1초 한도. 하드캡이 있는 한
+    # 성립하지 않지만(docs/45 §2), 성립하면 리미터 밖 송신이라는 뜻이라 양보가 맞다.
+    if ctx.budget.peak_1s(GROUP_MARKET_DATA) > ctx.budget.limit_of(GROUP_MARKET_DATA):
+        return False, "burst"
     return True, ""
 
 
