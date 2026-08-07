@@ -47,9 +47,13 @@ class OpsConfig:
     restart_window_s: int
     restart_backoff_base_s: float
     restart_backoff_cap_s: float
-    # 유일하게 기본값을 가진 필드 — 이 데이터클래스를 직접 만드는 기존 호출자(ops 테스트
+    # 아래는 기본값을 가진 필드 — 이 데이터클래스를 직접 만드는 기존 호출자(ops 테스트
     # 6곳)를 건드리지 않기 위해 맨 뒤에 붙였다. 값의 근거는 DEFAULT_CATCHUP_DAYS 참조.
     daily_health_catchup_days: int = DEFAULT_CATCHUP_DAYS
+    # 디스패치 훑기(ops/dispatch_sweep.py)가 읽을 오케스트레이션 Run. 시크릿이 아니라
+    # 로컬 런타임의 식별자다. 비어 있으면 도구는 --run 을 요구하고 멈춘다 — 빈 값을
+    # "훑을 것 없음"으로 읽지 않는다.
+    orchestration_run_id: str = ""
 
 
 def _as_path(data: dict, key: str, default: str) -> Path:
@@ -87,6 +91,7 @@ def load_ops_config(path: Path | str | None = None) -> OpsConfig:
         log_max_bytes=int(data.get("log_max_bytes", 20_000_000)),
         collector_cmd=list(collector_cmd),
         daily_health_catchup_days=int(daily_health.get("catchup_days", DEFAULT_CATCHUP_DAYS)),
+        orchestration_run_id=str(data.get("orchestration_run_id", "") or ""),
         max_restarts_per_window=int(restart.get("max_restarts_per_window", 5)),
         restart_window_s=int(restart.get("restart_window_s", 600)),
         restart_backoff_base_s=float(restart.get("backoff_base_s", 2.0)),

@@ -31,6 +31,11 @@ daily_health:
   # 재구성 비용이 붙는다). 상한 밖이라 포기한 날은 stdout 에 명시된다 — 조용히 잘리지 않는다.
   catchup_days: 7
 
+# ops/dispatch_sweep.py 가 훑을 오케스트레이션 Run id (`orca orchestration run-list` 로 확인).
+# 시크릿이 아니라 로컬 런타임 식별자다. 비워두면 도구는 --run 을 요구하고 멈춘다 —
+# 빈 값을 "훑을 것 없음"으로 읽지 않는다.
+orchestration_run_id: "run_92948a1f80a5"
+
 restart:
   max_restarts_per_window: 5   # restart_window_s 안에 이 횟수 넘게 죽으면 폭주로 간주, 재시도 중단
   restart_window_s: 600
