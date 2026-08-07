@@ -259,6 +259,30 @@ class Store:
                 (symbol, ts_ms, from_tier, to_tier, reason, score),
             )
 
+    def record_tape_gap(self, symbol: str, poll_ms: int, prev_poll_ms: int | None,
+                        gap_lo_ms: int, gap_hi_ms: int, span_hi_ms: int,
+                        n_raw: int, n_stored: int) -> None:
+        """테이프 결손 한 건을 **위치와 함께** 남긴다 (docs/43).
+
+        `(gap_lo_ms, gap_hi_ms)` 는 **열린 구간**이고 그 안의 체결을 우리는 갖고 있지
+        않다. `n_raw >= 50` 이면 원인이 `/trades` 응답 상한이다. `prev_poll_ms` 는
+        폴링이 연속이었는지를 하류가 **추측 없이** 가릴 수 있게 한다 — 이것이 없으면
+        tier3 재진입으로 생긴 긴 공백과 상한 결손이 같은 표에 섞인다(docs/41 §4-2 는
+        "1시간 이상이면 재진입"이라는 임계로 갈라야 했다).
+        """
+        self._require_writer()
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO tape_gaps
+                    (symbol, poll_ms, prev_poll_ms, gap_lo_ms, gap_hi_ms,
+                     span_hi_ms, n_raw, n_stored)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (symbol, poll_ms, prev_poll_ms, gap_lo_ms, gap_hi_ms,
+                 span_hi_ms, n_raw, n_stored),
+            )
+
     def record_event(self, ev: dict) -> int:
         """이벤트 upsert. ``(symbol, t0_ms)`` 유니크(스키마 v2).
 

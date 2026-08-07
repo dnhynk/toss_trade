@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 
 import pytest
 
@@ -1545,6 +1546,144 @@ def test_unsaturated_gap_is_not_treated_as_a_polling_shortfall(tmp_path):
         asyncio.run(loops._poll_trades(ctx, "SLOW"))
         assert ctx.counters["tape_gaps"] == 1              # 결손은 기록하되
         assert ctx.tape_saturated_ms == {}                 # 주기는 건드리지 않는다
+    finally:
+        ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 원본 건수 vs 저장 건수 (docs/42 §5-5, docs/43)
+# --------------------------------------------------------------------------- #
+def _trade_px(ts_ms, price_u, qty_u=1_000_000, symbol="HOT"):
+    return Trade(symbol=symbol, ts_ms=ts_ms, price_u=price_u, qty_u=qty_u)
+
+
+def test_within_poll_fold_is_counted_apart_from_re_delivery(tmp_path):
+    """`n - stored` 를 뭉쳐 세면 **정보 소실**이 **재전달** 안에 묻힌다.
+
+    같은 응답 안에서 PK 가 못 가른 행(=서로 다른 체결이 하나로 접힘, 진짜 소실)과,
+    이전 폴이 이미 저장한 행(=정상 재전달)은 성질이 정반대다. 따로 세야 한다.
+    """
+    base = DAY0
+    first = [_trade_px(base, 1_000_000), _trade_px(base + 1000, 2_000_000)]
+    # 2번째 응답: 앞 두 건 재전달 + 같은 (ts, price, qty) 두 건(응답 안 접힘) + 신규 1건
+    second = [_trade_px(base, 1_000_000), _trade_px(base + 1000, 2_000_000),
+              _trade_px(base + 2000, 3_000_000), _trade_px(base + 2000, 3_000_000),
+              _trade_px(base + 3000, 4_000_000)]
+    ctx, _ = build_ctx(tmp_path, TapeClient([first, second]))
+    try:
+        asyncio.run(loops._poll_trades(ctx, "HOT"))
+        asyncio.run(loops._poll_trades(ctx, "HOT"))
+        assert ctx.counters["trades_raw_rows"] == 7        # 2 + 5 (원본 그대로)
+        assert ctx.counters["trades_rows"] == 4            # 실제 저장된 서로 다른 행
+        assert ctx.counters["trades_dup_same_poll"] == 1   # 응답 안에서 접힌 1건 = 소실
+        assert ctx.counters["trades_dup_prev_poll"] == 2   # 재전달 2건 = 소실 아님
+        tel = ctx.telemetry()
+        assert tel["trades_raw_rows"] == 7 and tel["trades_rows"] == 4
+        assert tel["trades_dup_same_poll"] == 1 and tel["trades_dup_prev_poll"] == 2
+    finally:
+        ctx.store.close()
+
+
+def test_cap_marker_counts_polls_not_lost_trades(tmp_path):
+    """상한 표시는 **하한**이다 — API 가 원본 총 건수를 안 주므로 "몇 건이 잘렸나"는
+    못 잰다. 50건을 받은 폴 수만 셀 수 있고, 49건이면 잘리지 않은 것이 확실하다."""
+    base = DAY0
+    full = [_trade_px(base + i * 10, 1_000_000 + i) for i in range(loops.TRADES_COUNT)]
+    short = [_trade_px(base + 10_000 + i * 10, 1_000_000 + i)
+             for i in range(loops.TRADES_COUNT - 1)]
+    ctx, _ = build_ctx(tmp_path, TapeClient([full, short]))
+    try:
+        asyncio.run(loops._poll_trades(ctx, "HOT"))
+        assert ctx.counters["trades_polls_at_cap"] == 1
+        asyncio.run(loops._poll_trades(ctx, "HOT"))
+        assert ctx.counters["trades_polls_at_cap"] == 1    # 49건은 상한이 아니다
+        assert ctx.counters["trades_polls"] == 2
+    finally:
+        ctx.store.close()
+
+
+def test_empty_response_still_counts_as_a_poll(tmp_path):
+    """빈 응답도 폴이다 — 분모를 빠뜨리면 `at_cap` 비율이 부풀어 오른다."""
+    ctx, _ = build_ctx(tmp_path, TapeClient([[]]))
+    try:
+        asyncio.run(loops._poll_trades(ctx, "QUIET"))
+        assert ctx.counters["trades_polls"] == 1
+        assert ctx.counters.get("trades_raw_rows", 0) == 0
+    finally:
+        ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# 결손을 위치를 가진 사건으로 (docs/42 §5-6, docs/43)
+# --------------------------------------------------------------------------- #
+def _gap_rows(ctx):
+    return ctx.store._conn.execute(
+        "SELECT symbol, poll_ms, prev_poll_ms, gap_lo_ms, gap_hi_ms, span_hi_ms, "
+        "n_raw, n_stored FROM tape_gaps ORDER BY id").fetchall()
+
+
+def test_tape_gap_is_written_as_a_located_interval(tmp_path):
+    """누적 카운터가 아니라 **어느 구간이 비었는지**가 남아야 하류가 뺄 수 있다."""
+    base = DAY0
+    full = [_trade(base + i * 10) for i in range(loops.TRADES_COUNT)]
+    later = [_trade(base + 100_000 + i * 10) for i in range(loops.TRADES_COUNT)]
+    ctx, _ = build_ctx(tmp_path, TapeClient([full, later]))
+    try:
+        asyncio.run(loops._poll_trades(ctx, "HOT"))
+        assert _gap_rows(ctx) == []                        # 첫 폴은 결손을 못 판정한다
+        asyncio.run(loops._poll_trades(ctx, "HOT"))
+        rows = _gap_rows(ctx)
+        assert len(rows) == 1
+        sym, poll_ms, prev_poll_ms, lo, hi, span_hi, n_raw, n_stored = rows[0]
+        assert sym == "HOT"
+        assert (lo, hi) == (base + 490, base + 100_000)    # 비어 있는 열린 구간
+        assert span_hi == base + 100_000 + 490             # 국소 체결률의 분모
+        assert n_raw == loops.TRADES_COUNT                 # 상한이 원인임을 여기서 읽는다
+        assert n_stored == loops.TRADES_COUNT
+        assert poll_ms == ctx.clock.now_ms() and prev_poll_ms == poll_ms
+        assert ctx.counters["tape_gaps"] == len(rows)      # 카운터와 테이블이 같은 사건
+    finally:
+        ctx.store.close()
+
+
+def test_gap_row_records_that_polling_was_not_continuous_after_a_restart(tmp_path):
+    """재기동 직후에는 폴링 연속성을 보증할 수 없다 — NULL 로 그렇게 적는다.
+
+    `last_trade_ms` 는 상태 파일에서 복원되지만 **직전 폴 시각은 복원하지 않는다.**
+    복원하면 정지 구간을 가로질러 "연속이었다"고 말하게 된다. docs/41 §4-2 는 이
+    구분이 없어 "1시간 이상이면 tier3 재진입"이라는 임계로 803줄을 갈라내야 했다.
+    """
+    base = DAY0
+    later = [_trade(base + 100_000 + i * 10) for i in range(loops.TRADES_COUNT)]
+    ctx, _ = build_ctx(tmp_path, TapeClient([later]))
+    try:
+        ctx.last_trade_ms["HOT"] = base                    # 재기동으로 복원된 상태
+        asyncio.run(loops._poll_trades(ctx, "HOT"))
+        rows = _gap_rows(ctx)
+        assert len(rows) == 1
+        assert rows[0][2] is None                          # prev_poll_ms = 보증 불가
+    finally:
+        ctx.store.close()
+
+
+def test_gap_row_write_failure_does_not_kill_the_poll(tmp_path):
+    """관측용 부산물이 수집 자체를 멈추면 거꾸로다 — 실패는 카운터로 드러낸다."""
+    base = DAY0
+    full = [_trade(base + i * 10) for i in range(loops.TRADES_COUNT)]
+    later = [_trade(base + 100_000 + i * 10) for i in range(loops.TRADES_COUNT)]
+    ctx, _ = build_ctx(tmp_path, TapeClient([full, later]))
+
+    def boom(*_args, **_kwargs):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    try:
+        asyncio.run(loops._poll_trades(ctx, "HOT"))
+        ctx.store.record_tape_gap = boom
+        stored = asyncio.run(loops._poll_trades(ctx, "HOT"))
+        assert stored == loops.TRADES_COUNT                # 체결은 그대로 저장됐다
+        assert ctx.counters["tape_gap_write_failures"] == 1
+        assert ctx.counters["tape_gaps"] == 1              # 카운터는 여전히 센다
+        assert ctx.telemetry()["tape_gap_write_failures"] == 1
     finally:
         ctx.store.close()
 

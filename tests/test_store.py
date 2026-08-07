@@ -240,6 +240,38 @@ def test_events_migration_dedupes_preserving_latest_label(tmp_path, monkeypatch)
     conn.close()
 
 
+def test_v3_adds_tape_gaps_to_an_existing_v2_database(tmp_path, monkeypatch):
+    """라이브 DB 는 v2 다(실측). 순수 추가여야 하고 기존 행을 건드리면 안 된다."""
+    db_path = tmp_path / "legacy2.db"
+    conn = sqlite3.connect(db_path)
+    monkeypatch.setattr(migrations, "SCHEMA_VERSION", 2)
+    assert migrations.apply_migrations(conn) == 2
+    conn.execute(
+        "INSERT INTO trades_snap VALUES ('AAA', 1785378480000, 1000000, 1000000)")
+    conn.commit()
+    assert conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='tape_gaps'").fetchone() is None
+
+    monkeypatch.undo()
+    assert migrations.apply_migrations(conn) == migrations.SCHEMA_VERSION
+    assert conn.execute("SELECT COUNT(*) FROM trades_snap").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM tape_gaps").fetchone()[0] == 0
+    conn.close()
+
+
+def test_tape_gap_rows_are_events_not_a_counter(tmp_path):
+    """같은 심볼의 서로 다른 결손이 **조용히 하나로 접히면 안 된다** — 시계가 멈춘
+    사이(테스트·재기동 직후)에도 두 건은 두 행이어야 한다."""
+    with Store(tmp_path / "gaps.db") as store:
+        store.record_tape_gap("HOT", 1000, None, 100, 200, 300, 50, 50)
+        store.record_tape_gap("HOT", 1000, 900, 200, 400, 500, 50, 12)
+        rows = store._conn.execute(
+            "SELECT symbol, poll_ms, prev_poll_ms, gap_lo_ms, gap_hi_ms, span_hi_ms, "
+            "n_raw, n_stored FROM tape_gaps ORDER BY id").fetchall()
+    assert rows == [("HOT", 1000, None, 100, 200, 300, 50, 50),
+                    ("HOT", 1000, 900, 200, 400, 500, 50, 12)]
+
+
 def test_bulk_candle_write_performance_smoke(tmp_path):
     rows = [candle(f"S{i % 100:03d}", i) for i in range(10_000)]
     with Store(tmp_path / "bulk.db") as store:

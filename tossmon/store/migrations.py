@@ -8,7 +8,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -22,6 +22,31 @@ WHERE id NOT IN (
 );
 DROP INDEX IF EXISTS ix_events_symbol_t0;
 CREATE UNIQUE INDEX ix_events_symbol_t0 ON events (symbol, t0_ms);
+""",
+    3: """
+-- v3: 테이프 결손을 **위치를 가진 사건**으로 남긴다 (docs/43). 지금까지 결손은
+-- 누적 카운터 `tape_gaps` 와 로그 한 줄뿐이었고, 로그는 32MB×4 로 회전해
+-- 체결 보존기간보다 짧다 — 데이터가 남아 있는데 그 데이터의 결손 표시가 먼저
+-- 사라진다. 순수 추가이므로 기존 행·읽기 경로에 영향이 없다.
+--
+-- 한 행 = "심볼 S 의 체결 중 **열린 구간** (gap_lo_ms, gap_hi_ms) 안의 것을 우리는
+-- 갖고 있지 않다". `n_raw >= 50` 이면 원인이 `/trades` 한 응답 50건 상한이다
+-- (실측 99.7%, docs/41 §4-2). `prev_poll_ms` 는 그 구간에 폴링이 **연속이었는지**를
+-- 하류가 임계 없이 가르게 한다 — NULL 이면 수집기 재기동 직후라 보증할 수 없다.
+-- 읽는 법은 docs/43 §4.
+CREATE TABLE IF NOT EXISTS tape_gaps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    poll_ms INTEGER NOT NULL,
+    prev_poll_ms INTEGER,
+    gap_lo_ms INTEGER NOT NULL,
+    gap_hi_ms INTEGER NOT NULL,
+    span_hi_ms INTEGER NOT NULL,
+    n_raw INTEGER NOT NULL,
+    n_stored INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_tape_gaps_symbol_ms ON tape_gaps (symbol, gap_lo_ms);
+CREATE INDEX IF NOT EXISTS ix_tape_gaps_ms ON tape_gaps (gap_lo_ms);
 """,
 }
 
