@@ -23,6 +23,14 @@ stale_minutes_critical: 15
 log_retention_days: 14
 log_max_bytes: 20000000   # 20MB — 초과 시 회전
 
+daily_health:
+  # 결번된 아침 리포트를 며칠까지 거슬러 채울지 (ops/daily_health.py 의 따라잡기 상한).
+  # 기본 7일 근거: 사후 재구성이 읽는 collector.log 의 회전 보존이 log_retention_days(14)일
+  # 이라 그 절반이면 [체결 tape gap] 절이 아직 살아 있고, 1일 상한은 주말을 낀 다일 정전을
+  # 못 넘긴다. 이 값을 늘리면 오래된 결번 하나가 정시 리포트를 그만큼 늦춘다(하루당 실측
+  # 재구성 비용이 붙는다). 상한 밖이라 포기한 날은 stdout 에 명시된다 — 조용히 잘리지 않는다.
+  catchup_days: 7
+
 restart:
   max_restarts_per_window: 5   # restart_window_s 안에 이 횟수 넘게 죽으면 폭주로 간주, 재시도 중단
   restart_window_s: 600
