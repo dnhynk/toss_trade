@@ -289,9 +289,6 @@ def run_catchup(cfg, today_label: str) -> dict:
     made, skipped, failed = [], [], []
     for lbl in todo:
         out = cfg.log_dir / f"daily_health_{lbl}.txt"
-        if out.exists():
-            skipped.append(lbl)
-            continue
         try:
             if write_if_absent(out, build_summary(cfg, lbl, catchup=True)):
                 made.append(lbl)
