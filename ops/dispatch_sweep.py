@@ -22,7 +22,7 @@
 
 ## 무엇을 대조하는가
 
-세 축을 **각각 기계적 사실로** 잰다. 어느 축이든 못 재면 `unknown` 으로 **따로 센다** —
+여섯 축을 **각각 기계적 사실로** 잰다. 어느 축이든 못 재면 `unknown` 으로 **따로 센다** —
 조용히 초록으로 넘기지 않는다(`docs/31` 의 "'결손 0건'이 아니라 '못 봤다'로 읽을 것").
 
 | 축 | 소스 | 사실 |
@@ -30,9 +30,28 @@
 | 하트비트 | `orca orchestration dispatch-show` 의 `last_heartbeat_at` | 마지막 생존 신호 나이 |
 | 브랜치 | 워커 워크트리의 `git log` / `git status` | 디스패치 이후 커밋·수정이 있었는가 |
 | 보고 매니페스트 | 태스크 `result` 의 `filesModified` | 적어낸 경로가 **실제로 커밋됐는가** |
+| **경과** | `dispatched_at` 과 현재 시각 | 디스패치된 지 얼마나 됐는가 (§ 08-08 추가) |
+| **머지** | `git log HEAD --not main` | 그 커밋들이 **이미 main 에 들어갔는가** |
+| **소유** | 같은 워크트리의 살아 있는 디스패치 + 파일 mtime | **지금 그 경로를 쓰고 있는 태스크가 따로 있는가** |
 
 워크트리 경로는 디스패치 레코드의 `process_incarnation` 에서 나온다 —
 `<worktreeId>::<경로>@@<hash>:<uuid>`. 추측이 아니라 런타임이 적어둔 값이다.
+
+## 등급 — "사람 필요"가 상시 1건이면 진짜 1건이 안 보인다
+
+`docs/34` 의 파일 등급 계약(`ALERT_`/`PLANNED_`/`NOTE_`/`TRADEOFF_`)이 지키려던 것은
+**"`ALERT_` 파일이 있으면 진짜 문제"** 다. 이 도구 자신은 그 규율을 안 받고 있었다 —
+08-08 아침에 "사람 필요"가 상시 1~2건이었고 그 전부가 조치할 것이 없는 건이었다.
+그래서 판정마다 등급을 붙인다. 아침에 **한 줄**만 보면 갈린다.
+
+| 등급 | 뜻 | 아침에 할 일 |
+|---|---|---|
+| `ALERT` | 무엇을 할지 정해져 있는 사고 | 그 조치를 해라 |
+| `CHECK` | **이 도구가 못 쟀다** (= 옛 `unknown`) | 사람이 봐라 |
+| `NOTE` | 기계로 확인했고 사람이 할 일이 없다 | 참고만 |
+| `-` | 아무것도 아니다 | 무시 |
+
+종료 코드는 `ALERT` 로만 1이 된다. `NOTE` 는 절대 1을 만들지 않는다 — 그게 이 등급의 요지다.
 
 ## 오분류하지 않기 위해 갈라둔 것들
 
@@ -48,13 +67,23 @@
 4. **커밋과 미커밋 수정.** 둘 다 "살아 있다"의 증거지만 조치가 다르다. 커밋이 있으면
    보고만 유실된 것이고(사람이 게이트 돌리고 닫으면 된다), 미커밋만 있으면 **재디스패치가
    그 작업을 덮는다.** 그래서 `REPORT_LOST` 와 `STALE_UNCOMMITTED` 를 가른다.
+5. **갓 출발한 워커와 5시간 막힌 워커.** 둘 다 하트비트 미발신 + 브랜치 정지다. 경과
+   시간이 없으면 **글자가 똑같다** — 08-08 아침에 W3 가 과제문을 붙인 채 5시간을 서 있었고
+   사용자가 먼저 발견했다. 경과가 정상 소요 범위를 넘으면 `NO_SIGNAL_STALLED`(ALERT),
+   범위 안이면 `UNKNOWN`(CHECK)이다.
+6. **이미 main 에 들어간 산출물.** 보고 없이 닫혔어도 그 커밋이 전부 main 에 있으면
+   **사람이 할 일이 없다.** `CLOSED_NO_REPORT_MERGED` 로 내리고 조용히 한다.
+7. **살아 있는 다음 태스크가 그 경로의 주인인 경우.** 끝난 태스크의 워크트리에서 미커밋이
+   보여도, 그 파일을 **지금 다른 디스패치가 쓰고 있으면** 옛 태스크의 유실이 아니다.
+   `DONE_UNCOMMITTED_LIVE` 로 내린다. 단 **못 재면 소유권을 주지 않는다** — 조용해지는
+   쪽으로 기울면 진짜 미커밋이 사라진다.
 
 ## 판정만 한다
 
 이 도구는 **아무 상태도 바꾸지 않는다.** `orca orchestration` 은 읽기 명령
 (`task-list`, `dispatch-show`)만 쓰고, git 은 `log`/`status`/`rev-parse` 만 쓴다.
 `task-update`·`worker-abandon`·`dispatch` 는 부르지 않는다 — 조치는 사람이 한다.
-라이브 API 호출 없음.
+라이브 API 호출 없음. 파일시스템도 `stat()` 만 읽는다(소유 축의 mtime).
 """
 from __future__ import annotations
 
@@ -72,12 +101,27 @@ from .opsconfig import load_ops_config
 UTC = dt.timezone.utc
 
 # --------------------------------------------------------------------------- #
-# 임계값 — 이 파일에서 문턱을 쓰는 곳은 둘뿐이고 둘 다 사유가 있다.
+# 임계값 — 이 파일에서 문턱을 쓰는 곳은 셋뿐이고 셋 다 사유가 있다.
 # --------------------------------------------------------------------------- #
 #: 하트비트가 이보다 오래되면 `stale`. 근거: 워커 preamble 의 계약이 "5분마다 하트비트"
 #: 이므로 **연속 3회 미발신**이다. 1회(5분)로 잡으면 긴 툴 호출 한 번에 멀쩡한 워커가
 #: 빨개지고, 30분으로 잡으면 오늘처럼 30분 만에 멈춘 것을 못 잡는다.
 DEFAULT_STALE_MIN = 15
+
+#: 디스패치된 지 이보다 오래됐으면 `overdue`. **근거는 추측이 아니라 이 Run 의 실측이다** —
+#: `run_92948a1f80a5` 의 완료된 디스패치 94건(장시간 라이브 수집·백필 감시 5건과 08-07 의
+#: 멈춤 2건 제외)의 `dispatched_at → completed_at`:
+#:
+#:     n=94  최소 3.8분  중앙 18.8분  p90 46.3분  p95 56.8분  **최대 72.7분**
+#:
+#: 즉 **정상 디스패치가 73분을 넘은 적이 한 번도 없다.** 90분은 그 최대값의 1.24배이고,
+#: 08-08 의 멈춤(5.05시간)과는 3.4배 떨어져 있다. 60분으로 잡으면 실측 3건(61·62·73분)이
+#: 빨개지고, 4시간으로 잡으면 오늘의 5시간을 겨우 1시간 앞두고 잡는다.
+DEFAULT_OVERDUE_MIN = 90
+
+#: 머지 축이 "이미 들어갔다"를 판정할 기준 ref. 앞의 것부터 시도하고 **하나도 못 찾으면
+#: `unknown`** 이다 — 못 찾은 것을 "안 들어갔다"로도 "들어갔다"로도 읽지 않는다.
+MAIN_REF_CANDIDATES: tuple[str, ...] = ("main", "origin/main")
 
 #: 완료 보고가 온 태스크의 커밋 대조를 몇 시간 전까지 볼지. 근거: 이 검사가 노리는
 #: 사고는 **머지되기 전 같은 날 안에서** 새는 것이다(오늘 W4). 머지가 끝난 뒤에는
@@ -109,52 +153,80 @@ _SEP = "\x1f"   # git --format 구분자. 파일 경로에 절대 안 들어가�
 
 
 # --------------------------------------------------------------------------- #
-# 1. 판정 사전 — 코드 하나가 (사람이 할 일, 사람 필요 여부, 못 봤음 여부) 를 정한다.
-#    `is_unknown` 은 "이 도구가 판정하지 못했다"는 뜻이지 "이상 없음"이 아니다.
+# 1. 판정 사전 — 코드 하나가 (사람이 할 일, 등급) 을 정한다.
+#    `CHECK` 는 "이 도구가 판정하지 못했다"는 뜻이지 "이상 없음"이 아니다.
 # --------------------------------------------------------------------------- #
+#: 등급 4종. `docs/34` 의 파일 등급 계약과 같은 목적이다 — **ALERT 가 있으면 진짜 문제**.
+GRADE_ALERT = "ALERT"   # 조치가 정해져 있다
+GRADE_CHECK = "CHECK"   # 이 도구가 못 쟀다 — 사람이 봐야 하지만 조치가 정해져 있지 않다
+GRADE_NOTE = "NOTE"     # 기계로 확인했고 사람이 할 일이 없다
+GRADE_NONE = "-"        # 아무것도 아니다
+GRADE_ORDER = (GRADE_ALERT, GRADE_CHECK, GRADE_NOTE, GRADE_NONE)
+
+
 @dataclass(frozen=True)
 class VerdictKind:
     code: str
     action: str
-    needs_human: bool
-    is_unknown: bool
+    grade: str
+
+    @property
+    def needs_human(self) -> bool:
+        """사람의 눈에 올라가는가. `NOTE` 는 표에는 찍히지만 여기 안 든다."""
+        return self.grade in (GRADE_ALERT, GRADE_CHECK)
+
+    @property
+    def is_unknown(self) -> bool:
+        """**`CHECK` 와 같은 말이다.** 못 잰 것은 정의상 사람에게 올라간다 —
+        둘을 따로 두면 "unknown 인데 조용한" 조합을 만들 수 있어서 하나로 묶었다."""
+        return self.grade == GRADE_CHECK
 
 
 VERDICTS: dict[str, VerdictKind] = {v.code: v for v in (
     # --- dispatched (보고가 아직 안 온 것) ---
-    VerdictKind("WORKING", "건드리지 마라 — 하트비트 신선", False, False),
+    VerdictKind("WORKING", "건드리지 마라 — 하트비트 신선", GRADE_NONE),
     VerdictKind("WORKING_SILENT",
                 "건드리지 마라 — 하트비트는 없지만 브랜치가 디스패치 이후 움직였다",
-                False, False),
+                GRADE_NONE),
     VerdictKind("REPORT_LOST",
                 "일은 됐고 보고가 유실됐다 — 사람이 머지 게이트 돌리고 태스크 닫아라",
-                True, False),
+                GRADE_ALERT),
     VerdictKind("STALE_UNCOMMITTED",
                 "작업 중 죽었고 결과가 미커밋이다 — 재디스패치하면 덮인다. 워크트리 먼저 봐라",
-                True, False),
+                GRADE_ALERT),
     VerdictKind("PRESUMED_DEAD",
                 "도달 못 했거나 죽었다 — 재디스패치 후보",
-                True, False),
+                GRADE_ALERT),
+    VerdictKind("NO_SIGNAL_STALLED",
+                "하트비트도 산출물도 없이 정상 소요시간을 넘겼다 — 터미널을 직접 봐라 "
+                "(과제문이 입력창에 붙은 채 서 있는 모양이다)",
+                GRADE_ALERT),
     # --- 보고가 온 것 (오늘 W4 가 샌 지점) ---
-    VerdictKind("DONE_COMMITTED", "없음 — 보고한 경로가 전부 커밋돼 있다", False, False),
+    VerdictKind("DONE_COMMITTED", "없음 — 보고한 경로가 전부 커밋돼 있다", GRADE_NONE),
     VerdictKind("DONE_UNCOMMITTED",
                 "보고는 왔는데 경로가 워크트리에 미커밋이다 — 커밋시키기 전에 닫지 마라",
-                True, False),
+                GRADE_ALERT),
+    VerdictKind("DONE_UNCOMMITTED_LIVE",
+                "없음 — 미커밋이지만 그 경로는 지금 살아 있는 디스패치가 쓰고 있다",
+                GRADE_NOTE),
     VerdictKind("DONE_UNACCOUNTED",
                 "보고한 경로에 디스패치 이후 변화가 없다 — 매니페스트가 사실과 다르다",
-                True, False),
+                GRADE_ALERT),
     VerdictKind("DONE_NO_MANIFEST",
                 "보고에 filesModified 가 없어 커밋 여부를 못 잰다 — 손으로 확인하라",
-                True, True),
+                GRADE_CHECK),
     # --- 보고 없이 닫힌 것 (오늘 W5 가 샌 지점) ---
     VerdictKind("CLOSED_NO_REPORT_COMMITTED",
                 "보고 없이 닫혔지만 브랜치는 움직였다 — 산출물은 있다. 게이트만 확인하라",
-                True, False),
+                GRADE_ALERT),
+    VerdictKind("CLOSED_NO_REPORT_MERGED",
+                "없음 — 보고는 없었지만 그 커밋이 이미 main 에 들어가 있다",
+                GRADE_NOTE),
     VerdictKind("CLOSED_NO_REPORT_UNVERIFIED",
                 "보고도 없고 브랜치도 안 움직였는데 닫혀 있다 — 근거 없는 마감이다",
-                True, True),
+                GRADE_CHECK),
     # --- 못 잰 것 ---
-    VerdictKind("UNKNOWN", "판정 불가 — 아래 note 를 읽고 사람이 봐라", True, True),
+    VerdictKind("UNKNOWN", "판정 불가 — 아래 note 를 읽고 사람이 봐라", GRADE_CHECK),
 )}
 
 
@@ -164,6 +236,9 @@ class Verdict:
     heartbeat_axis: str
     branch_axis: str
     note: str = ""
+    age_axis: str = "unknown"
+    merge_axis: str = "unknown"
+    owner_axis: str = "none"
 
     @property
     def kind(self) -> VerdictKind:
@@ -194,6 +269,13 @@ class DispatchFacts:
 
 
 @dataclass(frozen=True)
+class LiveOwner:
+    """같은 워크트리에서 **지금 돌고 있는** 디스패치. 소유 축의 입력이다."""
+    task_id: str
+    dispatched_at: dt.datetime
+
+
+@dataclass(frozen=True)
 class GitFacts:
     """워커 워크트리가 말하는 것. `ok=False` 면 이 축은 unknown 이다."""
     ok: bool = True
@@ -206,6 +288,12 @@ class GitFacts:
     committed_manifest: tuple[str, ...] = ()
     uncommitted_manifest: tuple[str, ...] = ()
     unaccounted_manifest: tuple[str, ...] = ()
+    #: 머지 축. `main_ref=None` 이면 못 쟀다 — "안 들어갔다"가 아니다.
+    main_ref: str | None = None
+    unmerged_since: int | None = None           # 디스패치 이후 커밋 중 main 에 없는 것
+    #: 소유 축. 살아 있는 다음 디스패치가 쓰고 있다고 판정한 매니페스트 경로.
+    live_owner: LiveOwner | None = None
+    live_owned_manifest: tuple[str, ...] = ()
 
 
 @dataclass
@@ -355,10 +443,19 @@ def facts_for(task: dict) -> DispatchFacts:
 # --------------------------------------------------------------------------- #
 # 5. git 축 — 워커 워크트리에서 읽기만 한다.
 # --------------------------------------------------------------------------- #
-def git_log_since(worktree: Path, since: dt.datetime) -> tuple[int, bool, set[str], str | None]:
-    """(디스패치 이후 커밋 수, 잘렸는가, 그 커밋들이 건드린 경로, 오류)."""
+def git_log_since(worktree: Path, since: dt.datetime,
+                  not_ref: str | None = None) -> tuple[int, bool, set[str], str | None]:
+    """(디스패치 이후 커밋 수, 잘렸는가, 그 커밋들이 건드린 경로, 오류).
+
+    `not_ref` 를 주면 **그 ref 에 이미 들어간 커밋을 뺀다**(`git log HEAD --not main`).
+    같은 창을 두 번 세어 빼면 "디스패치 이후 커밋 중 아직 main 에 없는 것" 이 나온다.
+    가장 최근 커밋 하나만 `merge-base --is-ancestor` 로 물어보는 방법도 있지만, `git log`
+    는 커밋 날짜 순이라 머지가 섞이면 "최근 것이 조상이면 나머지도 조상"이 성립하지 않는다.
+    """
+    extra = ["--not", not_ref] if not_ref else []
     rc, out, err = run_read_only(
-        ["git", "log", f"-n{GIT_LOG_LIMIT}", f"--format=%H{_SEP}%cI", "--name-only", "HEAD"],
+        ["git", "log", f"-n{GIT_LOG_LIMIT}", f"--format=%H{_SEP}%cI", "--name-only", "HEAD",
+         *extra],
         cwd=worktree)
     if rc != 0:
         return 0, False, set(), (err.strip() or f"git log exit {rc}")[:200]
@@ -394,8 +491,41 @@ def git_dirty(worktree: Path) -> tuple[tuple[str, ...], tuple[str, ...], str | N
     return tuple(sorted(dirty)), tuple(sorted(noise)), None
 
 
+def git_main_ref(worktree: Path) -> str | None:
+    """머지 축의 기준 ref. 후보를 순서대로 물어보고 **하나도 없으면 None**(= 못 쟀다)."""
+    for ref in MAIN_REF_CANDIDATES:
+        rc, out, _ = run_read_only(["git", "rev-parse", "--verify", "--quiet", ref], cwd=worktree)
+        if rc == 0 and out.strip():
+            return ref
+    return None
+
+
+def owned_by_live(worktree: Path, paths: tuple[str, ...],
+                  owner: LiveOwner | None) -> tuple[str, ...]:
+    """살아 있는 다음 디스패치가 **지금 쓰고 있는** 경로만 골라낸다.
+
+    판별은 파일 mtime 이다: 그 디스패치가 출발한 뒤에 수정된 파일이면 그 디스패치의 것이다.
+    08-08 아침의 `docs/44` 가 정확히 그랬다 — 2분 전 수정, 224줄 추가.
+
+    **못 재면 소유권을 주지 않는다.** 이 축은 판정을 조용하게 만드는 방향이라, 근거가
+    없을 때 기울면 진짜 미커밋이 사라진다(`docs/30` §3 의 거부 기본값).
+    """
+    if owner is None:
+        return ()
+    owned = []
+    for p in paths:
+        try:
+            mtime = dt.datetime.fromtimestamp((worktree / p).stat().st_mtime, UTC)
+        except (OSError, ValueError, OverflowError):
+            continue                    # 못 쟀다 → 소유권 없음
+        if mtime >= owner.dispatched_at:
+            owned.append(p)
+    return tuple(owned)
+
+
 def git_facts(worktree: Path | None, since: dt.datetime | None,
-              manifest: tuple[str, ...] = ()) -> GitFacts:
+              manifest: tuple[str, ...] = (),
+              owner: LiveOwner | None = None) -> GitFacts:
     """워크트리 하나에 대한 git 축. 못 읽으면 `ok=False` — '안 움직임'이 아니다."""
     if worktree is None:
         return GitFacts(ok=False, error="워크트리 경로를 못 읽었다(process_incarnation)")
@@ -416,13 +546,29 @@ def git_facts(worktree: Path | None, since: dt.datetime | None,
     if st_err:
         return GitFacts(ok=False, error=st_err, branch=branch)
 
-    committed, uncommitted, unaccounted = [], [], []
+    # 머지 축 — 디스패치 이후 커밋 중 아직 main 에 없는 것. ref 를 못 찾으면 None(못 쟀다).
+    main_ref = git_main_ref(worktree)
+    unmerged: int | None = None
+    if main_ref is not None and count > 0:
+        unmerged_count, unmerged_trunc, _, merge_err = git_log_since(worktree, since, main_ref)
+        if merge_err is None and not unmerged_trunc:
+            unmerged = unmerged_count
+
+    committed, uncommitted, unaccounted, live_owned = [], [], [], []
     dirty_set = set(dirty) | set(noise)
-    for raw in manifest:
-        p = norm_path(raw)
+
+    def is_dirty(p: str) -> bool:
         # 디렉터리로 접힌 항목(`docs/새폴더/`)도 그 아래 경로를 미커밋으로 잡는다 —
         # `-uall` 로 대부분 개별 파일이 오지만 서브모듈 등은 여전히 접혀서 온다.
-        if p in dirty_set or any(d.endswith("/") and p.startswith(d) for d in dirty_set):
+        return p in dirty_set or any(d.endswith("/") and p.startswith(d) for d in dirty_set)
+
+    dirty_manifest = tuple(p for p in map(norm_path, manifest) if is_dirty(p))
+    owned_set = set(owned_by_live(worktree, dirty_manifest, owner))
+    for raw in manifest:
+        p = norm_path(raw)
+        if p in owned_set:
+            live_owned.append(p)        # 미커밋이지만 지금 다른 디스패치가 쓰고 있다
+        elif is_dirty(p):
             uncommitted.append(p)
         elif p in touched_by_commit:
             committed.append(p)
@@ -435,6 +581,8 @@ def git_facts(worktree: Path | None, since: dt.datetime | None,
         committed_manifest=tuple(committed),
         uncommitted_manifest=tuple(uncommitted),
         unaccounted_manifest=tuple(unaccounted),
+        main_ref=main_ref, unmerged_since=unmerged,
+        live_owner=owner, live_owned_manifest=tuple(live_owned),
     )
 
 
@@ -461,12 +609,60 @@ def heartbeat_axis(facts: DispatchFacts, now: dt.datetime, stale_after: dt.timed
 
 
 def branch_axis(git: GitFacts) -> str:
-    """`unknown` | `moved`(커밋 있음) | `touched`(미커밋 수정만) | `still`."""
+    """`unknown` | `moved`(커밋 있음) | `touched`(미커밋 수정만) | `still`.
+
+    소유 축은 여기 안 들어간다 — 이 축은 "워크트리가 살아 있는가"이고, 살아 있는 다음
+    디스패치의 편집도 워크트리가 살아 있다는 사실 자체는 맞기 때문이다. 소유는 **매니페스트
+    대조**에서만 쓴다(그쪽이 08-08 아침에 실제로 샌 지점이다).
+    """
     if not git.ok:
         return "unknown"
     if git.commits_since > 0:
         return "moved"
     return "touched" if git.touched_paths else "still"
+
+
+def age_axis(facts: DispatchFacts, now: dt.datetime,
+             stale_after: dt.timedelta, overdue_after: dt.timedelta) -> str:
+    """`unknown` | `warming` | `normal` | `overdue`.
+
+    08-08 아침에 없어서 5시간을 놓친 축이다. 하트비트 미발신 + 브랜치 정지는 **갓 출발한
+    워커와 5시간 막힌 워커가 같은 글자**인데, 경과가 그 둘을 가른다.
+    `warming` 문턱은 하트비트 축과 같은 값을 쓴다 — 두 축이 같은 "아직 이르다"를 뜻하는데
+    문턱이 다르면 표에서 두 축이 어긋난 채 찍힌다.
+    """
+    if facts.dispatched_at is None:
+        return "unknown"
+    elapsed = now - facts.dispatched_at
+    if elapsed <= stale_after:
+        return "warming"
+    return "normal" if elapsed < overdue_after else "overdue"
+
+
+def merge_axis(git: GitFacts) -> str:
+    """`unknown`(기준 ref 를 못 찾음) | `none`(잴 커밋 없음) | `merged` | `unmerged`."""
+    if not git.ok or git.main_ref is None:
+        return "unknown"
+    if git.commits_since == 0:
+        return "none"
+    if git.unmerged_since is None:
+        return "unknown"
+    return "merged" if git.unmerged_since == 0 else "unmerged"
+
+
+def owner_axis(git: GitFacts) -> str:
+    """`none`(살아 있는 다음 디스패치 없음) | `live`(있지만 이 경로는 아님) | `held`."""
+    if git.live_owner is None:
+        return "none"
+    return "held" if git.live_owned_manifest else "live"
+
+
+def elapsed_label(facts: DispatchFacts, now: dt.datetime) -> str:
+    """표에 찍을 경과 시간. 문턱이 아니라 **사람이 읽는 숫자**다 — 15분과 5시간을 눈으로 가른다."""
+    if facts.dispatched_at is None:
+        return "?"
+    m = (now - facts.dispatched_at).total_seconds() / 60
+    return f"{m:.0f}m" if m < 90 else f"{m / 60:.1f}h"
 
 
 def is_fenced(facts: DispatchFacts) -> str | None:
@@ -487,75 +683,116 @@ def is_fenced(facts: DispatchFacts) -> str | None:
     return None
 
 
-def judge_open(facts: DispatchFacts, git: GitFacts,
-               now: dt.datetime, stale_after: dt.timedelta) -> Verdict:
+def judge_open(facts: DispatchFacts, git: GitFacts, now: dt.datetime,
+               stale_after: dt.timedelta, overdue_after: dt.timedelta) -> Verdict:
     """아직 보고가 안 온 디스패치."""
     hb, br = heartbeat_axis(facts, now, stale_after), branch_axis(git)
+    ax = dict(age_axis=age_axis(facts, now, stale_after, overdue_after),
+              merge_axis=merge_axis(git), owner_axis=owner_axis(git))
     fence = is_fenced(facts)
     if fence is not None:
         # 하트비트가 신선해도 소용없다 — 보고할 자격이 이미 없다.
         if br == "moved":
-            return Verdict("REPORT_LOST", hb, br, f"{fence}; 디스패치 이후 커밋 {git.commits_since}건")
+            return Verdict("REPORT_LOST", hb, br,
+                           f"{fence}; 디스패치 이후 커밋 {git.commits_since}건"
+                           + _merged_note(git), **ax)
         if br == "touched":
             return Verdict("STALE_UNCOMMITTED", hb, br,
-                           f"{fence}; 미커밋 {len(git.touched_paths)}건")
+                           f"{fence}; 미커밋 {len(git.touched_paths)}건", **ax)
         if br == "still":
-            return Verdict("PRESUMED_DEAD", hb, br, fence)
-        return Verdict("UNKNOWN", hb, br, f"{fence}; git 축도 못 읽었다 ({git.error})")
+            return Verdict("PRESUMED_DEAD", hb, br, fence, **ax)
+        return Verdict("UNKNOWN", hb, br, f"{fence}; git 축도 못 읽었다 ({git.error})", **ax)
     if hb == "unknown":
-        return Verdict("UNKNOWN", hb, br, facts.probe_error or "dispatched_at 을 못 읽었다")
+        return Verdict("UNKNOWN", hb, br, facts.probe_error or "dispatched_at 을 못 읽었다", **ax)
     if hb in ("fresh", "warming"):
-        return Verdict("WORKING", hb, br)
+        return Verdict("WORKING", hb, br, "", **ax)
     if hb == "never":
         if br in ("moved", "touched"):
             return Verdict("WORKING_SILENT", hb, br,
-                           "하트비트 미발신 — 죽음이 아니다. 브랜치가 증거다")
-        return Verdict("UNKNOWN", hb, br,
-                       "하트비트를 한 번도 안 보냈고 브랜치도 안 움직였다 — "
-                       "죽었는지 조용히 일하는지 이 도구로는 못 가른다"
-                       if br == "still" else (git.error or ""))
+                           "하트비트 미발신 — 죽음이 아니다. 브랜치가 증거다", **ax)
+        if br == "still":
+            # ★ 경과 축이 여기서 갈린다. 08-08 아침에 이 두 줄이 같은 `UNKNOWN` 이었고,
+            #    그래서 5시간 막힌 W3 가 갓 출발한 워커와 구분되지 않았다.
+            if ax["age_axis"] == "overdue":
+                return Verdict("NO_SIGNAL_STALLED", hb, br,
+                               f"디스패치 {elapsed_label(facts, now)} 경과 — 하트비트 0회, "
+                               f"커밋 0건, 미커밋 0건. 실측상 정상 디스패치는 73분을 넘은 적이 없다",
+                               **ax)
+            return Verdict("UNKNOWN", hb, br,
+                           f"하트비트를 한 번도 안 보냈고 브랜치도 안 움직였다 "
+                           f"({elapsed_label(facts, now)} 경과 — 아직 정상 소요 범위 안이다). "
+                           "죽었는지 조용히 일하는지 이 도구로는 못 가른다", **ax)
+        return Verdict("UNKNOWN", hb, br, git.error or "", **ax)
     # hb == "stale"
     if br == "moved":
-        return Verdict("REPORT_LOST", hb, br, f"디스패치 이후 커밋 {git.commits_since}건")
+        return Verdict("REPORT_LOST", hb, br,
+                       f"디스패치 이후 커밋 {git.commits_since}건" + _merged_note(git), **ax)
     if br == "touched":
         return Verdict("STALE_UNCOMMITTED", hb, br,
                        f"미커밋 {len(git.touched_paths)}건: "
-                       + ", ".join(git.touched_paths[:3]))
+                       + ", ".join(git.touched_paths[:3]), **ax)
     if br == "still":
-        return Verdict("PRESUMED_DEAD", hb, br, "커밋도 미커밋 수정도 없다")
-    return Verdict("UNKNOWN", hb, br, git.error or "git 축을 못 읽었다")
+        return Verdict("PRESUMED_DEAD", hb, br, "커밋도 미커밋 수정도 없다", **ax)
+    return Verdict("UNKNOWN", hb, br, git.error or "git 축을 못 읽었다", **ax)
 
 
-def judge_closed(facts: DispatchFacts, git: GitFacts,
-                 now: dt.datetime, stale_after: dt.timedelta) -> Verdict:
+def _merged_note(git: GitFacts) -> str:
+    """머지 축을 조치에 붙인다 — 이미 main 이면 게이트가 아니라 '닫기'만 남는다."""
+    if merge_axis(git) == "merged":
+        return f"; 그 커밋은 이미 {git.main_ref} 에 있다 (게이트는 끝났다, 닫기만 남았다)"
+    return ""
+
+
+def judge_closed(facts: DispatchFacts, git: GitFacts, now: dt.datetime,
+                 stale_after: dt.timedelta, overdue_after: dt.timedelta) -> Verdict:
     """이미 닫힌 태스크 — **보고를 믿지 않고 커밋을 확인한다**(오늘 W4 가 샌 지점)."""
     hb, br = heartbeat_axis(facts, now, stale_after), branch_axis(git)
+    ax = dict(age_axis=age_axis(facts, now, stale_after, overdue_after),
+              merge_axis=merge_axis(git), owner_axis=owner_axis(git))
     if not facts.reported:
         if br == "unknown":
             return Verdict("UNKNOWN", hb, br,
-                           f"워커 보고 없이 닫혔는데 git 축도 못 읽었다 ({git.error})")
+                           f"워커 보고 없이 닫혔는데 git 축도 못 읽었다 ({git.error})", **ax)
         if br in ("moved", "touched"):
+            # ★ 머지 축. 산출물이 이미 main 에 있으면 사람이 할 일이 없다 — 08-08 아침에
+            #    이 한 줄이 없어서 `task_4c7447a2597a` 가 상시 경보로 남아 있었다.
+            if ax["merge_axis"] == "merged":
+                return Verdict("CLOSED_NO_REPORT_MERGED", hb, br,
+                               f"디스패치 이후 커밋 {git.commits_since}건이 전부 "
+                               f"{git.main_ref} 에 들어가 있다 — 조치 없음", **ax)
             return Verdict("CLOSED_NO_REPORT_COMMITTED", hb, br,
-                           f"worker_done 없음 / 디스패치 이후 커밋 {git.commits_since}건")
+                           f"worker_done 없음 / 디스패치 이후 커밋 {git.commits_since}건"
+                           + (f" (그 중 {git.unmerged_since}건이 아직 {git.main_ref} 밖)"
+                              if ax["merge_axis"] == "unmerged" else ""), **ax)
         return Verdict("CLOSED_NO_REPORT_UNVERIFIED", hb, br,
-                       "worker_done 도 없고 디스패치 이후 커밋도 없다")
+                       "worker_done 도 없고 디스패치 이후 커밋도 없다", **ax)
     if not facts.manifest_present or not facts.manifest:
-        return Verdict("DONE_NO_MANIFEST", hb, br, "보고에 filesModified 가 없다")
+        return Verdict("DONE_NO_MANIFEST", hb, br, "보고에 filesModified 가 없다", **ax)
     if br == "unknown":
-        return Verdict("UNKNOWN", hb, br, f"매니페스트는 있는데 git 축을 못 읽었다 ({git.error})")
+        return Verdict("UNKNOWN", hb, br,
+                       f"매니페스트는 있는데 git 축을 못 읽었다 ({git.error})", **ax)
     if git.uncommitted_manifest:
         return Verdict("DONE_UNCOMMITTED", hb, br,
-                       "미커밋: " + ", ".join(git.uncommitted_manifest[:4]))
+                       "미커밋: " + ", ".join(git.uncommitted_manifest[:4]), **ax)
+    # ★ 소유 축. 미커밋이 남았지만 그 경로를 **지금 다른 디스패치가 쓰고 있다면** 옛 태스크의
+    #    유실이 아니다 — 08-08 아침의 `docs/44` 가 그랬다(2분 전 수정, 224줄 추가).
+    if git.live_owned_manifest:
+        owner = git.live_owner
+        return Verdict("DONE_UNCOMMITTED_LIVE", hb, br,
+                       f"미커밋 {len(git.live_owned_manifest)}건은 살아 있는 "
+                       f"{owner.task_id if owner else '?'} 가 쓰고 있다: "
+                       + ", ".join(git.live_owned_manifest[:4]), **ax)
     if git.unaccounted_manifest:
         return Verdict("DONE_UNACCOUNTED", hb, br,
-                       "변화 없음: " + ", ".join(git.unaccounted_manifest[:4]))
+                       "변화 없음: " + ", ".join(git.unaccounted_manifest[:4]), **ax)
     return Verdict("DONE_COMMITTED", hb, br,
-                   f"{len(git.committed_manifest)}개 경로 전부 커밋됨")
+                   f"{len(git.committed_manifest)}개 경로 전부 커밋됨", **ax)
 
 
-def judge(facts: DispatchFacts, git: GitFacts,
-          now: dt.datetime, stale_after: dt.timedelta) -> Verdict:
-    return (judge_closed if facts.closed else judge_open)(facts, git, now, stale_after)
+def judge(facts: DispatchFacts, git: GitFacts, now: dt.datetime, stale_after: dt.timedelta,
+          overdue_after: dt.timedelta = dt.timedelta(minutes=DEFAULT_OVERDUE_MIN)) -> Verdict:
+    return (judge_closed if facts.closed else judge_open)(
+        facts, git, now, stale_after, overdue_after)
 
 
 # --------------------------------------------------------------------------- #
@@ -585,21 +822,57 @@ def select_tasks(tasks: list[dict], now: dt.datetime,
     return picked, skipped
 
 
+def live_owners(all_facts: list[DispatchFacts]) -> dict[Path, LiveOwner]:
+    """워크트리 → 지금 그 워크트리에서 돌고 있는 디스패치.
+
+    **워크트리는 태스크마다가 아니라 워커마다다.** 그래서 끝난 태스크의 워크트리에
+    다음 태스크가 이미 들어와 있을 수 있고, 08-08 아침에 그것이 옛 태스크의 미커밋으로
+    읽혔다. 같은 워크트리에 여럿이면 **가장 최근 것**이 주인이다.
+    """
+    out: dict[Path, LiveOwner] = {}
+    for f in all_facts:
+        if f.closed or f.dispatch_status != "dispatched":
+            continue
+        if f.worktree is None or f.dispatched_at is None:
+            continue
+        cur = out.get(f.worktree)
+        if cur is None or f.dispatched_at > cur.dispatched_at:
+            out[f.worktree] = LiveOwner(f.task_id, f.dispatched_at)
+    return out
+
+
+def owner_for(facts: DispatchFacts, owners: dict[Path, LiveOwner]) -> LiveOwner | None:
+    """이 태스크의 워크트리를 **자기보다 나중에** 점유한 살아 있는 디스패치. 자기 자신은 뺀다."""
+    if facts.worktree is None or facts.dispatched_at is None:
+        return None
+    owner = owners.get(facts.worktree)
+    if owner is None or owner.task_id == facts.task_id:
+        return None
+    return owner if owner.dispatched_at > facts.dispatched_at else None
+
+
 def sweep(run_id: str, *, now: dt.datetime | None = None,
           stale_min: int = DEFAULT_STALE_MIN,
-          lookback_h: int = DEFAULT_LOOKBACK_H) -> tuple[list[Row], int, str | None]:
+          lookback_h: int = DEFAULT_LOOKBACK_H,
+          overdue_min: int = DEFAULT_OVERDUE_MIN) -> tuple[list[Row], int, str | None]:
     """(판정된 행, 창 밖 건너뜀 수, 치명 오류). 상태를 바꾸는 호출은 하나도 없다."""
     now = now or dt.datetime.now(UTC)
     stale_after, lookback = dt.timedelta(minutes=stale_min), dt.timedelta(hours=lookback_h)
+    overdue_after = dt.timedelta(minutes=overdue_min)
     tasks, err = collect_tasks(run_id)
     if err is not None:
         return [], 0, err
     picked, skipped = select_tasks(tasks, now, lookback)
+    # 소유 축은 **행 하나로는 못 잰다** — 다른 태스크의 디스패치 레코드가 필요하다.
+    # 그래서 런타임 사실을 전부 모은 뒤에 git 축으로 넘어간다.
+    all_facts = [facts_for(task) for task in picked]
+    owners = live_owners(all_facts)
     rows = []
-    for task in picked:
-        facts = facts_for(task)
-        git = git_facts(facts.worktree, facts.dispatched_at, facts.manifest)
-        rows.append(Row(facts=facts, git=git, verdict=judge(facts, git, now, stale_after)))
+    for facts in all_facts:
+        git = git_facts(facts.worktree, facts.dispatched_at, facts.manifest,
+                        owner_for(facts, owners))
+        rows.append(Row(facts=facts, git=git,
+                        verdict=judge(facts, git, now, stale_after, overdue_after)))
     return rows, skipped, None
 
 
@@ -610,13 +883,19 @@ def summarize(rows: list[Row]) -> dict:
     counts: dict[str, int] = {}
     for r in rows:
         counts[r.verdict.code] = counts.get(r.verdict.code, 0) + 1
+    by_grade = {g: sum(1 for r in rows if r.verdict.kind.grade == g) for g in GRADE_ORDER}
     return {
         "swept": len(rows),
         "by_verdict": dict(sorted(counts.items())),
+        "by_grade": by_grade,
+        "alert": by_grade[GRADE_ALERT],
         "needs_human": sum(1 for r in rows if r.verdict.kind.needs_human),
         "unknown": sum(1 for r in rows if r.verdict.kind.is_unknown),
         "heartbeat_axis": _axis_counts(r.verdict.heartbeat_axis for r in rows),
         "branch_axis": _axis_counts(r.verdict.branch_axis for r in rows),
+        "age_axis": _axis_counts(r.verdict.age_axis for r in rows),
+        "merge_axis": _axis_counts(r.verdict.merge_axis for r in rows),
+        "owner_axis": _axis_counts(r.verdict.owner_axis for r in rows),
     }
 
 
@@ -627,13 +906,16 @@ def _axis_counts(values) -> dict[str, int]:
     return dict(sorted(out.items()))
 
 
-def render(rows: list[Row], skipped: int, summary: dict) -> str:
-    lines = ["task            hb        branch    verdict                      who / title",
-             "-" * 108]
-    for r in sorted(rows, key=lambda x: (not x.verdict.kind.needs_human,
+def render(rows: list[Row], skipped: int, summary: dict, now: dt.datetime | None = None) -> str:
+    now = now or dt.datetime.now(UTC)
+    lines = ["task            grade  age     hb        branch    verdict                      "
+             "who / title",
+             "-" * 116]
+    for r in sorted(rows, key=lambda x: (GRADE_ORDER.index(x.verdict.kind.grade),
                                          x.verdict.code, x.facts.task_id)):
         f, v = r.facts, r.verdict
-        lines.append(f"{f.task_id:<15} {v.heartbeat_axis:<9} {v.branch_axis:<9} "
+        lines.append(f"{f.task_id:<15} {v.kind.grade:<6} {elapsed_label(f, now):<7} "
+                     f"{v.heartbeat_axis:<9} {v.branch_axis:<9} "
                      f"{v.code:<28} {(r.git.branch or '?'):<16} {f.title}")
         if v.note:
             lines.append(f"{'':<15} └ {v.note}")
@@ -644,15 +926,21 @@ def render(rows: list[Row], skipped: int, summary: dict) -> str:
                          f"{', '.join(r.git.ignored_noise[:3])})")
         if r.git.commits_truncated:
             lines.append(f"{'':<15}   (커밋 {GIT_LOG_LIMIT}개에서 잘렸을 수 있다)")
+    g = summary["by_grade"]
     lines += [
-        "-" * 108,
-        f"훑음 {summary['swept']}건 | 사람 필요 {summary['needs_human']}건 | "
-        f"판정 불가(unknown) {summary['unknown']}건 | 창 밖이라 건너뜀 {skipped}건",
+        "-" * 116,
+        f"훑음 {summary['swept']}건 | ★ 조치(ALERT) {g[GRADE_ALERT]}건 | "
+        f"확인(CHECK, 못 잼) {g[GRADE_CHECK]}건 | 참고(NOTE) {g[GRADE_NOTE]}건 | "
+        f"창 밖이라 건너뜀 {skipped}건",
         f"하트비트 축: {summary['heartbeat_axis']}",
         f"브랜치 축:   {summary['branch_axis']}",
+        f"경과 축:     {summary['age_axis']}",
+        f"머지 축:     {summary['merge_axis']}",
+        f"소유 축:     {summary['owner_axis']}",
         f"판정 분포:   {summary['by_verdict']}",
-        "unknown 은 '이상 없음'이 아니라 '못 봤다'다. 조치는 사람이 한다 — "
-        "이 도구는 아무 상태도 바꾸지 않는다.",
+        "조치(ALERT) 0건이면 손댈 것이 없다. 확인(CHECK)은 '이상 없음'이 아니라 '못 봤다'다 — "
+        "참고(NOTE)는 기계로 확인해 조치가 없는 것이다.",
+        "조치는 전부 사람이 한다 — 이 도구는 아무 상태도 바꾸지 않는다.",
     ]
     return "\n".join(lines)
 
@@ -673,12 +961,20 @@ def as_json(rows: list[Row], skipped: int, summary: dict) -> str:
                                   if r.facts.last_heartbeat_at else None),
             "heartbeat_axis": r.verdict.heartbeat_axis,
             "branch_axis": r.verdict.branch_axis,
+            "age_axis": r.verdict.age_axis,
+            "merge_axis": r.verdict.merge_axis,
+            "owner_axis": r.verdict.owner_axis,
+            "main_ref": r.git.main_ref,
+            "unmerged_since_dispatch": r.git.unmerged_since,
+            "live_owner_task": r.git.live_owner.task_id if r.git.live_owner else None,
+            "manifest_live_owned": list(r.git.live_owned_manifest),
             "commits_since_dispatch": r.git.commits_since,
             "uncommitted": list(r.git.touched_paths),
             "manifest": list(r.facts.manifest),
             "manifest_uncommitted": list(r.git.uncommitted_manifest),
             "manifest_unaccounted": list(r.git.unaccounted_manifest),
             "verdict": r.verdict.code,
+            "grade": r.verdict.kind.grade,
             "note": r.verdict.note,
             "action": r.verdict.kind.action,
             "needs_human": r.verdict.kind.needs_human,
@@ -690,21 +986,27 @@ def as_json(rows: list[Row], skipped: int, summary: dict) -> str:
 
 
 def exit_code(summary: dict) -> int:
-    """0 = 사람 손 필요 없음 / 1 = 조치 필요 / 2 = 조치 필요는 없지만 못 잰 것이 있다."""
-    actionable = summary["needs_human"] - summary["unknown"]
-    if actionable > 0:
+    """0 = 손댈 것 없음 / 1 = 조치(ALERT) 있음 / 2 = 조치는 없지만 **못 잰 것**(CHECK)이 있다.
+
+    **`NOTE` 는 절대 1을 만들지 않는다.** 그것이 이 등급의 요지다 — 08-08 아침처럼 조치가
+    없는 건이 매일 종료 코드 1을 만들면 진짜 1이 왔을 때 아무도 안 본다.
+    """
+    if summary["by_grade"][GRADE_ALERT] > 0:
         return 1
-    return 2 if summary["unknown"] > 0 else 0
+    return 2 if summary["by_grade"][GRADE_CHECK] > 0 else 0
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        description="dispatched 태스크를 훑어 하트비트·브랜치·보고 매니페스트를 대조한다 "
-                    "(읽기 전용, 상태 변경 없음)")
+        description="dispatched 태스크를 훑어 하트비트·브랜치·보고 매니페스트·경과·머지·소유를 "
+                    "대조한다 (읽기 전용, 상태 변경 없음)")
     ap.add_argument("--run", default=None,
                     help="오케스트레이션 Run id. 생략 시 ops_config 의 orchestration_run_id")
     ap.add_argument("--stale-min", type=int, default=DEFAULT_STALE_MIN,
                     help=f"하트비트를 stale 로 볼 분 (기본 {DEFAULT_STALE_MIN} = 5분 계약 3회 미발신)")
+    ap.add_argument("--overdue-min", type=int, default=DEFAULT_OVERDUE_MIN,
+                    help=f"디스패치 경과를 overdue 로 볼 분 "
+                         f"(기본 {DEFAULT_OVERDUE_MIN} = 실측 최장 정상 디스패치 72.7분의 1.24배)")
     ap.add_argument("--lookback-hours", type=int, default=DEFAULT_LOOKBACK_H,
                     help=f"닫힌 태스크의 커밋 대조 창 (기본 {DEFAULT_LOOKBACK_H}h)")
     ap.add_argument("--json", action="store_true", help="기계 판독용 JSON")
@@ -717,7 +1019,8 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     rows, skipped, err = sweep(run_id, stale_min=args.stale_min,
-                               lookback_h=args.lookback_hours)
+                               lookback_h=args.lookback_hours,
+                               overdue_min=args.overdue_min)
     if err is not None:
         print(f"태스크 목록을 못 읽었다 — 훑지 못했다(이상 없음이 아니다): {err}", file=sys.stderr)
         return 3
