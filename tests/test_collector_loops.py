@@ -123,13 +123,25 @@ class StubClient:
 
     def __init__(self, known: dict[str, Price | None]):
         self.known = known
-        self.counters = {"http_429": 0, "requests": 0}
+        self.counters = {"http_429": 0, "requests": 0, "retries": 0}
+        # 실제 `TossClient` 와 같은 자리 — 예산 계상의 귀속 근거 (docs/46).
+        self.sent_by_group: dict[str, int] = {}
         self.last_headers: dict[str, str] = {}
         self.requested: list[list[str]] = []
 
+    def sent(self, group: str, n: int = 1, *, retries: int = 0) -> None:
+        """`TossClient._send` 가 소켓 직전에 하는 계상을 그대로 흉내낸다.
+
+        전역 `requests` 와 **그룹별** `sent_by_group` 이 같은 자리에서 오른다.
+        더블이 그룹별 쪽을 빠뜨리면 예산이 이 호출을 못 본다.
+        """
+        self.counters["requests"] += n
+        self.counters["retries"] = self.counters.get("retries", 0) + retries
+        self.sent_by_group[group] = self.sent_by_group.get(group, 0) + n
+
     async def get_prices(self, symbols):
         self.requested.append(list(symbols))
-        self.counters["requests"] += 1
+        self.sent("MARKET_DATA")
         # 함정1: 모르는 심볼은 404 가 아니라 응답에서 조용히 빠진다.
         return [p for p in (self.known.get(s) for s in symbols) if p is not None]
 
@@ -1293,16 +1305,14 @@ def test_failed_and_retried_attempts_reach_the_budget_guard(tmp_path):
     try:
         base = ctx.budget.counters.get("MARKET_DATA", 0)
         # 실패로 끝난 호출: after_call 은 불리지 않지만 시도는 3회 있었다 (재시도 2회 포함).
-        # 실제 client 는 시도마다 requests 를, 재시도마다 retries 를 올린다 (client.py
-        # `_send` 의 requests += 1 과 각 except 절의 retries += 1) — 더블도 그렇게 흉내낸다.
-        client.counters["requests"] += 3
-        client.counters["retries"] = client.counters.get("retries", 0) + 2
+        # 실제 client 는 시도마다 requests 와 **그룹별** sent_by_group 을, 재시도마다
+        # retries 를 올린다 (client.py `_send`) — 더블도 그렇게 흉내낸다.
+        client.sent("MARKET_DATA", 3, retries=2)
         ctx.sync_rate_limits("MARKET_DATA")
         assert ctx.budget.counters.get("MARKET_DATA", 0) == base + 3
 
         # 성공 호출: 시도 2회(재시도 1회) → 논리 1회가 아니라 2회로 계상
-        client.counters["requests"] += 2
-        client.counters["retries"] = client.counters.get("retries", 0) + 1
+        client.sent("MARKET_DATA", 2, retries=1)
         ctx.after_call("MARKET_DATA")
         assert ctx.budget.counters.get("MARKET_DATA", 0) == base + 5
         assert ctx.counters["req_MARKET_DATA"] == 1       # 논리 카운터는 그대로 1
@@ -1329,13 +1339,13 @@ class BookClient(StubClient):
 
     async def get_orderbook(self, symbol):
         self.book_calls.append(symbol)
-        self.counters["requests"] += 1
+        self.sent("MARKET_DATA")
         return Orderbook(symbol=symbol, ts_ms=DAY0,
                          bids=[OrderbookLevel(price_u=999_000, qty_u=100_000_000)],
                          asks=[OrderbookLevel(price_u=1_001_000, qty_u=90_000_000)])
 
     async def get_trades(self, symbol, count=50):
-        self.counters["requests"] += 1
+        self.sent("MARKET_DATA")
         return []
 
 
@@ -1397,10 +1407,11 @@ def test_tier2_orderbook_yields_first_under_budget_pressure(tmp_path):
     try:
         _tier(ctx, "AAA", 2)
         _tier(ctx, "CCC", 3)
-        # 초당 첨두를 목표의 90% 위로. 값을 박아넣지 않고 target 에서 역산한다 —
-        # usage_ratio 가 바뀌면 target 도 바뀌므로(0.7 -> 0.85) 상수는 곧 낡는다.
+        # **지속 사용률**을 목표의 90% 위로. 예전에는 `peak_1s` 를 밀어 올렸는데, 그것은
+        # 60초 중 최악의 1초라 지속 속도 목표와 단위가 안 맞았다 (docs/46 §4).
+        # 값을 박아넣지 않고 target 에서 역산한다 — usage_ratio 가 바뀌면 target 도 바뀐다.
         over = ctx.budget.target(loops.GROUP_MARKET_DATA) * loops.TIER2_ORDERBOOK_HEADROOM
-        ctx.budget.peak_1s = lambda group: over + 0.1
+        ctx.budget.measured_rate = lambda group: over + 0.1
 
         asyncio.run(loops.run_tier2_orderbook(ctx.client, ctx.store, ctx.cfg, ctx=ctx,
                                               cycles=3))
@@ -2054,23 +2065,30 @@ async def test_spreading_does_not_overrun_the_sweep_period(tmp_path):
 # 2026-08-04 정규장 개장 사고 — 예산 거버너가 정원을 통째로 날렸다 (docs/33)
 # --------------------------------------------------------------------------- #
 def test_one_groups_burst_is_not_charged_to_another_group(tmp_path):
-    """★ 사고 1차 원인 — `_unaccounted_attempts` 는 **전역** 카운터를 본다.
+    """★ 사고 1차 원인 — 계상이 **전역** 카운터의 델타를 호출한 그룹에 얹었다.
 
     실측: 22:30:38 "CHART 1초에 6회" 경보. 그때 tier2 는 18종목이고 주기는 110초라
     CHART 자체 지속률은 0.16 req/s 다. 게다가 하드캡이 CHART 를 1.15초에 5회로 묶는다 —
     6회는 **CHART 가 낼 수 있는 수가 아니다.** 개장에 동시 실행되던 다른 그룹(MARKET_DATA,
     RANKING, STOCK)의 호출이 전역 델타로 CHART 에 얹힌 것이다.
+
+    2026-08-08 (docs/46): 귀속 근거가 `client.sent_by_group` 으로 바뀌었다. 더블도
+    실제 client 처럼 그룹별로 세게 해서, 이 시나리오가 **계상까지 실제로 도달하도록** 둔다 —
+    안 그러면 CHART 가 0건 계상되어 이 단언이 아무것도 시험하지 않는다.
     """
-    ctx, _day = build_ctx(tmp_path, StubClient({}))
+    client = StubClient({})
+    ctx, _day = build_ctx(tmp_path, client)
     try:
-        ctx.client.counters["requests"] = 1
+        client.sent(loops.GROUP_CHART, 1)
         ctx.after_call(loops.GROUP_CHART, calls=1)         # CHART 자기 호출 1건
         ctx.clock.advance(0.05)
         # 그 사이 MARKET_DATA 가 10건 나갔다 — CHART 는 아무것도 안 했다.
-        ctx.client.counters["requests"] = 11
+        client.sent(loops.GROUP_MARKET_DATA, 10)
         ctx.clock.advance(0.05)
+        client.sent(loops.GROUP_CHART, 1)
         ctx.after_call(loops.GROUP_CHART, calls=1)         # CHART 자기 호출 1건 더
 
+        assert ctx.budget.counters.get(loops.GROUP_CHART, 0) == 2, "전제: CHART 2건"
         peak = ctx.budget.peak_1s(loops.GROUP_CHART)
         assert peak <= 2, (
             f"CHART 가 2건만 냈는데 첨두 {peak} 로 계상됐다 — 남의 버스트가 얹혔다")

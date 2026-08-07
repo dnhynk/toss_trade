@@ -142,6 +142,13 @@ class TossClient:
         self.last_status: int | None = None
         self.last_headers: dict[str, str] = {}
 
+        # 그룹별 송신 수 (누적). **예산 계상의 유일한 귀속 근거**다 (docs/46).
+        # `counters["requests"]` 는 전역이라 그 증가분에는 동시에 도는 다른 그룹의 송신이
+        # 섞여 있다. 그 델타를 호출한 그룹에 얹던 것이 D1·D2 의 이중 계상이었다.
+        # 여기서는 추정이 없다 — `group` 은 `_request` 가 allowlist 로 정한 값이고,
+        # 이 카운터는 소켓 직전에 `requests` 와 **같은 자리에서** 오른다.
+        self.sent_by_group: dict[str, int] = {}
+
         # 마지막 429 응답의 완전한 기록(상태·헤더·본문 error code). 200 이 덮어쓰지 않는다.
         self.last_429: dict[str, Any] | None = None
         self.recent_429s: deque[dict[str, Any]] = deque(maxlen=RECENT_429_KEEP)
@@ -196,6 +203,7 @@ class TossClient:
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
         headers.update(kwargs.pop("headers", None) or {})
         self.counters["requests"] += 1
+        self.sent_by_group[group] = self.sent_by_group.get(group, 0) + 1
         try:
             resp = await self._http.request(method, path, headers=headers, **kwargs)
         except ForbiddenEndpoint:
