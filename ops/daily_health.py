@@ -271,12 +271,20 @@ def write_if_absent(path: Path, text: str) -> bool:
     if path.exists():
         return False
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    if path.exists():  # 동시 실행이 먼저 채웠다면 그쪽을 남긴다
-        tmp.unlink()
-        return False
-    os.replace(tmp, path)
-    return True
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        if path.exists():  # 동시 실행이 먼저 채웠다면 그쪽을 남긴다
+            return False
+        os.replace(tmp, path)
+        return True
+    finally:
+        # 디스크가 찼거나 옮기기가 실패하면 조각이 남는다. `data/` 는 disk_guard 가
+        # 여유 공간을 보는 곳이고, 여기 쓰레기가 쌓이는 것은 그 자체로 사고다.
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def run_catchup(cfg, today_label: str) -> dict:
