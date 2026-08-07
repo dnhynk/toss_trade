@@ -63,6 +63,16 @@
     The four grades are counted, with a one-line legend, in the morning report
     (ops/daily_health.py) - do not assume the reader remembers what they mean.
 
+    ADDING A NEW RESTART REASON? Decide its FAMILY first. A restart alert's
+    "WAS THIS RESTART JUSTIFIED?" block is written per family, because the two
+    families rest on different evidence: process-absence (process_dead /
+    supervisor_dead / collector_dead) is decided by the sup/col counts, and
+    progress-stall (log_stale / counters_frozen / ranking_snap_* /
+    auth_failures / token_dead) by session freshness. The list lives at the
+    'act' block near the end of this file; a reason not in it silently gets the
+    progress-stall wording, which on 2026-08-06 told a morning reader that a
+    correct sup=0 col=0 restart was "probably wrong". docs/34 section 9.
+
     ADDING A NEW CHECK? Decide its grade FIRST, and write down which observation
     separates a fault from a designed behaviour. If your check fires on the
     ABSENCE of something (a counter not advancing, an age exceeding a bound),
