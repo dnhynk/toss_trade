@@ -65,8 +65,16 @@ HOLDOUT_END = "2026-07-29"
 
 
 def is_holdout(ts_ms: int) -> bool:
-    """그 시각이 봉인 구간에 속하나 (**세션 사이클 날짜** 기준)."""
-    return HOLDOUT_START <= session_date(ts_ms) <= HOLDOUT_END
+    """그 시각이 봉인 구간에 속하나 (**세션 사이클 날짜** 기준).
+
+    **라벨이 아니라 봉이 담는 구간으로 판정한다** (`docs/12` §6.2 항목 5,
+    2026-08-07 개정 — 사용자 승인, 개정문 `docs/40`). `candles_1m.ts_ms` 는
+    **종료 시각 라벨**이라 `ts_ms = T` 인 봉은 `[T-60초, T)` 를 담고 `T` 에 이미
+    완결돼 있다. 라벨을 그대로 넣으면 양 경계가 **한 봉씩** 어긋난다 — 앞 경계에서는
+    쓸 수 있는 봉을 버리고(과보수), 뒷 경계에서는 봉인 마지막 1분이 샌다(누출).
+    실측으로 라벨 `2026-07-30T00:00Z` 의 9봉이 넘어왔었다(`docs/36` §3-3).
+    """
+    return HOLDOUT_START <= session_date(ts_ms - 60_000) <= HOLDOUT_END
 
 
 def drop_holdout(df: pd.DataFrame, ts_col: str = "ts_ms") -> dict:
