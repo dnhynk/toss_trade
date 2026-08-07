@@ -1,0 +1,1227 @@
+{
+  "endpoint": "GET /api/v1/rankings",
+  "case": "top_losers_1d",
+  "status": 200,
+  "source": "live",
+  "captured_at_ms": 1786100508713,
+  "note": "라이브 캡처 (docs/35)",
+  "match": {
+    "type": "TOP_LOSERS",
+    "duration": "1d"
+  },
+  "headers": {
+    "content-type": "application/json;charset=UTF-8",
+    "x-request-id": "***MASKED***",
+    "x-ratelimit-limit": "5",
+    "x-ratelimit-remaining": "2",
+    "x-ratelimit-reset": "1",
+    "date": "Fri, 07 Aug 2026 11:01:48 GMT"
+  },
+  "body": {
+    "result": {
+      "rankedAt": "2026-08-07T20:01:36.997+09:00",
+      "rankings": [
+        {
+          "rank": 1,
+          "symbol": "TTDU",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1.08",
+            "basePrice": "2.46",
+            "changeRate": "-0.5609"
+          },
+          "tradingVolume": "284793",
+          "tradingAmount": "458419955"
+        },
+        {
+          "rank": 2,
+          "symbol": "CVRX",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "3.45",
+            "basePrice": "5.94",
+            "changeRate": "-0.4191"
+          },
+          "tradingVolume": "39915",
+          "tradingAmount": "190909471"
+        },
+        {
+          "rank": 3,
+          "symbol": "XHLD",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1.83",
+            "basePrice": "2.81",
+            "changeRate": "-0.3487"
+          },
+          "tradingVolume": "136727",
+          "tradingAmount": "345367133"
+        },
+        {
+          "rank": 4,
+          "symbol": "WYHG",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "6.59",
+            "basePrice": "9.83",
+            "changeRate": "-0.3296"
+          },
+          "tradingVolume": "128987",
+          "tradingAmount": "1267890756"
+        },
+        {
+          "rank": 5,
+          "symbol": "TTD",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "12.69",
+            "basePrice": "17.67",
+            "changeRate": "-0.2818"
+          },
+          "tradingVolume": "2697740",
+          "tradingAmount": "49111658427"
+        },
+        {
+          "rank": 6,
+          "symbol": "AAOZ",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "9.83",
+            "basePrice": "13.57",
+            "changeRate": "-0.2756"
+          },
+          "tradingVolume": "138789",
+          "tradingAmount": "1959613927"
+        },
+        {
+          "rank": 7,
+          "symbol": "HCAT",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1.71",
+            "basePrice": "2.31",
+            "changeRate": "-0.2597"
+          },
+          "tradingVolume": "8414",
+          "tradingAmount": "20415113"
+        },
+        {
+          "rank": 8,
+          "symbol": "SEZL",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "139.32",
+            "basePrice": "178.53",
+            "changeRate": "-0.2196"
+          },
+          "tradingVolume": "36429",
+          "tradingAmount": "7092856447"
+        },
+        {
+          "rank": 9,
+          "symbol": "QDEL",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "12.68",
+            "basePrice": "16.32",
+            "changeRate": "-0.223"
+          },
+          "tradingVolume": "17",
+          "tradingAmount": "303623"
+        },
+        {
+          "rank": 10,
+          "symbol": "BAER",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1.33",
+            "basePrice": "1.69",
+            "changeRate": "-0.213"
+          },
+          "tradingVolume": "21549",
+          "tradingAmount": "39790246"
+        },
+        {
+          "rank": 11,
+          "symbol": "ONFO",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.0491",
+            "basePrice": "0.06",
+            "changeRate": "-0.1816"
+          },
+          "tradingVolume": "2408528",
+          "tradingAmount": "166521718"
+        },
+        {
+          "rank": 12,
+          "symbol": "XPOF",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "5.22",
+            "basePrice": "6.36",
+            "changeRate": "-0.1792"
+          },
+          "tradingVolume": "5124",
+          "tradingAmount": "36172306"
+        },
+        {
+          "rank": 13,
+          "symbol": "GAUZ",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.3481",
+            "basePrice": "0.425",
+            "changeRate": "-0.1809"
+          },
+          "tradingVolume": "265050",
+          "tradingAmount": "142358135"
+        },
+        {
+          "rank": 14,
+          "symbol": "CTM",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.648",
+            "basePrice": "0.7963",
+            "changeRate": "-0.1862"
+          },
+          "tradingVolume": "55042",
+          "tradingAmount": "50259571"
+        },
+        {
+          "rank": 15,
+          "symbol": "ASIX",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "16.7",
+            "basePrice": "20.14",
+            "changeRate": "-0.1708"
+          },
+          "tradingVolume": "749",
+          "tradingAmount": "19175082"
+        },
+        {
+          "rank": 16,
+          "symbol": "ARDX",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "4.05",
+            "basePrice": "4.87",
+            "changeRate": "-0.1683"
+          },
+          "tradingVolume": "47492",
+          "tradingAmount": "265382283"
+        },
+        {
+          "rank": 17,
+          "symbol": "PAVS",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "5.78",
+            "basePrice": "6.88",
+            "changeRate": "-0.1598"
+          },
+          "tradingVolume": "39690",
+          "tradingAmount": "338947063"
+        },
+        {
+          "rank": 18,
+          "symbol": "SURG",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.2734",
+            "basePrice": "0.325",
+            "changeRate": "-0.1587"
+          },
+          "tradingVolume": "748120",
+          "tradingAmount": "297322309"
+        },
+        {
+          "rank": 19,
+          "symbol": "YXT",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "6.72",
+            "basePrice": "7.95",
+            "changeRate": "-0.1547"
+          },
+          "tradingVolume": "14506",
+          "tradingAmount": "140713746"
+        },
+        {
+          "rank": 20,
+          "symbol": "SG",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "4.97",
+            "basePrice": "5.87",
+            "changeRate": "-0.1533"
+          },
+          "tradingVolume": "26346",
+          "tradingAmount": "184920716"
+        },
+        {
+          "rank": 21,
+          "symbol": "PPCB",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1.15",
+            "basePrice": "1.36",
+            "changeRate": "-0.1544"
+          },
+          "tradingVolume": "22953",
+          "tradingAmount": "38848162"
+        },
+        {
+          "rank": 22,
+          "symbol": "PGNY",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "25.93",
+            "basePrice": "30.21",
+            "changeRate": "-0.1416"
+          },
+          "tradingVolume": "271",
+          "tradingAmount": "9893292"
+        },
+        {
+          "rank": 23,
+          "symbol": "ORGO",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "2.07",
+            "basePrice": "2.41",
+            "changeRate": "-0.141"
+          },
+          "tradingVolume": "9715",
+          "tradingAmount": "28717930"
+        },
+        {
+          "rank": 24,
+          "symbol": "DSC",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "5.16",
+            "basePrice": "6",
+            "changeRate": "-0.14"
+          },
+          "tradingVolume": "1",
+          "tradingAmount": "7094"
+        },
+        {
+          "rank": 25,
+          "symbol": "RCAX",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "3.03",
+            "basePrice": "3.52",
+            "changeRate": "-0.1392"
+          },
+          "tradingVolume": "7236",
+          "tradingAmount": "31566881"
+        },
+        {
+          "rank": 26,
+          "symbol": "MGRX",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.454",
+            "basePrice": "0.527",
+            "changeRate": "-0.1385"
+          },
+          "tradingVolume": "215360",
+          "tradingAmount": "137031960"
+        },
+        {
+          "rank": 27,
+          "symbol": "CANG",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1.37",
+            "basePrice": "1.59",
+            "changeRate": "-0.1383"
+          },
+          "tradingVolume": "537",
+          "tradingAmount": "1071194"
+        },
+        {
+          "rank": 28,
+          "symbol": "BIVI",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1.17",
+            "basePrice": "1.35",
+            "changeRate": "-0.1333"
+          },
+          "tradingVolume": "27231",
+          "tradingAmount": "45669753"
+        },
+        {
+          "rank": 29,
+          "symbol": "LASR",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "66",
+            "basePrice": "75.44",
+            "changeRate": "-0.1251"
+          },
+          "tradingVolume": "4297",
+          "tradingAmount": "397024222"
+        },
+        {
+          "rank": 30,
+          "symbol": "AERO",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "13.71",
+            "basePrice": "15.75",
+            "changeRate": "-0.1295"
+          },
+          "tradingVolume": "1",
+          "tradingAmount": "19863"
+        },
+        {
+          "rank": 31,
+          "symbol": "SERV",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "4.95",
+            "basePrice": "5.68",
+            "changeRate": "-0.1285"
+          },
+          "tradingVolume": "44611",
+          "tradingAmount": "311769949"
+        },
+        {
+          "rank": 32,
+          "symbol": "BLND",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1.7",
+            "basePrice": "1.95",
+            "changeRate": "-0.1282"
+          },
+          "tradingVolume": "17981",
+          "tradingAmount": "43821056"
+        },
+        {
+          "rank": 33,
+          "symbol": "NATR",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "17.74",
+            "basePrice": "20.34",
+            "changeRate": "-0.1278"
+          },
+          "tradingVolume": "222",
+          "tradingAmount": "5719182"
+        },
+        {
+          "rank": 34,
+          "symbol": "SKIN",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.67",
+            "basePrice": "0.7678",
+            "changeRate": "-0.1273"
+          },
+          "tradingVolume": "3505",
+          "tradingAmount": "3331342"
+        },
+        {
+          "rank": 35,
+          "symbol": "LBGJ",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "3.61",
+            "basePrice": "4.12",
+            "changeRate": "-0.1237"
+          },
+          "tradingVolume": "8158",
+          "tradingAmount": "42583863"
+        },
+        {
+          "rank": 36,
+          "symbol": "GDXD",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "27.97",
+            "basePrice": "31.94",
+            "changeRate": "-0.1242"
+          },
+          "tradingVolume": "17663",
+          "tradingAmount": "734379392"
+        },
+        {
+          "rank": 37,
+          "symbol": "SVCO",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "7.56",
+            "basePrice": "8.61",
+            "changeRate": "-0.1219"
+          },
+          "tradingVolume": "1886",
+          "tradingAmount": "20989727"
+        },
+        {
+          "rank": 38,
+          "symbol": "AZI",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1.41",
+            "basePrice": "1.6",
+            "changeRate": "-0.1187"
+          },
+          "tradingVolume": "54885",
+          "tradingAmount": "110514588"
+        },
+        {
+          "rank": 39,
+          "symbol": "XCH",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.267",
+            "basePrice": "0.3",
+            "changeRate": "-0.11"
+          },
+          "tradingVolume": "24017",
+          "tradingAmount": "9409481"
+        },
+        {
+          "rank": 40,
+          "symbol": "DFNS",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "41",
+            "basePrice": "46",
+            "changeRate": "-0.1086"
+          },
+          "tradingVolume": "8465",
+          "tradingAmount": "488504190"
+        },
+        {
+          "rank": 41,
+          "symbol": "OKLS",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "27.08",
+            "basePrice": "30.33",
+            "changeRate": "-0.1071"
+          },
+          "tradingVolume": "1030",
+          "tradingAmount": "40583355"
+        },
+        {
+          "rank": 42,
+          "symbol": "BGI",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.31",
+            "basePrice": "0.3459",
+            "changeRate": "-0.1037"
+          },
+          "tradingVolume": "1986",
+          "tradingAmount": "871143"
+        },
+        {
+          "rank": 43,
+          "symbol": "AMIX",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "10.92",
+            "basePrice": "12.17",
+            "changeRate": "-0.1027"
+          },
+          "tradingVolume": "16717",
+          "tradingAmount": "257463960"
+        },
+        {
+          "rank": 44,
+          "symbol": "PN",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "7.45",
+            "basePrice": "8.29",
+            "changeRate": "-0.1013"
+          },
+          "tradingVolume": "6863",
+          "tradingAmount": "74912640"
+        },
+        {
+          "rank": 45,
+          "symbol": "CDTG",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1.4",
+            "basePrice": "1.56",
+            "changeRate": "-0.1025"
+          },
+          "tradingVolume": "685",
+          "tradingAmount": "1364885"
+        },
+        {
+          "rank": 46,
+          "symbol": "BYAH",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "2.9",
+            "basePrice": "3.22",
+            "changeRate": "-0.0993"
+          },
+          "tradingVolume": "22584",
+          "tradingAmount": "93060510"
+        },
+        {
+          "rank": 47,
+          "symbol": "CLWT",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1.36",
+            "basePrice": "1.51",
+            "changeRate": "-0.0993"
+          },
+          "tradingVolume": "26",
+          "tradingAmount": "49658"
+        },
+        {
+          "rank": 48,
+          "symbol": "LITZ",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "10.38",
+            "basePrice": "11.49",
+            "changeRate": "-0.0966"
+          },
+          "tradingVolume": "7048",
+          "tradingAmount": "104144176"
+        },
+        {
+          "rank": 49,
+          "symbol": "BDRX",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1.33",
+            "basePrice": "1.47",
+            "changeRate": "-0.0952"
+          },
+          "tradingVolume": "571",
+          "tradingAmount": "1157740"
+        },
+        {
+          "rank": 50,
+          "symbol": "YMT",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.325",
+            "basePrice": "0.359",
+            "changeRate": "-0.0947"
+          },
+          "tradingVolume": "8154",
+          "tradingAmount": "3822247"
+        },
+        {
+          "rank": 51,
+          "symbol": "SPPL",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "2.12",
+            "basePrice": "2.34",
+            "changeRate": "-0.094"
+          },
+          "tradingVolume": "96",
+          "tradingAmount": "289435"
+        },
+        {
+          "rank": 52,
+          "symbol": "RPGL",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1.74",
+            "basePrice": "1.92",
+            "changeRate": "-0.0937"
+          },
+          "tradingVolume": "1778",
+          "tradingAmount": "4389767"
+        },
+        {
+          "rank": 53,
+          "symbol": "AMRZ",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "46.46",
+            "basePrice": "51.22",
+            "changeRate": "-0.0929"
+          },
+          "tradingVolume": "68578",
+          "tradingAmount": "4527785226"
+        },
+        {
+          "rank": 54,
+          "symbol": "FBGL",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.3741",
+            "basePrice": "0.4126",
+            "changeRate": "-0.0933"
+          },
+          "tradingVolume": "710",
+          "tradingAmount": "378819"
+        },
+        {
+          "rank": 55,
+          "symbol": "ENSC",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.48",
+            "basePrice": "0.5243",
+            "changeRate": "-0.0844"
+          },
+          "tradingVolume": "802942",
+          "tradingAmount": "546069162"
+        },
+        {
+          "rank": 56,
+          "symbol": "ELAN",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "22.1",
+            "basePrice": "24.2",
+            "changeRate": "-0.0867"
+          },
+          "tradingVolume": "270",
+          "tradingAmount": "9158354"
+        },
+        {
+          "rank": 57,
+          "symbol": "DUST",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "44.35",
+            "basePrice": "48.55",
+            "changeRate": "-0.0865"
+          },
+          "tradingVolume": "11877",
+          "tradingAmount": "754158883"
+        },
+        {
+          "rank": 58,
+          "symbol": "ZSL",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "24.85",
+            "basePrice": "27.23",
+            "changeRate": "-0.0874"
+          },
+          "tradingVolume": "48244",
+          "tradingAmount": "1718871943"
+        },
+        {
+          "rank": 59,
+          "symbol": "KLC",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "4.67",
+            "basePrice": "5.11",
+            "changeRate": "-0.0861"
+          },
+          "tradingVolume": "13",
+          "tradingAmount": "95059"
+        },
+        {
+          "rank": 60,
+          "symbol": "GSUN",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.4937",
+            "basePrice": "0.5399",
+            "changeRate": "-0.0855"
+          },
+          "tradingVolume": "857",
+          "tradingAmount": "604408"
+        },
+        {
+          "rank": 61,
+          "symbol": "CIGL",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.5312",
+            "basePrice": "0.5808",
+            "changeRate": "-0.0853"
+          },
+          "tradingVolume": "2905",
+          "tradingAmount": "2243122"
+        },
+        {
+          "rank": 62,
+          "symbol": "RKLZ",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "3.15",
+            "basePrice": "3.45",
+            "changeRate": "-0.0869"
+          },
+          "tradingVolume": "64380",
+          "tradingAmount": "291264033"
+        },
+        {
+          "rank": 63,
+          "symbol": "WEAV",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "6.1",
+            "basePrice": "6.66",
+            "changeRate": "-0.084"
+          },
+          "tradingVolume": "3800",
+          "tradingAmount": "32887784"
+        },
+        {
+          "rank": 64,
+          "symbol": "BOTT",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "41.42",
+            "basePrice": "45.16",
+            "changeRate": "-0.0828"
+          },
+          "tradingVolume": "108",
+          "tradingAmount": "6347711"
+        },
+        {
+          "rank": 65,
+          "symbol": "CRNC",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "8.28",
+            "basePrice": "9.02",
+            "changeRate": "-0.082"
+          },
+          "tradingVolume": "1558",
+          "tradingAmount": "18252862"
+        },
+        {
+          "rank": 66,
+          "symbol": "GWAV",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "3.95",
+            "basePrice": "4.3",
+            "changeRate": "-0.0813"
+          },
+          "tradingVolume": "25",
+          "tradingAmount": "140461"
+        },
+        {
+          "rank": 67,
+          "symbol": "VHI",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "14.7",
+            "basePrice": "16",
+            "changeRate": "-0.0812"
+          },
+          "tradingVolume": "1",
+          "tradingAmount": "21282"
+        },
+        {
+          "rank": 68,
+          "symbol": "LILA",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "8.01",
+            "basePrice": "8.7",
+            "changeRate": "-0.0793"
+          },
+          "tradingVolume": "6",
+          "tradingAmount": "72358"
+        },
+        {
+          "rank": 69,
+          "symbol": "BEZ",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "9.3",
+            "basePrice": "10.1",
+            "changeRate": "-0.0792"
+          },
+          "tradingVolume": "17843",
+          "tradingAmount": "237779529"
+        },
+        {
+          "rank": 70,
+          "symbol": "YYAI",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.0735",
+            "basePrice": "0.0797",
+            "changeRate": "-0.0777"
+          },
+          "tradingVolume": "105810656",
+          "tradingAmount": "16336836446"
+        },
+        {
+          "rank": 71,
+          "symbol": "NBIZ",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "15.82",
+            "basePrice": "17.17",
+            "changeRate": "-0.0786"
+          },
+          "tradingVolume": "13270",
+          "tradingAmount": "300586968"
+        },
+        {
+          "rank": 72,
+          "symbol": "FIEE",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "3.03",
+            "basePrice": "3.29",
+            "changeRate": "-0.079"
+          },
+          "tradingVolume": "45",
+          "tradingAmount": "192956"
+        },
+        {
+          "rank": 73,
+          "symbol": "FTRK",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.2916",
+            "basePrice": "0.316",
+            "changeRate": "-0.0772"
+          },
+          "tradingVolume": "1",
+          "tradingAmount": "0"
+        },
+        {
+          "rank": 74,
+          "symbol": "IMC",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "7.41",
+            "basePrice": "8",
+            "changeRate": "-0.0737"
+          },
+          "tradingVolume": "5",
+          "tradingAmount": "55333"
+        },
+        {
+          "rank": 75,
+          "symbol": "RMD",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "206.9",
+            "basePrice": "223.24",
+            "changeRate": "-0.0731"
+          },
+          "tradingVolume": "1392",
+          "tradingAmount": "405311433"
+        },
+        {
+          "rank": 76,
+          "symbol": "JDST",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "28.92",
+            "basePrice": "31.19",
+            "changeRate": "-0.0727"
+          },
+          "tradingVolume": "3079",
+          "tradingAmount": "126859164"
+        },
+        {
+          "rank": 77,
+          "symbol": "RKTL",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "8.24",
+            "basePrice": "8.88",
+            "changeRate": "-0.072"
+          },
+          "tradingVolume": "12",
+          "tradingAmount": "140461"
+        },
+        {
+          "rank": 78,
+          "symbol": "DBB",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "23.7",
+            "basePrice": "25.54",
+            "changeRate": "-0.072"
+          },
+          "tradingVolume": "1",
+          "tradingAmount": "34051"
+        },
+        {
+          "rank": 79,
+          "symbol": "RCON",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.0388",
+            "basePrice": "0.0419",
+            "changeRate": "-0.0739"
+          },
+          "tradingVolume": "22480517",
+          "tradingAmount": "1389921744"
+        },
+        {
+          "rank": 80,
+          "symbol": "GGZ",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "15.37",
+            "basePrice": "16.56",
+            "changeRate": "-0.0718"
+          },
+          "tradingVolume": "1",
+          "tradingAmount": "21282"
+        },
+        {
+          "rank": 81,
+          "symbol": "MRVI",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "5.81",
+            "basePrice": "6.25",
+            "changeRate": "-0.0704"
+          },
+          "tradingVolume": "32",
+          "tradingAmount": "263896"
+        },
+        {
+          "rank": 82,
+          "symbol": "NGVC",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "34.72",
+            "basePrice": "32.46",
+            "changeRate": "0.0696"
+          },
+          "tradingVolume": "1",
+          "tradingAmount": "42564"
+        },
+        {
+          "rank": 83,
+          "symbol": "AMZE",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.186",
+            "basePrice": "0.2",
+            "changeRate": "-0.07"
+          },
+          "tradingVolume": "45560",
+          "tradingAmount": "12190329"
+        },
+        {
+          "rank": 84,
+          "symbol": "UZX",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.213",
+            "basePrice": "0.229",
+            "changeRate": "-0.0698"
+          },
+          "tradingVolume": "3194",
+          "tradingAmount": "1075450"
+        },
+        {
+          "rank": 85,
+          "symbol": "MOB",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "5.64",
+            "basePrice": "5.78",
+            "changeRate": "-0.0242"
+          },
+          "tradingVolume": "1",
+          "tradingAmount": "7094"
+        },
+        {
+          "rank": 86,
+          "symbol": "ZTG",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "9.36",
+            "basePrice": "10.05",
+            "changeRate": "-0.0686"
+          },
+          "tradingVolume": "3056",
+          "tradingAmount": "38035190"
+        },
+        {
+          "rank": 87,
+          "symbol": "MATW",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "25.91",
+            "basePrice": "27.66",
+            "changeRate": "-0.0632"
+          },
+          "tradingVolume": "1",
+          "tradingAmount": "36888"
+        },
+        {
+          "rank": 88,
+          "symbol": "TNMG",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.5101",
+            "basePrice": "0.5463",
+            "changeRate": "-0.0662"
+          },
+          "tradingVolume": "12523",
+          "tradingAmount": "8805072"
+        },
+        {
+          "rank": 89,
+          "symbol": "ELPW",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.1018",
+            "basePrice": "0.109",
+            "changeRate": "-0.066"
+          },
+          "tradingVolume": "371461",
+          "tradingAmount": "53894536"
+        },
+        {
+          "rank": 90,
+          "symbol": "RGTU",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "11.89",
+            "basePrice": "12.72",
+            "changeRate": "-0.0652"
+          },
+          "tradingVolume": "723",
+          "tradingAmount": "12187492"
+        },
+        {
+          "rank": 91,
+          "symbol": "CISS",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.0914",
+            "basePrice": "0.0974",
+            "changeRate": "-0.0616"
+          },
+          "tradingVolume": "2157983",
+          "tradingAmount": "287017564"
+        },
+        {
+          "rank": 92,
+          "symbol": "LSTA",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1",
+            "basePrice": "1.07",
+            "changeRate": "-0.0654"
+          },
+          "tradingVolume": "66",
+          "tradingAmount": "93640"
+        },
+        {
+          "rank": 93,
+          "symbol": "INMB",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1.78",
+            "basePrice": "1.91",
+            "changeRate": "-0.068"
+          },
+          "tradingVolume": "10",
+          "tradingAmount": "25538"
+        },
+        {
+          "rank": 94,
+          "symbol": "ZBAO",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.1851",
+            "basePrice": "0.198",
+            "changeRate": "-0.0651"
+          },
+          "tradingVolume": "73461",
+          "tradingAmount": "19803610"
+        },
+        {
+          "rank": 95,
+          "symbol": "ANIP",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "77.27",
+            "basePrice": "82.63",
+            "changeRate": "-0.0648"
+          },
+          "tradingVolume": "520",
+          "tradingAmount": "60087598"
+        },
+        {
+          "rank": 96,
+          "symbol": "LGPS",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.85",
+            "basePrice": "0.9074",
+            "changeRate": "-0.0632"
+          },
+          "tradingVolume": "1094",
+          "tradingAmount": "1353535"
+        },
+        {
+          "rank": 97,
+          "symbol": "GLMD",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "0.5614",
+            "basePrice": "0.599",
+            "changeRate": "-0.0627"
+          },
+          "tradingVolume": "980",
+          "tradingAmount": "780340"
+        },
+        {
+          "rank": 98,
+          "symbol": "IREZ",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "13.92",
+            "basePrice": "14.85",
+            "changeRate": "-0.0626"
+          },
+          "tradingVolume": "1974",
+          "tradingAmount": "39651203"
+        },
+        {
+          "rank": 99,
+          "symbol": "ZJYL",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "1.79",
+            "basePrice": "1.92",
+            "changeRate": "-0.0677"
+          },
+          "tradingVolume": "1746",
+          "tradingAmount": "4395442"
+        },
+        {
+          "rank": 100,
+          "symbol": "INLF",
+          "currency": "USD",
+          "price": {
+            "lastPrice": "5.09",
+            "basePrice": "5.44",
+            "changeRate": "-0.0643"
+          },
+          "tradingVolume": "7998",
+          "tradingAmount": "58874524"
+        }
+      ]
+    }
+  }
+}
