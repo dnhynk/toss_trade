@@ -656,7 +656,7 @@ def render_markdown(start_ms: int, end_ms: int, coverage: CoverageReport,
         lines.append("|---|---|---:|---:|")
         calc_ref = {"MARKET_DATA": "6.42 (tier3 20/20 만석 기준)",
                     "MARKET_DATA_CHART": "2.73 (tier2 300/300 만석 기준)",
-                    "RANKING": "0.17 (2종/12s, 사실상 고정)"}
+                    "RANKING": "0.25 (3종/12s, 사실상 고정)"}
         for group, g in sorted(budget_summary.items()):
             lines.append(f"| {group} | {g['min']:.2f} ~ {g['max']:.2f} | {g['target']:.2f} | "
                          f"{calc_ref.get(group, 'n/a')} |")

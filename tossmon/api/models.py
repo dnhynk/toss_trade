@@ -255,6 +255,48 @@ class RankingPage:
     rows: list[RankingRow]
 
 
+#: 랭킹 타입 → **그 타입이 실제로 서비스되는 유일한 `duration`.**
+#:
+#: `duration` 은 자유 인자가 아니라 **타입의 함수**다. `TOP_GAINERS`·`TOP_LOSERS` 에
+#: `realtime` 을 넣으면 400 `unsupported-ranking-duration` 이고(W1 실측, `docs/35` §5-5),
+#: 거래량·거래대금 4종은 `realtime` 으로만 받아 왔다.
+#:
+#: ★ **읽는 쪽의 안전장치가 이 표다.** 한 `ranking_type` 이 정확히 한 `duration` 을
+#: 결정하므로, `rankings_snap` 을 `ranking_type` 으로 가르면 `duration` 은 **자동으로**
+#: 갈린다 — 한 타입 안에 두 duration 이 섞이는 일이 구조적으로 불가능하다.
+#: 반대로 타입을 안 가르고 기간만으로 긁으면 서로 다른 집계창의 행이 한 프레임에 들어온다.
+#:
+#: ⚠️ **`duration` 이 다르면 `vol_qu`·`amount_u` 의 뜻이 다르다 — 라벨만 다른 게 아니다.**
+#: 2026-08-07 21:46 KST 실측(두 목록에 동시에 올라 있던 35종, 같은 순간):
+#: `1d` 의 `vol_qu` 가 `realtime` 의 **중앙값 15.4배**, 최대 172.6배였다.
+#: `realtime` 은 롤링 창 집계이고 `1d` 는 그보다 훨씬 긴 창이다. 두 duration 의 행을
+#: 한 프레임에서 거래량·체결대금으로 비교·정렬·집계하면 **그대로 틀린다.**
+#: (`amount_u` 가 micro-KRW 라는 위 경고는 두 duration **모두**에 걸린다 — 같은 실측에서
+#: `TOP_GAINERS` 의 비율 중앙값 1401.6 으로 realtime 두 목록 1417.3 / 1412.5 와 같은 척도다.)
+RANKING_DURATIONS: dict[str, str] = {
+    "MARKET_TRADING_VOLUME": "realtime",
+    "TOSS_SECURITIES_TRADING_VOLUME": "realtime",
+    "MARKET_TRADING_AMOUNT": "realtime",
+    "TOSS_SECURITIES_TRADING_AMOUNT": "realtime",
+    "TOP_GAINERS": "1d",
+    "TOP_LOSERS": "1d",
+}
+
+
+def duration_for(ranking_type: str) -> str:
+    """`ranking_type` 이 서비스되는 `duration`. 미등록 타입은 즉시 실패한다.
+
+    기본값을 주지 않는 것이 요점이다 — 모르는 타입에 `realtime` 을 몰래 끼워 넣으면
+    400 을 맞거나(등락률 계열) 뜻이 다른 집계를 조용히 같은 컬럼에 쌓는다.
+    """
+    try:
+        return RANKING_DURATIONS[ranking_type]
+    except KeyError:
+        raise KeyError(
+            f"unknown ranking_type {ranking_type!r} — duration 을 추측하지 않는다. "
+            f"RANKING_DURATIONS 에 실측값을 먼저 등록하라") from None
+
+
 @dataclass(frozen=True, slots=True)
 class StockMeta:
     symbol: str

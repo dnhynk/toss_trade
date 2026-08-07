@@ -45,7 +45,11 @@ _NAN = float("nan")
 #: 계약 C-6 `events` 의 고정 7컬럼. 나머지 라벨은 전부 meta_json 으로 간다.
 EVENT_CORE_COLUMNS = ("t0_ms", "kind", "peak_ms", "peak_ret", "ret_30m", "ret_close", "session")
 
-#: 토스 쏠림도 피처가 볼 랭킹 2종. **`loops.RANKING_TYPES` 와 같아야 한다.**
+#: 토스 쏠림도 피처가 볼 랭킹 2종. **`loops.FEATURE_RANKING_TYPES` 와 같아야 한다.**
+#:
+#: 수집 목록(`loops.RANKING_TYPES`)이 아니다 — 2026-08-07 부터 수집은 `TOP_GAINERS`(1d)를
+#: 포함한 3종이지만, 쏠림도는 두 목록의 **순위 대비**라 같은 집계창(둘 다 `realtime`)이라야
+#: 뜻이 있다. 실측상 `1d` 의 `vol_qu` 는 같은 순간 `realtime` 의 중앙값 15.4배다.
 #:
 #: `features.py` 기본값은 아직 금액 2종(…_AMOUNT)인데, 2026-08-04 부터 수집기는 거래량
 #: 2종만 받는다(1391c6e). 넘기지 않으면 두 프레임이 비어 `_toss_concentration_features`

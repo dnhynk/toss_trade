@@ -49,7 +49,8 @@ from ..analysis.labeling import EventParams
 from ..api.client import BATCH_MAX, TossClient
 from ..api.errors import (AuthExpired, Forbidden, ForbiddenEndpoint, SchemaMismatch,
                           TossApiError)
-from ..api.models import Candle, Price, RankingPage, StockMeta, precision_stats
+from ..api.models import (Candle, Price, RankingPage, StockMeta, duration_for,
+                          precision_stats)
 from ..config import Config
 from ..store.writer import Store
 from ..universe.filters import market_cap_u, passes_tier0
@@ -84,10 +85,47 @@ def _num(value: float) -> str:
 #:
 #: 뺀 두 종(…_AMOUNT)은 금액 기준이라 대형주 위주였고, 그 `amount_u` 는 micro-KRW 오염
 #: 필드라 계약상 이미 금액 용도 사용이 금지돼 있다 (쓸 수 없는 값을 받고 있던 셈).
-RANKING_TYPES: tuple[str, ...] = (
+#:
+#: **실시간 피처·승격 트리거가 보는 목록은 이 둘뿐이다.** 토스 쏠림도는 두 목록의 순위
+#: *대비*라서 **같은 집계창**이라야 뜻이 있고, 둘 다 `realtime` 이라 그 전제가 성립한다.
+#: 아래 `RANKING_TYPES`(수집 목록)와 구분할 것 — 수집은 더 넓다.
+FEATURE_RANKING_TYPES: tuple[str, ...] = (
     "MARKET_TRADING_VOLUME",
     "TOSS_SECURITIES_TRADING_VOLUME",
 )
+
+#: **수집하는 랭킹 3종.** 위 2종 + 등락률 급상승(`TOP_GAINERS`).
+#:
+#: 2026-08-07 사용자 결정(D-11). 근거는 W1 실측(`docs/35` §5-6a)의 한 숫자다:
+#: **`TOP_GAINERS` 100종 중 35% 는 우리 랭킹 이력에 한 번도 등장하지 않는다**
+#: (등장률 거래량 100% vs `TOP_GAINERS` 65%). 많이 올랐는데 거래량 순위엔 안 걸리는
+#: 종목이 3분의 1이고, 그게 우리가 못 보던 부분이다. 사용자는 실전에서 등락률순과
+#: 거래량순을 왔다갔다 본다.
+#:
+#: ⚠️ **이 튜플 안에 `duration` 이 섞여 있다.** `TOP_GAINERS` 는 `realtime` 이 400 이라
+#: `1d` 로만 받을 수 있다(W1 실측). duration 은 여기에 적지 않는다 — 타입마다 하나뿐이므로
+#: `api/models.RANKING_DURATIONS` 가 단일 출처이고, 이 루프는 거기서 **찾아 쓴다**.
+#: 섞임을 막는 장치의 전모는 `docs/39_top_gainers.md` §3 에 있다.
+RANKING_TYPES: tuple[str, ...] = FEATURE_RANKING_TYPES + ("TOP_GAINERS",)
+
+#: 한 스냅에 받는 순위 깊이. **100 을 그대로 둔다** (API 상한 = `client.RANKING_MAX`).
+#:
+#: 얕게 받고 싶은 유혹이 있다 — 승격 트리거는 상위 10위만 보고(`RANKING_PROMOTE_TOP`)
+#: 깊이를 깎으면 디스크가 그만큼 준다. 그래도 100 인 이유:
+#:
+#: 1. **랭킹은 과거 조회가 불가능한 유일한 데이터다.** 51~100위는 나중에 버릴 수 있지만
+#:    안 받은 것은 영원히 못 받는다. 비대칭이 한쪽으로 완전히 기울어 있다.
+#: 2. **머리는 안 움직인다.** W1 실측: `TOP_GAINERS` 상위 3종목이 240폴(4분) 내내
+#:    `MB`·`DOCS`·`NAMI` 고정이었고, 분당 4.3회의 순위 변화는 **꼬리에서 일어난다**
+#:    (`docs/35` §5-4, §5-5). 얕게 자르면 고정된 부분만 남고 움직이는 부분을 버린다.
+#: 3. **전조를 보려면 올라오는 과정이 필요하다.** 터질 종목은 아래에서 올라온다.
+#:    상위 30만 받으면 이미 오른 뒤에야 보인다 — 이 프로젝트가 찾는 것의 반대다.
+#: 4. 비용이 결정을 바꿀 만큼 크지 않다: 세 번째 타입 하루 +660k 행 ≈ **+141 MB**
+#:    (실측 214 B/행, `docs/39` §5). 깊이를 절반으로 깎아 아끼는 71 MB/일로는
+#:    위 1~3 을 살 수 없다. **다만 공짜도 아니다** — 랭킹은 지금 아무것도 지우지
+#:    않으므로(`store/retention.py` 는 `candles_1m` 만 다룬다) 단조 증가한다.
+RANKING_COUNT = 100
+
 #: 토스 랭킹 이 순위 안에 새로 들어오면 그 자체로 tier2 승격 트리거.
 RANKING_PROMOTE_TOP = 10
 #: 랭킹 버퍼 보존 기간·심볼당 행 상한 (실시간 피처용. 영구 기록은 DB 가 한다).
@@ -757,10 +795,18 @@ class CollectorContext:
         poll = self.cfg.require_polling()
         uni = self.cfg.require_universe()
         # 목록 이름은 길어서 앞글자만 — 종류가 아니라 "구성이 바뀌었나" 만 보면 된다.
+        #
+        # ★ **`duration` 을 반드시 함께 적는다.** 2026-08-07 부터 한 테이블에 `realtime` 과
+        # `1d` 가 섞이므로, 타입 수·타입명만으로는 이 경계 전후를 가를 수 없다. 지문에
+        # duration 이 없으면 분석이 뜻이 다른 집계창(실측 15.4배 차, `docs/39` §4)을
+        # 무심코 한 프레임에 넣는다. 깊이(`count`)도 같은 이유로 적는다 — 51~100위가
+        # 있던 구간과 없던 구간은 다른 데이터다.
         kinds = "+".join(sorted(
             t.replace("TOSS_SECURITIES_TRADING_", "T").replace("MARKET_TRADING_", "M")
+            .replace("TOP_GAINERS", "GAIN").replace("TOP_LOSERS", "LOSE")
+            + "/" + duration_for(t).replace("realtime", "rt")
             for t in RANKING_TYPES))
-        return (f"rank{len(RANKING_TYPES)}:{kinds}"
+        return (f"rank{len(RANKING_TYPES)}:{kinds}@{RANKING_COUNT}"
                 f",t3max{uni.tier3_max},tr{_num(poll.tier3_trades_s)}s"
                 f",ob{_num(poll.tier3_orderbook_s)}s"
                 f",t2ob{_num(getattr(poll, 'tier2_orderbook_s', 0) or 0)}s"
@@ -1310,16 +1356,39 @@ def _clamp_ranking_page(ctx: CollectorContext, page: RankingPage) -> RankingPage
 
 
 async def rankings_once(ctx: CollectorContext) -> int:
-    """랭킹 2종 스냅샷 → DB + 실시간 버퍼 + 유니버스 판정 + 승격 트리거."""
+    """랭킹 3종 스냅샷 → DB (+ realtime 2종만: 실시간 버퍼·유니버스 판정·승격 트리거).
+
+    **`TOP_GAINERS`(1d)는 DB 까지만 간다.** 실시간 경로에 넣지 않는 것이 의도이며 두 이유다:
+
+    1. **뜻이 다른 값이 같은 컬럼으로 흐른다.** 같은 순간·같은 심볼인데 `1d` 의 `vol_qu` 가
+       `realtime` 의 중앙값 15.4배다 (2026-08-07 실측, `docs/39` §4). 실시간 버퍼는 토스
+       쏠림도(두 realtime 목록의 순위 대비)를 계산하려고 있는 것이라, 여기에 1d 행이
+       섞이면 그 피처가 조용히 틀린다. 아예 안 들여보내는 것이 검사보다 확실하다.
+    2. **승격 정책은 이번 결정에 없다.** 사용자가 승인한 것은 *수집*이다. 승격 경로는
+       2026-08-04 22:33 개장 사고를 낸 바로 그 경로이고(`docs/33`), W1 실측상 얻을 것도
+       적다 — `TOP_GAINERS` 의 tier0 통과 26종 중 24종(92.3%)이 **이미 감시망 안**이다
+       (`docs/35` §5-6a). 켜고 싶으면 아래 `if rtype in FEATURE_RANKING_TYPES` 한 줄이
+       스위치다. 그건 별도 결정으로 남긴다.
+    """
     stored = 0
     watch = set(ctx.watchlist)
     for rtype in RANKING_TYPES:
-        page = await ctx.client.get_rankings(rtype, duration="realtime", market="US",
-                                             count=100)
+        # duration 은 타입의 함수다 — 여기서 고르지 않고 단일 출처에서 찾는다.
+        duration = duration_for(rtype)
+        page = await ctx.client.get_rankings(rtype, duration=duration, market="US",
+                                             count=RANKING_COUNT)
         ctx.after_call(GROUP_RANKING)
         # snap_ms 는 우리 관측 시각. rankedAt 은 12~23초 뒤처지므로 참고값으로만 쓴다.
         snap_ms = ctx.clock.now_ms()
         page = _clamp_ranking_page(ctx, page)
+        if page.duration != duration:
+            # 저장은 한다(랭킹은 복구 불가). 다만 `duration` 이 타입의 함수라는 전제가
+            # 깨진 것이므로 반드시 드러낸다 — 이 전제 위에 읽는 쪽의 분리가 서 있다.
+            ctx.bump("ranking_duration_mismatch")
+            ctx.notifier.alert(
+                f"rankings {rtype}: duration 요청 {duration!r} != 응답 {page.duration!r} — "
+                "타입→duration 단일 출처(api/models.RANKING_DURATIONS)가 서버와 어긋났다. "
+                "이 전제가 분석의 duration 분리 근거다")
         try:
             stored += ctx.store.insert_rankings(snap_ms, page)
         except Exception as exc:                # 저장 실패가 이 폴의 나머지를 죽이면 안 된다
@@ -1328,13 +1397,15 @@ async def rankings_once(ctx: CollectorContext) -> int:
             ctx.bump("rankings_write_failures")
             ctx.notifier.warn(f"rankings store failed ({page.ranking_type}): "
                               f"{type(exc).__name__}: {exc} — 이 폴 분량은 복구 불가 유실")
+        ctx.bump("ranking_snaps")
+        if rtype not in FEATURE_RANKING_TYPES:
+            continue                     # 1d 목록은 실시간 경로에 들이지 않는다 (docstring)
         ctx.rankings.add(snap_ms, page, keep=watch)
         # 워치리스트 후보(상위권)의 tier0 판정을 트리거 **이전에** 확정한다 (감사 F-2).
         await _resolve_universe(
             ctx, [(row.symbol, int(row.last_u)) for row in page.rows
                   if row.rank <= RANKING_PROMOTE_TOP], snap_ms)
         _ranking_triggers(ctx, page, snap_ms)
-        ctx.bump("ranking_snaps")
     await _resolve_watchlist_unknowns(ctx)
     ctx.rankings.prune(ctx.clock.now_ms(), keep=set(ctx.watchlist) | set(ctx.buffers))
     return stored
@@ -2130,7 +2201,8 @@ async def run_all(ctx: CollectorContext, *, cycles: int | None = None) -> None:
 
 
 __all__ = [
-    "CANDLE_ADJUSTED", "CollectorContext", "RANKING_TYPES", "RankingBuffer", "SymbolBuffer",
+    "CANDLE_ADJUSTED", "CollectorContext", "RANKING_TYPES", "FEATURE_RANKING_TYPES",
+    "RANKING_COUNT", "RankingBuffer", "SymbolBuffer",
     "candle_adjusted", "candles_frame", "rankings_once", "reconfigure_tiers", "run_all",
     "run_rankings",
     "run_session_watch", "run_tier1_price_sweep", "run_tier2_candles",

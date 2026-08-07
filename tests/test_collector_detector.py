@@ -725,11 +725,19 @@ def test_detector_passes_the_volume_ranking_types_it_actually_collects():
 
 
 def test_detector_ranking_types_match_what_the_collector_polls():
-    """detector 는 순환 참조 때문에 loops 를 import 하지 않는다 — 어긋남은 여기서 잡는다."""
-    from tossmon.collector.loops import RANKING_TYPES
+    """detector 는 순환 참조 때문에 loops 를 import 하지 않는다 — 어긋남은 여기서 잡는다.
 
-    assert set(RANKING_TYPES) == {detector_module.RANKING_TOSS_TYPE,
-                                  detector_module.RANKING_MARKET_TYPE}
+    맞춰야 할 상대는 수집 목록(`RANKING_TYPES`) 이 아니라 **피처 목록**
+    (`FEATURE_RANKING_TYPES`) 이다. 2026-08-07 부터 수집은 `TOP_GAINERS`(1d)까지 3종인데,
+    토스 쏠림도는 두 목록의 **순위 대비**라 같은 집계창(둘 다 realtime)이라야 뜻이 있다.
+    수집 목록으로 맞추면 1d 를 쏠림도 분모에 넣으라는 말이 된다.
+    """
+    from tossmon.collector.loops import FEATURE_RANKING_TYPES, RANKING_TYPES
+
+    assert set(FEATURE_RANKING_TYPES) == {detector_module.RANKING_TOSS_TYPE,
+                                          detector_module.RANKING_MARKET_TYPE}
+    # 피처 목록은 수집 목록의 부분집합이어야 한다 — 안 받는 목록으로 피처를 만들 수는 없다.
+    assert set(FEATURE_RANKING_TYPES) <= set(RANKING_TYPES)
 
 
 def test_toss_concentration_survives_on_volume_rankings():
