@@ -24,6 +24,7 @@ import pandas as pd
 
 from ..api.models import SessionWindow, UsMarketDay
 from .baselines import MIN_MS, session_vwap_u, session_windows
+from .session import bar_start_ms
 
 #: `shape` 분류 임계 (docs/07 §4.2)
 SHAPE_INSTANT_FRACTION = 0.5    # T0 봉 자체 수익률이 ret_min 의 이 비율 이상이면 즉발형
@@ -76,7 +77,8 @@ def _day_spans(df_1m: pd.DataFrame,
                 out.append((md, wins[0][1].start_ms, wins[-1][1].end_ms))
         return sorted(out, key=lambda x: x[1])
     day_ms = 86_400_000
-    days = sorted({int(t) // day_ms for t in df_1m["ts_ms"].tolist()})
+    # 소속은 봉이 담는 구간으로 판정한다 (docs/12 §6.1)
+    days = sorted({bar_start_ms(t) // day_ms for t in df_1m["ts_ms"].tolist()})
     return [(None, d * day_ms, (d + 1) * day_ms) for d in days]
 
 
@@ -112,18 +114,23 @@ def _prev_day_close_u(sdf: pd.DataFrame,
         return None
     prev_day = sdf.iloc[plo:phi]
     if pmd is not None and pmd.regular is not None:
-        reg = prev_day[(prev_day["ts_ms"] >= pmd.regular.start_ms)
-                       & (prev_day["ts_ms"] < pmd.regular.end_ms)]
+        # 정규장 소속은 봉이 담는 구간으로 (§6.1) — 마지막 봉의 라벨이 곧 `end_ms` 다
+        reg = prev_day[(prev_day["ts_ms"] > pmd.regular.start_ms)
+                       & (prev_day["ts_ms"] <= pmd.regular.end_ms)]
         if not reg.empty:
             return int(reg["close_u"].to_numpy()[-1])
     return int(prev_day["close_u"].to_numpy()[-1])
 
 
 def _regular_frame(df: pd.DataFrame, md: UsMarketDay | None) -> pd.DataFrame:
-    """정규장 봉만. calendar 가 없으면 입력 그대로."""
+    """정규장 봉만. calendar 가 없으면 입력 그대로.
+
+    소속은 봉이 담는 구간으로 판정한다 (docs/12 §6.1) — 라벨 `end_ms` 인 봉이
+    정규장 **마지막 분(종가 경매)**이라 `close_ref_u` 는 여기에 달려 있다.
+    """
     if md is None or md.regular is None:
         return df
-    return df[(df["ts_ms"] >= md.regular.start_ms) & (df["ts_ms"] < md.regular.end_ms)]
+    return df[(df["ts_ms"] > md.regular.start_ms) & (df["ts_ms"] <= md.regular.end_ms)]
 
 
 def _count_halt_gaps(df: pd.DataFrame, md: UsMarketDay | None, min_gap_min: int) -> int:
@@ -245,7 +252,8 @@ def detect_events(df_1m: pd.DataFrame, params: EventParams, *,
         shares = (shares_outstanding_qu.get(symbol)
                   if isinstance(shares_outstanding_qu, dict) else shares_outstanding_qu)
         # 매매일 슬라이싱을 O(log n) 으로 (봉×날짜 이중 스캔 방지)
-        sts = sdf["ts_ms"].to_numpy()
+        # 매매일 소속은 봉이 담는 구간으로 판정한다 (§6.1) — 라벨이 아니라 `ts−60초`
+        sts = sdf["ts_ms"].to_numpy() - MIN_MS
         bounds = [(int(sts.searchsorted(a, side="left")),
                    int(sts.searchsorted(b, side="left"))) for _md, a, b in spans]
         # 3차 감사 F-4: 스칼라(또는 심볼별) 전일 종가는 **하루치 프레임에만** 유효하다.
@@ -378,12 +386,13 @@ def _build_label(*, symbol, day, md, t_from, t_to, next_day, params, i, ts, clos
     session = "unknown"
     t0_min_from_open = float("nan")
     if md is not None:
+        t0_b = bar_start_ms(t0_ms)                 # 소속·분 위치는 봉이 담는 구간으로 (§6.1)
         for name, win in session_windows(md):
-            if win.start_ms <= t0_ms < win.end_ms:
+            if win.start_ms <= t0_b < win.end_ms:
                 session = name
                 break
         if md.regular is not None:
-            t0_min_from_open = float((t0_ms - md.regular.start_ms) // MIN_MS)
+            t0_min_from_open = float((t0_b - md.regular.start_ms) // MIN_MS)
 
     # VWAP 대비 종가: 정규장 VWAP. calendar 가 없거나 **정규장 체결이 아예 없는 종목**
     # (데이마켓만 거래되는 초저유동성)이면 매매일 전체 VWAP 로 대체한다 — close_ref_u 의
@@ -413,8 +422,10 @@ def _build_label(*, symbol, day, md, t_from, t_to, next_day, params, i, ts, clos
     if next_day is not None:
         nmd, nxt = next_day
         if nmd is not None and nmd.regular is not None:
-            nreg = nxt[(nxt["ts_ms"] >= nmd.regular.start_ms)
-                       & (nxt["ts_ms"] < nmd.regular.end_ms)]
+            # 소속은 봉이 담는 구간으로 (§6.1). 라벨을 그대로 쓰면 "정규장 시가" 자리에
+            # **프리마켓 마지막 분의 시가**가 들어간다 (docs/36 §3-3).
+            nreg = nxt[(nxt["ts_ms"] > nmd.regular.start_ms)
+                       & (nxt["ts_ms"] <= nmd.regular.end_ms)]
             nxt = nreg if not nreg.empty else nxt
         if not nxt.empty and close_ref_u > 0:
             next_day_gap = int(nxt["open_u"].to_numpy()[0]) / close_ref_u - 1.0

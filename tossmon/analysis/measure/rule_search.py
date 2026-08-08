@@ -62,7 +62,13 @@ def build_events() -> tuple[pd.DataFrame, dict]:
             pre = pd.read_sql_query(
                 "SELECT ts_ms, close_u, vol_qu FROM candles_1m WHERE symbol=? "
                 "AND ts_ms>=? AND ts_ms<? ORDER BY ts_ms", conn,
-                params=(sym, t0 - PRE_MIN * MIN_MS, t0))          # strict cutoff
+                # strict cutoff (prereg 2.1 P1 forecast 1a: "ts_ms < t0_ms").
+                # NOTE (docs/47 5): ts_ms is an END-time label, so the bar labelled t0
+                # is already complete at t0 - excluding it is 1 bar (60 s) of extra
+                # conservatism, not leakage protection. The post frame's `ts_ms >= t0`
+                # side has the mirror shift. Arithmetic left AS IS: changing it rewrites
+                # a preregistered forecast. SEPARATE TASK, AFTER the prereg 9 amendment.
+                params=(sym, t0 - PRE_MIN * MIN_MS, t0))
             post = pd.read_sql_query(
                 "SELECT ts_ms, open_u, high_u, low_u, close_u, vol_qu FROM candles_1m "
                 "WHERE symbol=? AND ts_ms>=? AND ts_ms<=? ORDER BY ts_ms", conn,

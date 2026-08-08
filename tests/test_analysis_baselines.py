@@ -105,7 +105,9 @@ def test_curve_is_mean_per_minute_position() -> None:
     rows = []
     for base, mult in ((d0, 1), (d1, 2)):
         for m in range(3):
-            rows.append((base + m * MIN_MS, 100, 100, 100, 100, (m + 1) * 10 * mult))
+            # 세션 분 슬롯 m 의 봉은 **슬롯 끝**에 라벨된다 (종료 라벨, docs/12 §6.1)
+            rows.append((base + (m + 1) * MIN_MS, 100, 100, 100, 100,
+                         (m + 1) * 10 * mult))
     cal = [_one_session_day("2026-06-01", d0, 3), _one_session_day("2026-06-02", d1, 3)]
     curve = B.minute_of_session_volume_curve(_candles(rows), cal)
     # 색인은 (세션, 세션길이분, 분위치) — 길이가 키에 들어간다 (감사 M-4)
@@ -123,8 +125,9 @@ def test_curve_is_mean_per_minute_position() -> None:
 def test_curve_counts_missing_minutes_as_zero() -> None:
     """봉이 없는 분은 거래량 0 — 분모가 줄어들면 RVOL 이 구조적으로 부풀려진다."""
     d0, d1 = 0, 86_400_000
-    rows = [(d0 + 0 * MIN_MS, 1, 1, 1, 1, 100), (d0 + 1 * MIN_MS, 1, 1, 1, 1, 100),
-            (d1 + 0 * MIN_MS, 1, 1, 1, 1, 100)]      # 2일차 1분째 봉 없음
+    # 봉 라벨은 슬롯 끝 (docs/12 §6.1): 슬롯 0 -> +1분, 슬롯 1 -> +2분
+    rows = [(d0 + 1 * MIN_MS, 1, 1, 1, 1, 100), (d0 + 2 * MIN_MS, 1, 1, 1, 1, 100),
+            (d1 + 1 * MIN_MS, 1, 1, 1, 1, 100)]      # 2일차 1분째 봉 없음
     cal = [_one_session_day("2026-06-01", d0, 2), _one_session_day("2026-06-02", d1, 2)]
     curve = B.minute_of_session_volume_curve(_candles(rows), cal)
     assert curve.loc[("regular", 2, 1)] == pytest.approx(50.0)     # (100 + 0)/2
@@ -134,7 +137,7 @@ def test_curve_counts_missing_minutes_as_zero() -> None:
 def test_curve_skips_fully_empty_sessions() -> None:
     """수집 중단 세션(전부 결측)은 평균에서 제외되지만 세션 윈도우는 등록된다."""
     d0, d1 = 0, 86_400_000
-    rows = [(d0 + m * MIN_MS, 1, 1, 1, 1, 100) for m in range(2)]
+    rows = [(d0 + (m + 1) * MIN_MS, 1, 1, 1, 1, 100) for m in range(2)]
     cal = [_one_session_day("2026-06-01", d0, 2), _one_session_day("2026-06-02", d1, 2)]
     curve = B.minute_of_session_volume_curve(_candles(rows), cal)
     assert curve.loc[("regular", 2, 0)] == pytest.approx(100.0)
@@ -145,20 +148,22 @@ def test_curve_skips_fully_empty_sessions() -> None:
 
 def test_curve_exclude_dates_keeps_windows_but_drops_average() -> None:
     d0, d1 = 0, 86_400_000
-    rows = ([(d0 + m * MIN_MS, 1, 1, 1, 1, 100) for m in range(2)]
-            + [(d1 + m * MIN_MS, 1, 1, 1, 1, 9999) for m in range(2)])
+    rows = ([(d0 + (m + 1) * MIN_MS, 1, 1, 1, 1, 100) for m in range(2)]
+            + [(d1 + (m + 1) * MIN_MS, 1, 1, 1, 1, 9999) for m in range(2)])
     cal = [_one_session_day("2026-06-01", d0, 2), _one_session_day("2026-06-02", d1, 2)]
     curve = B.minute_of_session_volume_curve(_candles(rows), cal,
                                             exclude_dates=["2026-06-02"])
     assert curve.loc[("regular", 2, 0)] == pytest.approx(100.0), "제외일은 분모에 못 들어간다"
-    assert B.curve_locate(curve, d1) == ("regular", 0, d1, d1 + 2 * MIN_MS)
+    # 세션 분 0 의 봉은 라벨 `start + 1분` 이다 — 라벨 `start` 봉은 직전 세션 소속 (§6.1)
+    assert B.curve_locate(curve, d1 + MIN_MS) == ("regular", 0, d1, d1 + 2 * MIN_MS)
+    assert B.curve_locate(curve, d1) is None
 
 
 def test_curve_handles_holiday_all_none_sessions() -> None:
     """market_calendar_us_holiday 픽스처처럼 4세션 전부 null 인 날."""
     holiday = UsMarketDay(date="2026-07-04", day=None, pre=None, regular=None,
                           after=None)
-    rows = [(m * MIN_MS, 1, 1, 1, 1, 10) for m in range(2)]
+    rows = [((m + 1) * MIN_MS, 1, 1, 1, 1, 10) for m in range(2)]
     cal = [holiday, _one_session_day("2026-07-06", 0, 2)]
     curve = B.minute_of_session_volume_curve(_candles(rows), cal)
     assert len(curve) == 2
@@ -172,8 +177,8 @@ def test_curve_separates_days_of_different_session_length() -> None:
     `(session, minute)` 버킷을 공유했고, 그것이 바로 반일장 오염의 원인이었다.
     """
     d0, d1 = 0, 86_400_000
-    rows = ([(d0 + m * MIN_MS, 1, 1, 1, 1, 100) for m in range(5)]
-            + [(d1 + m * MIN_MS, 1, 1, 1, 1, 100) for m in range(2)])
+    rows = ([(d0 + (m + 1) * MIN_MS, 1, 1, 1, 1, 100) for m in range(5)]
+            + [(d1 + (m + 1) * MIN_MS, 1, 1, 1, 1, 100) for m in range(2)])
     cal = [_one_session_day("2026-06-01", d0, 5), _one_session_day("2026-06-02", d1, 2)]
     curve = B.minute_of_session_volume_curve(_candles(rows), cal)
     cnt = curve.attrs[B.CURVE_DAYS_KEY]
@@ -192,15 +197,16 @@ def test_rvol_cumulative_definition() -> None:
     d0, d1, d2 = 0, 86_400_000, 2 * 86_400_000
     rows = []
     for base, v in ((d0, 100), (d1, 100)):
-        rows += [(base + m * MIN_MS, 1, 1, 1, 1, v) for m in range(3)]
-    rows += [(d2 + m * MIN_MS, 1, 1, 1, 1, 300) for m in range(3)]   # 3배
+        rows += [(base + (m + 1) * MIN_MS, 1, 1, 1, 1, v) for m in range(3)]
+    rows += [(d2 + (m + 1) * MIN_MS, 1, 1, 1, 1, 300) for m in range(3)]   # 3배
     cal = [_one_session_day(f"2026-06-0{i + 1}", d, 3)
            for i, d in enumerate((d0, d1, d2))]
     df = _candles(rows)
     curve = B.minute_of_session_volume_curve(df, cal, exclude_dates=["2026-06-03"])
-    assert B.rvol(df, curve, d2) == pytest.approx(3.0)
-    assert B.rvol(df, curve, d2 + 2 * MIN_MS) == pytest.approx(3.0)
-    assert B.rvol_bar(df, curve, d2 + 1 * MIN_MS) == pytest.approx(3.0)
+    # 세션 분 0/2 의 봉 라벨은 각각 start+1분 / start+3분 이다 (§6.1)
+    assert B.rvol(df, curve, d2 + MIN_MS) == pytest.approx(3.0)
+    assert B.rvol(df, curve, d2 + 3 * MIN_MS) == pytest.approx(3.0)
+    assert B.rvol_bar(df, curve, d2 + 2 * MIN_MS) == pytest.approx(3.0)
     assert math.isnan(B.rvol(df, curve, d2 + 99 * MIN_MS)), "세션 밖은 NaN"
 
 
@@ -248,13 +254,14 @@ def test_rvol_empty_curve_is_nan() -> None:
 # 세션 VWAP
 # --------------------------------------------------------------------------- #
 def test_session_vwap_exact() -> None:
-    rows = [(0, 100, 120, 80, 100, 10), (MIN_MS, 100, 200, 100, 150, 30)]
+    # 세션 [0, 10분) 의 첫 두 분을 담은 봉의 라벨은 1분·2분 이다 (종료 라벨, §6.1)
+    rows = [(MIN_MS, 100, 120, 80, 100, 10), (2 * MIN_MS, 100, 200, 100, 150, 30)]
     df = _candles(rows)
     win = SessionWindow(start_ms=0, end_ms=10 * MIN_MS)
     vw = B.session_vwap_u(df, win)
     tp0 = (120 + 80 + 100) // 3                      # 100
     tp1 = (200 + 100 + 150) // 3                     # 150
-    assert list(vw.index) == [0, MIN_MS]
+    assert list(vw.index) == [MIN_MS, 2 * MIN_MS]
     assert vw.iloc[0] == tp0
     assert vw.iloc[1] == (tp0 * 10 + tp1 * 30) // 40
     assert vw.dtype == "int64", "가격은 int 로 유지 (계약 C-2)"
@@ -265,7 +272,8 @@ def test_session_vwap_no_int64_overflow() -> None:
     n = 390
     price_u = 4_000_000
     vol = 20_000 * MICRO
-    rows = [(m * MIN_MS, price_u, price_u, price_u, price_u, vol) for m in range(n)]
+    rows = [((m + 1) * MIN_MS, price_u, price_u, price_u, price_u, vol)
+            for m in range(n)]
     df = _candles(rows)
     naive = int(df["high_u"].iloc[0]) * int(df["vol_qu"].sum())
     assert naive > 2 ** 63, "이 테스트가 오버플로 영역을 다루는지 확인"
@@ -274,7 +282,7 @@ def test_session_vwap_no_int64_overflow() -> None:
 
 
 def test_session_vwap_zero_volume_prefix() -> None:
-    rows = [(0, 100, 100, 100, 100, 0), (MIN_MS, 100, 100, 100, 100, 10)]
+    rows = [(MIN_MS, 100, 100, 100, 100, 0), (2 * MIN_MS, 100, 100, 100, 100, 10)]
     vw = B.session_vwap_u(_candles(rows), SessionWindow(start_ms=0, end_ms=5 * MIN_MS))
     assert vw.iloc[0] == 100
     assert vw.iloc[1] == 100
@@ -285,8 +293,10 @@ def test_session_vwap_filters_by_window_and_is_empty_outside() -> None:
     reg = truth["market_day"].regular
     vw = B.session_vwap_u(df, reg)
     assert len(vw) > 100
-    assert int(vw.index.min()) >= reg.start_ms
-    assert int(vw.index.max()) < reg.end_ms
+    # 종료 라벨(§6.1): 세션 **첫** 분의 봉은 라벨 start+1분, **마지막** 분(정규장이면
+    # 종가 경매)의 봉은 라벨 = end_ms 다. 예전 규약은 이 마지막 봉을 통째로 버렸다.
+    assert int(vw.index.min()) >= reg.start_ms + MIN_MS
+    assert int(vw.index.max()) == reg.end_ms, "정규장 마지막 분이 빠지면 안 된다"
     far = SessionWindow(start_ms=reg.end_ms + 10 ** 9, end_ms=reg.end_ms + 2 * 10 ** 9)
     assert B.session_vwap_u(df, far).empty
 
@@ -324,9 +334,12 @@ def test_atr_none_on_empty() -> None:
 
 def test_locate_session() -> None:
     md = synth.make_calendar(1)[0]
-    assert B.locate_session(md, md.regular.start_ms)[0] == "regular"
-    assert B.locate_session(md, md.pre.start_ms)[0] == "pre"
-    assert B.locate_session(md, md.regular.end_ms - 1)[0] == "regular"
+    # `locate_session` 은 **캔들 라벨**을 받고 소속은 봉이 담는 구간으로 판정한다 (§6.1).
+    # 라벨 `regular.start_ms` 봉의 내용은 [start-60초, start) = 프리마켓 마지막 분이다.
+    assert B.locate_session(md, md.regular.start_ms)[0] == "pre"
+    assert B.locate_session(md, md.regular.start_ms + MIN_MS)[0] == "regular"
+    assert B.locate_session(md, md.pre.start_ms + MIN_MS)[0] == "pre"
+    assert B.locate_session(md, md.regular.end_ms)[0] == "regular"
     assert B.locate_session(md, md.after.end_ms + MIN_MS) is None
 
 

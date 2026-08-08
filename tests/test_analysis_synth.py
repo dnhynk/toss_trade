@@ -70,7 +70,9 @@ def test_all_bars_inside_declared_sessions(kind: str) -> None:
     df, truth = synth.make_scenario(kind, seed=5)
     windows = [w for md in truth["calendar"] for _n, w in synth.session_windows(md)]
     ts = df["ts_ms"].to_numpy()
-    inside = [any(w.start_ms <= int(t) < w.end_ms for w in windows) for t in ts]
+    # 종료 라벨(docs/12 §6.1): 라벨 T 인 봉의 내용은 [T-60초, T) 이므로 세션 소속은
+    # `start < T <= end` 다. 세션 마지막 분의 봉은 라벨이 곧 `end_ms` 다.
+    inside = [any(w.start_ms < int(t) <= w.end_ms for w in windows) for t in ts]
     assert all(inside), "세션 밖 봉이 생성되면 안 된다"
 
 
@@ -243,7 +245,8 @@ def test_include_next_day_false() -> None:
     assert truth["next_day_gap"] is None
     assert len(truth["calendar"]) == 3          # 이력 2일 + 이벤트 당일
     assert truth["event_day_index"] == 2
-    assert int(df["ts_ms"].max()) < truth["market_day"].after.end_ms
+    # 마지막 봉의 라벨은 애프터장 종료 시각 그 자체다 (종료 라벨, §6.1)
+    assert int(df["ts_ms"].max()) <= truth["market_day"].after.end_ms
 
 
 def test_history_days_precede_event_day() -> None:
@@ -266,7 +269,7 @@ def test_history_days_precede_event_day() -> None:
 def test_prev_close_comes_from_prior_regular_session() -> None:
     df, truth = synth.make_scenario("coil_pop", seed=3, history_days=2)
     prev_reg = truth["baseline_calendar"][-1].regular
-    prior = df[(df["ts_ms"] >= prev_reg.start_ms) & (df["ts_ms"] < prev_reg.end_ms)]
+    prior = df[(df["ts_ms"] > prev_reg.start_ms) & (df["ts_ms"] <= prev_reg.end_ms)]
     assert int(prior["close_u"].to_numpy()[-1]) == truth["prev_close_u"]
 
 

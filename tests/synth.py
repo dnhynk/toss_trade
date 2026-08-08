@@ -415,7 +415,11 @@ def _build_day_bars(rng: random.Random,
             for base_ppm in _seg_ppm(seg):
                 if m >= n_total:
                     break
-                ts = win.start_ms + m * MIN_MS
+                # **종료 시각 라벨** — 세션의 분 슬롯 m 은 [start+m·60, start+(m+1)·60)
+                # 이고 그 봉의 ts_ms 는 슬롯의 **끝**이다 (사전등록 §6.1, docs/36 §1).
+                # 여기가 시작 라벨이면 생성기와 소비자가 같은 오류를 공유해 테스트가
+                # 통째로 초록이 된다 — 이 저장소가 실제로 겪은 실패다 (docs/36 §4).
+                ts = win.start_ms + (m + 1) * MIN_MS
 
                 hole = next(((s, d, g) for (s, d, g) in holes if s <= m < s + d), None)
                 if hole is not None:
@@ -613,7 +617,8 @@ def _measure_truth(df_1m: pd.DataFrame, md: UsMarketDay, t0_ms: int | None,
                    prev_close_u: int, shares_out_qu: int) -> dict:
     sessions = session_windows(md)
     t_start, t_end = sessions[0][1].start_ms, sessions[-1][1].end_ms
-    day = df_1m[(df_1m["ts_ms"] >= t_start) & (df_1m["ts_ms"] < t_end)]
+    # 소속은 봉이 담는 구간으로 — 종료 라벨이므로 라벨은 (start, end] 다 (§6.1)
+    day = df_1m[(df_1m["ts_ms"] > t_start) & (df_1m["ts_ms"] <= t_end)]
 
     out: dict = {}
     if day.empty:
@@ -632,7 +637,7 @@ def _measure_truth(df_1m: pd.DataFrame, md: UsMarketDay, t0_ms: int | None,
 
     reg = md.regular
     if reg is not None:
-        rg = df_1m[(df_1m["ts_ms"] >= reg.start_ms) & (df_1m["ts_ms"] < reg.end_ms)]
+        rg = df_1m[(df_1m["ts_ms"] > reg.start_ms) & (df_1m["ts_ms"] <= reg.end_ms)]
         if not rg.empty:
             vw = _vwap_last_u(rg)
             if vw is not None:
@@ -642,7 +647,8 @@ def _measure_truth(df_1m: pd.DataFrame, md: UsMarketDay, t0_ms: int | None,
                 out["vwap_close_rel"] = out["regular_close_u"] / vw - 1.0
             rg_hi = rg["high_u"].to_numpy()
             out["regular_hod_ms"] = int(rg["ts_ms"].to_numpy()[int(rg_hi.argmax())])
-            out["hod_min_from_open"] = int((out["regular_hod_ms"] - reg.start_ms) // MIN_MS)
+            out["hod_min_from_open"] = int(
+                (out["regular_hod_ms"] - MIN_MS - reg.start_ms) // MIN_MS)
 
     if t0_ms is not None:
         # T0 의 종가가 기준가 = "T0 봉을 보고 진입"의 현실적 참조점.
@@ -672,7 +678,7 @@ def _find_gaps(df_1m: pd.DataFrame, md: UsMarketDay,
     """세션별 캔들 공백(홀트/체결공백/수집중단) — {세션: [(공백 시작 ts_ms, 길이 분)]}."""
     out: dict[str, list[tuple[int, int]]] = {}
     for name, win in session_windows(md):
-        s = df_1m[(df_1m["ts_ms"] >= win.start_ms) & (df_1m["ts_ms"] < win.end_ms)]
+        s = df_1m[(df_1m["ts_ms"] > win.start_ms) & (df_1m["ts_ms"] <= win.end_ms)]
         ts = s["ts_ms"].to_numpy()
         found = [(int(a) + MIN_MS, int((b - a) // MIN_MS) - 1)
                  for a, b in zip(ts[:-1], ts[1:])
@@ -790,7 +796,7 @@ def make_scenario(kind: str, seed: int = 0, *,
     prev_close_u = base_price_u
     if history_days and rows:
         preg = cal[history_days - 1].regular
-        prior = [r for r in rows if preg.start_ms <= r["ts_ms"] < preg.end_ms]
+        prior = [r for r in rows if preg.start_ms < r["ts_ms"] <= preg.end_ms]
         if prior:
             prev_close_u = int(prior[-1]["close_u"])
 
@@ -819,8 +825,8 @@ def make_scenario(kind: str, seed: int = 0, *,
 
     # T0 정답: 나이브 참조 구현으로 "가격 조건 최초 충족" 봉을 직접 찾는다.
     sess = session_windows(md)
-    day_df = df_1m[(df_1m["ts_ms"] >= sess[0][1].start_ms)
-                   & (df_1m["ts_ms"] < sess[-1][1].end_ms)]
+    day_df = df_1m[(df_1m["ts_ms"] > sess[0][1].start_ms)
+                   & (df_1m["ts_ms"] <= sess[-1][1].end_ms)]
     t0_expected_ms, t0_reason = _first_price_trigger(day_df, prev_close_u)
 
     truth = _measure_truth(df_1m, md, t0_expected_ms, prev_close_u,
@@ -830,7 +836,7 @@ def make_scenario(kind: str, seed: int = 0, *,
     next_day_gap: float | None = None
     if include_next_day and truth.get("regular_close_u"):
         nreg = cal[history_days + 1].regular
-        nd = df_1m[(df_1m["ts_ms"] >= nreg.start_ms) & (df_1m["ts_ms"] < nreg.end_ms)]
+        nd = df_1m[(df_1m["ts_ms"] > nreg.start_ms) & (df_1m["ts_ms"] <= nreg.end_ms)]
         if not nd.empty:
             next_day_gap = int(nd["open_u"].to_numpy()[0]) / truth["regular_close_u"] - 1.0
 

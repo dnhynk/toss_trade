@@ -94,9 +94,10 @@ def main() -> int:
             enters = (ch_toss[ch_toss["event"] == "enter"]
                       .sort_values("snap_ms").groupby("symbol").first().reset_index())
             print(f"-- first-entry events into toss top{TOP_N}: {len(enters)}")
+            # 봉의 날짜 소속은 라벨이 아니라 담는 구간으로 (docs/12 §6.1)
             bars = pd.read_sql_query(
                 "SELECT symbol, ts_ms, close_u, vol_qu FROM candles_1m "
-                "WHERE date(ts_ms/1000,'unixepoch')=? ORDER BY ts_ms",
+                "WHERE date((ts_ms-60000)/1000,'unixepoch')=? ORDER BY ts_ms",
                 conn, params=(day,))
             leads = []
             for _i, e in enters.iterrows():

@@ -119,12 +119,15 @@ def test_print_size_ratio_nan_rather_than_divide_by_zero():
 # --------------------------------------------------------------------------- #
 def _cohort_day(n_symbols=12, *, mover="MOVE"):
     """직전 창과 최근 창이 같은 배경 종목들 + 최근 창에서만 튀는 종목 하나."""
+    # 봉 라벨은 **종료 시각**이다 (docs/12 §6.1) — 라벨 m 인 봉은 분 m-1 을 담는다.
+    # 그래서 분 0..59 를 채우려면 라벨은 1..60 이어야 하고, 그래야 급증(분 30~59)이
+    # 최근 창 [30분, 60분) 안에만 들어간다.
     frames = []
     for i in range(n_symbols):
         sym = f"BG{i:02d}"
-        ts = list(range(0, 60))
+        ts = list(range(1, 61))
         frames.append(bars(ts, [10] * 60, symbol=sym))
-    ts = list(range(0, 60))
+    ts = list(range(1, 61))
     vols = [10] * 30 + [500] * 30            # 최근 창에서만 급증
     frames.append(bars(ts, vols, symbol=mover))
     return pd.concat(frames, ignore_index=True)
@@ -144,7 +147,7 @@ def test_rotation_scores_ranks_the_mover_top():
 def test_rotation_scores_excludes_symbols_missing_from_either_window():
     """한쪽 창에만 관측된 종목은 코호트에서 빠진다 (0 으로 채우지 않는다)."""
     day = _cohort_day()
-    late = bars(list(range(30, 60)), [999] * 30, symbol="LATE")  # 최근 창에만 존재
+    late = bars(list(range(31, 61)), [999] * 30, symbol="LATE")  # 최근 창에만 존재
     day = pd.concat([day, late], ignore_index=True)
     sc = R.rotation_scores(day, 60 * MIN_MS, window_min=30, min_prints=3,
                            min_cohort=5)
