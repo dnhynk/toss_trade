@@ -43,7 +43,8 @@ def _fill_day(md: UsMarketDay, step: int = 7, vol: int = 10_000_000) -> list[tup
     out: list[tuple[int, int]] = []
     for _name, w in synth.session_windows(md):
         for m in range(0, (w.end_ms - w.start_ms) // MIN_MS, step):
-            out.append((w.start_ms + m * MIN_MS, vol))
+            # 세션 분 슬롯 m 의 봉은 **슬롯 끝**에 라벨된다 (종료 라벨, docs/12 §6.1)
+            out.append((w.start_ms + (m + 1) * MIN_MS, vol))
     return out
 
 
@@ -140,8 +141,11 @@ def test_market_day_span_helpers() -> None:
     for lo, hi, _d in spans:
         assert hi > lo
     mid = (spans[1][0] + spans[1][1]) // 2
-    assert F.assign_market_days([spans[0][0], mid, spans[2][1] + DAY_MS],
+    # 라벨 `spans[0][0]` 봉의 내용은 매매일 **시작 전**이므로 소속이 없다 (§6.1).
+    # 그 매매일의 첫 봉은 라벨 `spans[0][0] + 1분` 이다.
+    assert F.assign_market_days([spans[0][0] + MIN_MS, mid, spans[2][1] + DAY_MS],
                                 spans) == [spans[0][2], spans[1][2], None]
+    assert F.assign_market_days([spans[0][0]], spans) == [None]
     assert F.assign_market_days([1, 2], []) == [None, None]
 
 
@@ -171,7 +175,9 @@ def _half_day_fixture() -> tuple[pd.DataFrame, list[UsMarketDay]]:
         cal.append(one(date, base, reg))
         for m in range(reg):
             spike = (reg == 210 and m == reg - 1)     # 반일장 종가 경매
-            rows.append((base + m * MIN_MS, 10_000_000_000 if spike else 100_000_000))
+            # 종료 라벨: 분 슬롯 m 의 봉 라벨은 base + (m+1)·60초 (docs/12 §6.1)
+            rows.append((base + (m + 1) * MIN_MS,
+                         10_000_000_000 if spike else 100_000_000))
     return _bars("HD", rows), cal
 
 
@@ -181,7 +187,8 @@ def test_half_day_does_not_contaminate_normal_day_curve() -> None:
     curve = B.minute_of_session_volume_curve(df, cal)
     assert curve.loc[("regular", 390, 209)] == pytest.approx(100_000_000.0), \
         "정상일 분모에 반일장이 섞이면 안 된다"
-    assert B.rvol_bar(df, curve, 209 * MIN_MS) == pytest.approx(1.0), \
+    # 세션 분 209 의 봉 라벨은 210분이다 (종료 라벨, §6.1)
+    assert B.rvol_bar(df, curve, 210 * MIN_MS) == pytest.approx(1.0), \
         "정상일 minute 209 의 rvol_bar 는 1.0 이어야 한다 (오염 시 0.04 로 죽는다)"
 
 
@@ -189,7 +196,7 @@ def test_half_day_close_is_not_a_false_burst() -> None:
     """반일장 종가를 정상일 분모로 보면 허위 버스트(100배)가 만들어진다."""
     df, cal = _half_day_fixture()
     curve = B.minute_of_session_volume_curve(df, cal)
-    half_close = 3 * DAY_MS + 209 * MIN_MS
+    half_close = 3 * DAY_MS + 210 * MIN_MS          # 분 209 의 봉 라벨 (§6.1)
     rv = B.rvol_bar(df, curve, half_close)
     assert rv == pytest.approx(1.0), \
         "반일장은 자기 길이 버킷을 쓰므로 종가가 허위 버스트가 되지 않는다"
@@ -213,7 +220,7 @@ def test_min_days_drops_sparse_length_buckets() -> None:
     assert ("regular", 210, 209) not in curve.index
     assert ("regular", 390, 209) in curve.index, "정상일 버킷은 3일 관측이라 남는다"
     assert ("regular", 210) in curve.attrs[B.CURVE_DROPPED_KEY]
-    half_close = 3 * DAY_MS + 209 * MIN_MS
+    half_close = 3 * DAY_MS + 210 * MIN_MS          # 분 209 의 봉 라벨 (§6.1)
     assert math.isnan(B.rvol_bar(df, curve, half_close))
     assert math.isnan(B.rvol(df, curve, half_close))
 
@@ -223,7 +230,7 @@ def test_cumulative_rvol_also_length_aware() -> None:
     df, cal = _half_day_fixture()
     curve = B.minute_of_session_volume_curve(df, cal, min_days=3)
     rv = B.rvol_series(df, curve)
-    normal = rv[(rv.index >= 0) & (rv.index < DAY_MS)].dropna()
+    normal = rv[(rv.index > 0) & (rv.index <= DAY_MS)].dropna()
     assert len(normal) == 390
     assert normal.iloc[-1] == pytest.approx(1.0, abs=0.01)
     half = rv[rv.index >= 3 * DAY_MS]
@@ -233,8 +240,9 @@ def test_cumulative_rvol_also_length_aware() -> None:
 def test_curve_key_helper() -> None:
     df, cal = _half_day_fixture()
     curve = B.minute_of_session_volume_curve(df, cal)
-    assert B.curve_key(curve, 209 * MIN_MS) == ("regular", 390, 209)
-    assert B.curve_key(curve, 3 * DAY_MS + 209 * MIN_MS) == ("regular", 210, 209)
+    # 분 209 를 담은 봉의 라벨은 210분이다 (종료 라벨, §6.1)
+    assert B.curve_key(curve, 210 * MIN_MS) == ("regular", 390, 209)
+    assert B.curve_key(curve, 3 * DAY_MS + 210 * MIN_MS) == ("regular", 210, 209)
     assert B.curve_key(curve, 99 * DAY_MS) is None
 
 

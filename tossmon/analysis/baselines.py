@@ -23,6 +23,7 @@ from pathlib import Path
 import pandas as pd
 
 from ..api.models import SessionWindow, UsMarketDay
+from .session import bar_start_ms
 
 MIN_MS = 60_000
 SESSION_NAMES = ("day", "pre", "regular", "after")
@@ -38,8 +39,10 @@ def session_windows(md: UsMarketDay) -> list[tuple[str, SessionWindow]]:
 
 
 def locate_session(md: UsMarketDay, ts_ms: int) -> tuple[str, SessionWindow] | None:
+    """**캔들 라벨**이 속한 세션. 소속은 봉이 담는 구간으로 판정한다 (docs/12 §6.1)."""
+    b = bar_start_ms(ts_ms)
     for name, win in session_windows(md):
-        if win.start_ms <= ts_ms < win.end_ms:
+        if win.start_ms <= b < win.end_ms:
             return name, win
     return None
 
@@ -387,7 +390,10 @@ def minute_of_session_volume_curve(df_1m: pd.DataFrame,
             if md.date not in in_window:
                 continue                      # 세션 윈도우만 등록, 평균에서는 제외
             n = session_len_min(win)
-            minute_vols = [by_ts.get(win.start_ms + m * MIN_MS, 0) for m in range(n)]
+            # 분 슬롯 m = [start + m·60, start + (m+1)·60) 의 내용을 담은 봉은
+            # **그 슬롯 끝에 라벨된 봉**이다 (종료 라벨, docs/12 §6.1).
+            minute_vols = [by_ts.get(win.start_ms + (m + 1) * MIN_MS, 0)
+                           for m in range(n)]
             if not any(minute_vols):
                 continue                      # 수집 중단 세션은 평균에서 제외
             lengths.setdefault(name, {})
@@ -474,8 +480,10 @@ def split_ratio_series(df_1m: pd.DataFrame, df_1d: pd.DataFrame,
     starts = [s[0] for s in spans]
 
     def _bucket(ts: int) -> str | None:
-        j = bisect_right(starts, ts) - 1
-        return spans[j][2] if (j >= 0 and spans[j][0] <= ts < spans[j][1]) else None
+        """**1분봉 라벨** → 매매일. 소속은 봉이 담는 구간으로 (docs/12 §6.1)."""
+        b = bar_start_ms(ts)
+        j = bisect_right(starts, b) - 1
+        return spans[j][2] if (j >= 0 and spans[j][0] <= b < spans[j][1]) else None
 
     # 매매일별 1분봉 마지막 종가(원주가)
     last_1m: dict[str, tuple[int, int]] = {}      # date -> (ts, close)
@@ -620,10 +628,16 @@ def prereg_volume_curve(df_1m: pd.DataFrame, calendar: list[UsMarketDay],
 def curve_locate(curve: pd.Series, ts_ms: int, *,
                  calendar: list[UsMarketDay] | None = None
                  ) -> tuple[str, int, int, int] | None:
-    """`ts_ms` 가 속한 세션 판정 → (session, minute, start_ms, end_ms)."""
+    """**캔들 라벨** `ts_ms` 가 속한 세션 판정 → (session, minute, start_ms, end_ms).
+
+    소속도 분 위치도 봉이 담는 구간 `[ts−60초, ts)` 로 판정한다 (docs/12 §6.1).
+    따라서 세션 첫 분의 봉은 라벨 `start+60초`(minute 0), 마지막 분의 봉은
+    라벨 `end`(minute n−1)다 — 곡선 색인의 근원이 여기다.
+    """
+    b = bar_start_ms(ts_ms)
     for start_ms, end_ms, name, _date in _session_table(curve, calendar):
-        if start_ms <= ts_ms < end_ms:
-            return name, int((ts_ms - start_ms) // MIN_MS), int(start_ms), int(end_ms)
+        if start_ms <= b < end_ms:
+            return name, int((b - start_ms) // MIN_MS), int(start_ms), int(end_ms)
     return None
 
 
@@ -668,7 +682,9 @@ def rvol(df_1m: pd.DataFrame, curve: pd.Series, ts_ms: int, *,
     expected = float(cum.loc[key])
     if not expected > 0:
         return float("nan")
-    sub = df_1m[(df_1m["ts_ms"] >= start_ms) & (df_1m["ts_ms"] <= ts_ms)]
+    # 세션 시작~ts 누적: 내용이 세션 안에 있는 봉만. 라벨 `start_ms` 인 봉은 내용이
+    # 직전 세션의 마지막 분이므로 들어오면 안 된다 (docs/12 §6.1).
+    sub = df_1m[(df_1m["ts_ms"] > start_ms) & (df_1m["ts_ms"] <= ts_ms)]
     actual = float(sum(int(v) for v in sub["vol_qu"].tolist()))
     return actual / expected
 
@@ -711,11 +727,13 @@ def rvol_series(df_1m: pd.DataFrame, curve: pd.Series, *,
     running = 0
     cur: tuple[int, int, str, str] | None = None
     for t, v in zip(ts_list, vol_list):
-        if cur is None or not (cur[0] <= t < cur[1]):
+        # 세션 소속·분 위치는 봉이 담는 구간으로 판정한다 (docs/12 §6.1)
+        b = bar_start_ms(t)
+        if cur is None or not (cur[0] <= b < cur[1]):
             # sessions 는 start 오름차순 → 이진탐색 (1024일 백필에서도 O(n log n))
-            j = bisect_right(starts, t) - 1
+            j = bisect_right(starts, b) - 1
             cand = sessions[j] if j >= 0 else None
-            cur = cand if (cand is not None and cand[0] <= t < cand[1]) else None
+            cur = cand if (cand is not None and cand[0] <= b < cand[1]) else None
             running = 0
         if cur is None:
             out.append(float("nan"))
@@ -723,7 +741,7 @@ def rvol_series(df_1m: pd.DataFrame, curve: pd.Series, *,
         running += v
         # 키에 세션 길이를 포함한다 — 조기폐장일이 정상일 분모를 쓰지 않도록 (M-4)
         exp = cum_map.get((cur[2], int((cur[1] - cur[0]) // MIN_MS),
-                           int((t - cur[0]) // MIN_MS)), 0.0)
+                           int((b - cur[0]) // MIN_MS)), 0.0)
         out.append(running / exp if exp > 0 else float("nan"))
     return pd.Series(out, index=pd.Index(ts_list, dtype="int64", name="ts_ms"),
                      dtype="float64", name="rvol")
@@ -745,8 +763,10 @@ def session_vwap_u(df_1m: pd.DataFrame, session: SessionWindow) -> pd.Series:
                       dtype="int64", name="vwap_u")
     if df_1m is None or df_1m.empty:
         return empty
-    sub = df_1m[(df_1m["ts_ms"] >= session.start_ms)
-                & (df_1m["ts_ms"] < session.end_ms)].sort_values("ts_ms")
+    # 세션 소속은 봉이 담는 구간으로 판정한다 (docs/12 §6.1) — 라벨 `end_ms` 인 봉이
+    # 그 세션의 **마지막 분**(정규장이면 종가 경매)이고, 라벨 `start_ms` 인 봉은 밖이다.
+    sub = df_1m[(df_1m["ts_ms"] > session.start_ms)
+                & (df_1m["ts_ms"] <= session.end_ms)].sort_values("ts_ms")
     if sub.empty:
         return empty
     tps = [int(x) for x in ((sub["high_u"] + sub["low_u"] + sub["close_u"]) // 3).tolist()]

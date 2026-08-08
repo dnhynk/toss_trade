@@ -59,8 +59,9 @@ def main() -> int:
     try:
         for sym, grp in ev.groupby("symbol", sort=True):
             edays = set(grp["market_date"])
+            # 봉의 날짜 소속은 라벨이 아니라 담는 구간으로 (docs/12 §6.1)
             have = {r[0] for r in conn.execute(
-                "SELECT DISTINCT date(ts_ms/1000,'unixepoch') FROM candles_1m "
+                "SELECT DISTINCT date((ts_ms-60000)/1000,'unixepoch') FROM candles_1m "
                 "WHERE symbol=?", (sym,))}
             for _i, e in grp.iterrows():
                 i0 = idx.get(e["market_date"])
@@ -87,9 +88,10 @@ def main() -> int:
                 continue
             wins = B.session_windows(md)
             lo = int(wins[0][1].start_ms) - (SCAN + 2 * rv2.WINDOW_MIN) * MIN_MS
+            # 내용 구간 [lo, hi) 를 담은 봉은 라벨 (lo, hi] 다 (docs/12 §6.1)
             bars = pd.read_sql_query(
                 "SELECT symbol, ts_ms, close_u, vol_qu FROM candles_1m "
-                "WHERE ts_ms>=? AND ts_ms<? ORDER BY ts_ms", conn,
+                "WHERE ts_ms>? AND ts_ms<=? ORDER BY ts_ms", conn,
                 params=(lo, int(wins[-1][1].end_ms)))
             if bars.empty:
                 continue

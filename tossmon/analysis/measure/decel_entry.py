@@ -144,8 +144,11 @@ def load_candles(conn) -> dict:
     dropped_cycles: list[str] = []
     if len(kept):
         kept = kept.copy()
-        kept["session"] = SS.sessions_of(kept["ts_ms"])
-        kept["cycle_date"] = kept["ts_ms"].map(lambda m: SS.session_date(int(m)))
+        # 캔들은 **종료 시각 라벨**이라 세션·사이클 소속은 담는 구간으로 판정한다
+        # (docs/12 §6.1). 체결 테이프에는 이 보정을 쓰지 않는다 — 그쪽은 진짜 순간이다.
+        b = SS.bar_starts_ms(kept["ts_ms"])
+        kept["session"] = SS.sessions_of(b)
+        kept["cycle_date"] = b.map(lambda m: SS.session_date(int(m)))
         size = kept.groupby("cycle_date")["symbol"].transform("size")
         dropped_cycles = sorted(
             kept.loc[size < MIN_ROWS_PER_CYCLE, "cycle_date"].unique().tolist())
@@ -490,7 +493,8 @@ def build_report(conn) -> dict:
         "cycle_dates": cycles,
         "pooled_ci_permitted": len(cycles) >= D.MIN_DAY_CLUSTERS,
         "panel_rows_all": int(len(raw)), "panel_rows_traded": int(len(panel)),
-        "session_counts": (SS.session_counts(panel["ts_ms"]) if len(panel) else {}),
+        "session_counts": (SS.session_counts(SS.bar_starts_ms(panel["ts_ms"]))
+                           if len(panel) else {}),         # 캔들 축 (docs/12 §6.1)
         "primary": {"window": PRIMARY_WINDOW, "horizon_min": PRIMARY_H},
         "surface": surf,
         "surface_summary": flat,

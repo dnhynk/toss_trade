@@ -74,6 +74,12 @@ def print_frame(df_1m: pd.DataFrame, *, t_from: int | None = None,
     """거래량이 있는 봉만 시간순으로. **무체결 분은 채우지 않는다** (금지 규칙 1).
 
     `t_to` 는 **배타적**이다 — 엄격 컷오프(`ts_ms < t0_ms`, A1 §1)를 그대로 따른다.
+
+    **주의 (docs/47 §5)**: `ts_ms` 는 **종료 시각 라벨**이라(사전등록 §6.1) 라벨 `t_to`
+    인 봉의 내용도 `t_to` **이전**이다. 즉 이 배타적 컷은 누출 방지가 아니라
+    **1봉(60초) 과보수**다. `t_from` 쪽도 같은 이유로 `[t_from−60초, t_from)` 을 담은
+    봉 하나를 더 들인다. **산술은 사전등록 §2.1 예측 1a 문언에 묶여 있어 그대로 뒀다 —
+    변경은 §9 개정 후 별도 태스크다.** (창/경계 판정인 `_window_stats` 는 이번에 고쳤다.)
     """
     if df_1m is None or len(df_1m) == 0 or "ts_ms" not in df_1m.columns:
         return pd.DataFrame(columns=["ts_ms", "vol_qu", "close_u", "amount_u12"])
@@ -183,8 +189,11 @@ def dormancy_wake_ratio(prints: pd.DataFrame, *,
 # 횡단면 회전 측정식 — 동료 대비 백분위
 # --------------------------------------------------------------------------- #
 def _window_stats(day_bars: pd.DataFrame, lo: int, hi: int) -> pd.DataFrame:
-    """[lo, hi) 구간의 심볼별 (프린트 수, 거래대금). 무체결 분은 세지 않는다."""
-    d = day_bars[(day_bars["ts_ms"] >= lo) & (day_bars["ts_ms"] < hi)]
+    """**내용 구간** [lo, hi) 의 심볼별 (프린트 수, 거래대금). 무체결 분은 세지 않는다.
+
+    `ts_ms` 는 종료 시각 라벨이라 내용 `[lo, hi)` 는 라벨 `(lo, hi]` 다 (docs/12 §6.1).
+    """
+    d = day_bars[(day_bars["ts_ms"] > lo) & (day_bars["ts_ms"] <= hi)]
     vol = pd.to_numeric(d["vol_qu"], errors="coerce").fillna(0)
     d = d[vol.reindex(d.index) >= PRINT_MIN_VOL_QU]
     if len(d) == 0:

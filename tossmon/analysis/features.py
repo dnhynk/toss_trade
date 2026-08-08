@@ -6,9 +6,23 @@
 
 컷오프 (A1 §1)
     include_t0=False (기본, 연구용) : `ts_ms <  t0_ms` — T0 봉 자체도 제외.
-        근거: T0 봉의 종가·거래량은 그 분이 끝난 뒤에만 관측되므로 T0 시점 판단에 쓸 수 없다.
     include_t0=True  (W4 실시간)    : `ts_ms <= t0_ms` — T0 봉 종료 시점에 판정하므로 합법.
     랭킹도 동일 규칙(`snap_ms`)을 적용한다.
+
+    **근거 정정 (2026-08-09, docs/47 §5).** 예전 근거는 *"T0 봉의 종가·거래량은 그 분이
+    끝난 뒤에만 관측되므로 T0 시점 판단에 쓸 수 없다"* 였다. 이건 **시작 시각 라벨 전제**라
+    성립하지 않는다 — `candles_1m.ts_ms` 는 **종료 시각 라벨**이고(사전등록 §6.1,
+    docs/36 §1) 라벨 `t0` 인 봉은 `[t0−60초, t0)` 를 담아 **`t0` 에 이미 완결**돼 있다.
+    종료 라벨에서 두 모드의 실제 성격은 문서와 **반대**다:
+        `True`  = **정확히 맞다** (t0 시점에 가용한 정보와 일치)
+        `False` = **1봉(60초) 과보수** — 쓸 수 있는 봉을 버린다. 누출은 원리적으로 불가능
+                  (`ts < t0` 든 `ts <= t0` 든 남는 내용은 전부 t0 이전, docs/36 §3-1)
+    그 결과 `cutoff_lag_min` 은 `False` 모드에서 **구조적으로 1 이상**이 된다.
+
+    **산술은 일부러 그대로 뒀다.** 사전등록 §2.1 P1 '예측 1a' 가 문언으로
+    "엄격 컷오프(`ts_ms < t0_ms`)" 를 박고 있어 `False` 모드를 `<=` 로 바꾸는 것은
+    **가설 문언 변경 = §9 개정 사안**이다. **산술 변경은 §9 개정 후 별도 태스크**다
+    (사용자 결정 (B), 순서는 W7 개정 → 코드. docs/47 §5).
 
 반환값은 항상 `dict[str, float]` (bool 은 0.0/1.0, 미가용은 NaN). 키 집합은 입력 가용성과
 무관하게 **항상 동일**하다 — 하류(`detector.precursor_score`)가 키 존재를 가정할 수 있어야
@@ -25,6 +39,7 @@ import pandas as pd
 from ..api.models import SessionWindow, UsMarketDay
 from .baselines import (MIN_MS, curve_key, curve_locate, daily_volume_z,
                         rvol_series, session_vwap_u, session_windows, true_range_u)
+from .session import bar_start_ms
 
 DEFAULT_WINDOWS_MIN = (5, 15, 30, 60)
 #: `vol_z_{w}` 비교 기준 구간 길이(분) — 윈도우 직전 구간
@@ -51,7 +66,11 @@ _NAN = float("nan")
 # --------------------------------------------------------------------------- #
 def cut_frame(df: pd.DataFrame, t0_ms: int, ts_col: str = "ts_ms", *,
               include_t0: bool = False) -> pd.DataFrame:
-    """A1 §1 컷오프 적용. 이 모듈의 모든 입력은 반드시 여기를 통과한다."""
+    """A1 §1 컷오프 적용. 이 모듈의 모든 입력은 반드시 여기를 통과한다.
+
+    종료 라벨에서 `include_t0=False` 는 **1봉 과보수**다(누출 아님, 모듈 docstring 참조).
+    **산술 변경은 사전등록 §9 개정 후 별도 태스크** — 여기서 바꾸지 마라 (docs/47 §5).
+    """
     if df is None or len(df) == 0:
         return df if df is not None else pd.DataFrame()
     mask = (df[ts_col] <= t0_ms) if include_t0 else (df[ts_col] < t0_ms)
@@ -82,13 +101,18 @@ def _mean_std(vals: list[float]) -> tuple[float, float]:
 
 
 def _minute_volumes(pre: pd.DataFrame, t_from: int, t_to: int) -> list[float]:
-    """[t_from, t_to) 의 **분 단위** 거래량. 봉이 없는 분은 0 (미체결)."""
+    """**내용 구간** [t_from, t_to) 의 분 단위 거래량. 봉이 없는 분은 0 (미체결).
+
+    `t_from`/`t_to` 는 **거래가 일어난 시각**의 구간이지 라벨 구간이 아니다.
+    슬롯 i = `[t_from + i·60초, t_from + (i+1)·60초)` 의 내용을 담은 봉은 **그 슬롯
+    끝에 라벨된 봉**이므로(종료 라벨, docs/12 §6.1), 라벨로는 `(t_from, t_to]` 를 모은다.
+    """
     if t_to <= t_from or pre.empty:
         return []
     have = {int(t): int(v) for t, v in zip(pre["ts_ms"].tolist(), pre["vol_qu"].tolist())
-            if t_from <= int(t) < t_to}
+            if t_from < int(t) <= t_to}
     n = (t_to - t_from) // MIN_MS
-    return [float(have.get(t_from + i * MIN_MS, 0)) for i in range(n)]
+    return [float(have.get(t_from + (i + 1) * MIN_MS, 0)) for i in range(n)]
 
 
 DAY_MS = 86_400_000
@@ -106,18 +130,20 @@ def market_day_spans(calendar) -> list[tuple[int, int, str]]:
 
 def assign_market_days(ts_list: list[int],
                        spans: list[tuple[int, int, str]]) -> list[str | None]:
-    """각 ts 를 매매일 `date` 로 매핑. 캘린더 밖이면 None. (이진탐색, O(n log d))
+    """각 **캔들 라벨** ts 를 매매일 `date` 로 매핑. 캘린더 밖이면 None. (O(n log d))
 
     **UTC 날짜로 묶으면 안 된다** — 겨울(EST)에는 애프터장이 UTC 자정을 넘어 하나의
     매매일이 두 UTC 날짜로 쪼개진다 (감사 M-3, docs/07 §3.1a).
+    소속은 라벨이 아니라 **봉이 담는 구간**으로 판정한다 (docs/12 §6.1).
     """
     if not spans:
         return [None] * len(ts_list)
     starts = [s[0] for s in spans]
     out: list[str | None] = []
     for t in ts_list:
-        j = bisect_right(starts, t) - 1
-        out.append(spans[j][2] if (j >= 0 and spans[j][0] <= t < spans[j][1]) else None)
+        b = bar_start_ms(t)
+        j = bisect_right(starts, b) - 1
+        out.append(spans[j][2] if (j >= 0 and spans[j][0] <= b < spans[j][1]) else None)
     return out
 
 
@@ -129,18 +155,20 @@ def _locate_day_start(cutoff: int, calendar) -> int:
     호출부는 캘린더를 주는 것이 원칙이며, 폴백 사용 사실은
     `day_grouping_calendar` 피처로 드러난다.
     """
+    b = bar_start_ms(cutoff)                       # 소속은 봉이 담는 구간으로 (§6.1)
     for start_ms, end_ms, _date in market_day_spans(calendar):
-        if start_ms <= cutoff < end_ms:
+        if start_ms <= b < end_ms:
             return start_ms
-    return (cutoff // DAY_MS) * DAY_MS
+    return (b // DAY_MS) * DAY_MS
 
 
 def _first_bar_vol_z_cross(pre: pd.DataFrame, day_lo: int, t_hi: int,
                            thr: float) -> int | None:
-    """매매일 내에서 **봉 단위** 로그거래량 z 가 `thr` 을 처음 넘은 봉의 ts_ms.
+    """매매일 내에서 **봉 단위** 로그거래량 z 가 `thr` 을 처음 넘은 봉의 ts_ms(라벨).
 
     누적 RVOL 과 달리 세션 상대량이 아니라 자기 이력(직전 240분) 대비이므로
     세션을 넘어 비교해도 정의가 일관된다 (프리마켓 전조 → 정규장 T0 를 잡을 수 있다).
+    `t_hi` 는 **내용 구간**의 끝(= 마지막 봉의 라벨)이다.
     """
     lo = day_lo - VOL_Z_BASELINE_MIN * MIN_MS
     vals = _minute_volumes(pre, lo, t_hi)
@@ -155,7 +183,7 @@ def _first_bar_vol_z_cross(pre: pd.DataFrame, day_lo: int, t_hi: int,
         var = max(0.0, s2 / n_base - mean * mean) * n_base / (n_base - 1)
         sd = math.sqrt(var)
         if sd > 0 and (logs[i] - mean) / sd >= thr:
-            return lo + i * MIN_MS
+            return lo + (i + 1) * MIN_MS       # 슬롯 i 를 담은 봉의 **라벨**
         s += logs[i] - logs[i - n_base]
         s2 += logs[i] * logs[i] - logs[i - n_base] * logs[i - n_base]
     return None
@@ -167,10 +195,11 @@ def _locate_session_start(cutoff: int, curve, calendar) -> int | None:
         loc = curve_locate(curve, cutoff, calendar=calendar)
         if loc is not None:
             return loc[2]
+    b = bar_start_ms(cutoff)                       # 소속은 봉이 담는 구간으로 (§6.1)
     for md in (calendar or []):
         for name in ("day", "pre", "regular", "after"):
             w = getattr(md, name)
-            if w is not None and w.start_ms <= cutoff < w.end_ms:
+            if w is not None and w.start_ms <= b < w.end_ms:
                 return w.start_ms
     return None
 
@@ -238,8 +267,9 @@ def extract_precursor_features(df_1m: pd.DataFrame, rankings: pd.DataFrame,
                      sess_start)
     # 사전등록 §7-e: 분할 매매일이면 전일 종가 비교 자체가 무의미하다.
     cutoff_day = None
+    cutoff_b = bar_start_ms(cutoff)                # 소속은 봉이 담는 구간으로 (§6.1)
     for _lo, _hi, _d in market_day_spans(calendar):
-        if _lo <= cutoff < _hi:
+        if _lo <= cutoff_b < _hi:
             cutoff_day = _d
             break
     if split_dates and cutoff_day is not None and cutoff_day in split_dates:
@@ -286,11 +316,12 @@ def feature_names(windows_min: tuple[int, ...] = DEFAULT_WINDOWS_MIN) -> list[st
 # 거래량 피처
 # --------------------------------------------------------------------------- #
 def _expected_window_vol(curve, calendar, t_from: int, t_to: int) -> float:
-    """곡선 기준 [t_from, t_to) 기대 거래량 합. 곡선에 없는 분은 건너뛴다."""
+    """곡선 기준 **내용 구간** [t_from, t_to) 기대 거래량 합. 곡선에 없는 분은 건너뛴다."""
     if curve is None or curve.empty:
         return _NAN
     total, seen = 0.0, 0
-    for ts in range(t_from, t_to, MIN_MS):
+    # 슬롯 [ts−60초, ts) 를 담은 봉의 라벨은 `ts` 다 — `curve_key` 는 라벨을 받는다 (§6.1)
+    for ts in range(t_from + MIN_MS, t_to + MIN_MS, MIN_MS):
         key = curve_key(curve, ts, calendar=calendar)   # (session, len, minute) — M-4
         if key is not None and key in curve.index:
             total += float(curve.loc[key])
@@ -301,7 +332,9 @@ def _expected_window_vol(curve, calendar, t_from: int, t_to: int) -> float:
 def _volume_features(feats: dict, pre: pd.DataFrame, cutoff: int,
                      windows_min: tuple[int, ...], curve, calendar, baseline,
                      sess_start: int | None) -> None:
-    t_hi = cutoff + MIN_MS                     # cutoff 봉 포함
+    # 창은 **내용 구간**으로 잡는다. cutoff 봉의 내용은 `[cutoff−60초, cutoff)` 이므로
+    # 그 봉까지 포함하는 창의 끝은 `cutoff` 다 (종료 라벨, docs/12 §6.1).
+    t_hi = cutoff
     for w in windows_min:
         t_lo = t_hi - w * MIN_MS
         vols = _minute_volumes(pre, t_lo, t_hi)
@@ -352,7 +385,8 @@ def _volume_features(feats: dict, pre: pd.DataFrame, cutoff: int,
     if curve is not None and not curve.empty:
         rv = rvol_series(pre, curve, calendar=calendar).dropna()
         if sess_start is not None:
-            rv = rv[rv.index >= sess_start]
+            # 라벨 `sess_start` 인 봉은 내용이 **직전** 세션의 마지막 분이다 (§6.1)
+            rv = rv[rv.index > sess_start]
         if not rv.empty:
             feats["rvol_at_cutoff"] = float(rv.iloc[-1])
             for thr in RVOL_CROSS_THRESHOLDS:
@@ -408,10 +442,11 @@ def _price_features(feats: dict, pre: pd.DataFrame, cutoff: int, close_cut: int,
         feats["nr_ratio"] = r15 / r60
 
     lo = sess_start if sess_start is not None else cutoff - FALLBACK_SESSION_MIN * MIN_MS
-    sess = pre[pre["ts_ms"] >= lo]
+    # 라벨 `lo` 인 봉은 내용이 세션 시작 **전**이라 세션 밖이다 (docs/12 §6.1)
+    sess = pre[pre["ts_ms"] > lo]
     if sess.empty:
         return
-    vw = session_vwap_u(sess, SessionWindow(start_ms=lo, end_ms=cutoff + MIN_MS))
+    vw = session_vwap_u(sess, SessionWindow(start_ms=lo, end_ms=cutoff))
     if not vw.empty and int(vw.iloc[-1]) > 0:
         feats["dist_from_vwap"] = close_cut / int(vw.iloc[-1]) - 1.0
     hod = int(sess["high_u"].max())
@@ -451,7 +486,7 @@ def _print_activity_features(feats: dict, pre: pd.DataFrame, cutoff: int,
     과거 백필 경로(연구)는 **봉의 부재**로 같은 상태를 복원한다. 해상도가 1분이고
     봉이 있어도 체결이 1건뿐일 수 있다는 한계가 있다 (docs/07 §5.3).
     """
-    t_hi = cutoff + MIN_MS
+    t_hi = cutoff                              # 내용 구간의 끝 (§6.1, `_volume_features` 동일)
     for w in windows_min:
         vols = _minute_volumes(pre, t_hi - w * MIN_MS, t_hi)
         if vols:
@@ -465,11 +500,13 @@ def _print_activity_features(feats: dict, pre: pd.DataFrame, cutoff: int,
 
     if sess_start is None:
         return
-    in_sess = [t for t in ts if t >= sess_start]
+    in_sess = [t for t in ts if t > sess_start]     # 라벨 sess_start 봉은 직전 세션 (§6.1)
     if in_sess:
         feats["session_print_age_min"] = float((cutoff - in_sess[0]) // MIN_MS)
-        # first_print 프록시: 세션 시작 후 첫 체결까지 걸린 시간 (작을수록 활발)
-        feats["session_first_print_lead_min"] = float((in_sess[0] - sess_start) // MIN_MS)
+        # first_print 프록시: 세션 시작 후 첫 체결까지 걸린 시간 (작을수록 활발).
+        # 첫 분부터 체결이 있으면 0 이어야 하므로 **봉이 담는 구간의 시작**으로 잰다.
+        feats["session_first_print_lead_min"] = float(
+            (bar_start_ms(in_sess[0]) - sess_start) // MIN_MS)
     prior = _minute_volumes(pre, sess_start - 24 * 60 * MIN_MS, sess_start)
     if prior:
         feats["dormant_ratio_prior_day"] = sum(1 for v in prior if v <= 0) / len(prior)
@@ -554,7 +591,7 @@ def _history_features(feats: dict, pre: pd.DataFrame, cutoff: int,
             RuntimeWarning, stacklevel=3)
 
     if ts:
-        keys = day_of if covered else [str(t // DAY_MS) for t in ts]
+        keys = day_of if covered else [str(bar_start_ms(t) // DAY_MS) for t in ts]
         feats["hist_days_available"] = float(len(set(keys)))
 
     if prior_events is not None and len(prior_events):
@@ -567,16 +604,17 @@ def _history_features(feats: dict, pre: pd.DataFrame, cutoff: int,
         # 프록시: 컷오프 **이전 매매일들** 중 일중 저가→고가 상승률이 임계 이상이었던 날 수
         lo_ms = cutoff - PRIOR_EVENT_LOOKBACK_DAYS * DAY_MS
         if covered:
-            cur = next((d for (s, e, d) in spans if s <= cutoff < e), None)
+            cut_b = bar_start_ms(cutoff)           # 소속은 봉이 담는 구간으로 (§6.1)
+            cur = next((d for (s, e, d) in spans if s <= cut_b < e), None)
             buckets: dict[str, list[int]] = {}
             for t, d in zip(ts, day_of):
                 if d is not None and d != cur and lo_ms <= t < cutoff:
                     buckets.setdefault(d, []).append(t)
         else:
-            cur = str(cutoff // DAY_MS)
+            cur = str(bar_start_ms(cutoff) // DAY_MS)
             buckets = {}
             for t in ts:
-                d = str(t // DAY_MS)
+                d = str(bar_start_ms(t) // DAY_MS)
                 if d != cur and lo_ms <= t < cutoff:
                     buckets.setdefault(d, []).append(t)
 
@@ -601,5 +639,5 @@ def _history_features(feats: dict, pre: pd.DataFrame, cutoff: int,
         lo = sess_start if sess_start is not None \
             else cutoff - FALLBACK_SESSION_MIN * MIN_MS
         vol = sum(int(v) for t, v in zip(pre["ts_ms"].tolist(), pre["vol_qu"].tolist())
-                  if int(t) >= lo)
+                  if int(t) > lo)          # 라벨 `lo` 봉은 세션 시작 전 내용 (§6.1)
         feats["float_rotation_pre"] = vol / int(shares_outstanding_qu)

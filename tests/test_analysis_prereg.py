@@ -172,20 +172,23 @@ def _two_day_frame(prev_regular_close: int, prev_after_close: int,
     cal = synth.make_calendar(2, start="2026-06-01")
     prev, cur = cal[0], cal[1]
     rows: list[dict] = []
+    # 봉 라벨은 **종료 시각**이다 (docs/12 §6.1). 라벨 `regular.start_ms` 인 봉은
+    # 프리마켓 마지막 분이고, 라벨 `after.start_ms` 인 봉은 정규장 **종가 경매**다 —
+    # 세션 첫 분을 뜻하려면 라벨이 `start + 1분` 이어야 한다.
     for m in range(3):
-        ts = prev.regular.start_ms + m * MIN_MS
+        ts = prev.regular.start_ms + (m + 1) * MIN_MS
         c = prev_regular_close
         rows.append({"symbol": "S", "ts_ms": ts, "open_u": c, "high_u": c,
                      "low_u": c, "close_u": c, "vol_qu": 1_000_000})
     for m in range(3):
-        ts = prev.after.start_ms + m * MIN_MS
+        ts = prev.after.start_ms + (m + 1) * MIN_MS
         c = prev_after_close
         rows.append({"symbol": "S", "ts_ms": ts, "open_u": c, "high_u": c,
                      "low_u": c, "close_u": c, "vol_qu": 1_000_000})
     # 평가일 봉은 **전부 같은 종가**다 — 그래야 윈도우 조건(+15%/30분)이 절대 걸리지 않고
     # 당일 조건(+30%)만 시험된다. 첫 봉의 시가만 day_open 으로 둔다(금지된 대체의 미끼).
     for m in range(5):
-        ts = cur.regular.start_ms + m * MIN_MS
+        ts = cur.regular.start_ms + (m + 1) * MIN_MS
         rows.append({"symbol": "S", "ts_ms": ts,
                      "open_u": day_open if m == 0 else day_close, "high_u": day_close,
                      "low_u": min(day_open, day_close) if m == 0 else day_close,

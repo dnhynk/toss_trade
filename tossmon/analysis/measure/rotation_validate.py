@@ -163,8 +163,9 @@ def main() -> int:
     try:
         for sym, grp in ev.groupby("symbol", sort=True):
             event_days = set(grp["market_date"])
+            # 봉의 날짜 소속은 라벨이 아니라 담는 구간으로 (docs/12 §6.1)
             have = {r[0] for r in conn.execute(
-                "SELECT DISTINCT date(ts_ms/1000,'unixepoch') FROM candles_1m "
+                "SELECT DISTINCT date((ts_ms-60000)/1000,'unixepoch') FROM candles_1m "
                 "WHERE symbol=?", (sym,))}
             for _i, e in grp.iterrows():
                 i0 = idx.get(e["market_date"])
@@ -202,9 +203,10 @@ def main() -> int:
             wins = B.session_windows(md)
             lo = int(wins[0][1].start_ms) - (max_scan + 2 * WINDOW_MIN) * MIN_MS
             hi = int(wins[-1][1].end_ms)
+            # 내용 구간 [lo, hi) 를 담은 봉은 라벨 (lo, hi] 다 (docs/12 §6.1)
             bars = pd.read_sql_query(
                 "SELECT symbol, ts_ms, close_u, vol_qu FROM candles_1m "
-                "WHERE ts_ms>=? AND ts_ms<? ORDER BY ts_ms", conn, params=(lo, hi))
+                "WHERE ts_ms>? AND ts_ms<=? ORDER BY ts_ms", conn, params=(lo, hi))
             if bars.empty:
                 continue
             grid = DayGrid(bars)
@@ -218,8 +220,9 @@ def main() -> int:
                 fill = job["fill"]
                 if fill != fill and reg is not None:      # controls: compute own fill
                     nmin = (reg.end_ms - reg.start_ms) // MIN_MS
-                    nb = int(((sb["ts_ms"] >= reg.start_ms)
-                              & (sb["ts_ms"] < reg.end_ms)).sum())
+                    # 정규장 소속은 봉이 담는 구간으로 (docs/12 §6.1)
+                    nb = int(((sb["ts_ms"] > reg.start_ms)
+                              & (sb["ts_ms"] <= reg.end_ms)).sum())
                     fill = nb / nmin if nmin else float("nan")
                 r.update({"symbol": job["symbol"], "market_date": date,
                           "is_event": job["is_event"], "period": job["period"],

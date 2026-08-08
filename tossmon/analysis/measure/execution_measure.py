@@ -199,7 +199,10 @@ def main() -> int:
             "SELECT symbol, ts_ms, close_u, high_u, low_u, vol_qu FROM candles_1m "
             "WHERE symbol IN (%s) ORDER BY symbol, ts_ms" % ",".join("?" * len(syms)),
             conn, params=syms)
-        cm["minute"] = cm["ts_ms"] // MIN_MS
+        # 캔들 ↔ 호가 스냅 **교차축 조인**. 캔들은 종료 시각 라벨이라 라벨 T 인 봉의
+        # 내용은 분 `T//60000 - 1` 이다 (docs/12 §6.1) — 라벨을 그대로 분으로 쓰면
+        # 봉이 한 분 미래의 슬롯에 붙는다. 스냅의 `snap_ms` 는 진짜 순간이라 보정 없음.
+        cm["minute"] = (cm["ts_ms"] - MIN_MS) // MIN_MS
         prof = []
         for sym, g in cm.groupby("symbol"):
             g = g.sort_values("ts_ms")
@@ -208,9 +211,14 @@ def main() -> int:
             ret5 = (g["close_u"] / g["close_u"].shift(5) - 1).abs()
             vol5 = g["vol_qu"].rolling(5, min_periods=1).sum()
             if STRICT_PRIOR:
-                # A snapshot inside minute m would otherwise be matched to the bar
-                # that CLOSES at m+1 - up to 60 s of contemporaneous leakage. Shifting
-                # one more bar makes the value depend only on closes up to m-1.
+                # A snapshot inside minute m is matched to the bar COVERING minute m
+                # (see the label fix above) - contemporaneous. Shifting one bar makes
+                # the value depend only on bars covering up to minute m-1.
+                #
+                # The old comment here read "the bar that CLOSES at m+1", which assumed
+                # a START-time label; under the end-time label (docs/12 6.1) the bar was
+                # already one minute in the past, so this shift used to push the value
+                # TWO minutes back. Fixing the join above restores it to one.
                 ret5, vol5 = ret5.shift(1), vol5.shift(1)
             prof.append(pd.DataFrame({"symbol": sym, "minute": g["minute"],
                                       "abs_ret_5m": ret5, "vol5_qu": vol5}))
