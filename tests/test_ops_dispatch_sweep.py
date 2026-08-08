@@ -166,10 +166,15 @@ def test_control_never_sent_heartbeat_is_not_death():
     silent = facts(last_heartbeat_at=None)
     assert DS.heartbeat_axis(silent, NOW, STALE) == "never"
     assert DS.heartbeat_axis(facts(last_heartbeat_at=mins(90)), NOW, STALE) == "stale"
-    # 미발신 + 브랜치 정지는 죽음이 아니라 **판정 불가**다.
-    v = verdict(silent, git(branch="b"))
+    # 미발신 + 브랜치 정지는 죽음(`PRESUMED_DEAD`)이 아니다. 무엇으로 부를지는 **경과**가
+    # 가른다 (08-08 에 추가된 축. 아래 §12 참조) — 정상 소요 범위 안이면 판정 불가다.
+    young = facts(last_heartbeat_at=None, dispatched_at=mins(30))
+    v = verdict(young, git(branch="b"))
     assert v.code == "UNKNOWN" and v.kind.is_unknown
     assert v.code != "PRESUMED_DEAD"
+    # 10시간 방치된 같은 모양은 판정 불가가 아니라 **조치**다.
+    assert verdict(silent, git(branch="b")).code == "NO_SIGNAL_STALLED"
+    assert verdict(silent, git(branch="b")).code != "PRESUMED_DEAD"
 
 
 def test_control_a_straggler_heartbeat_from_an_older_dispatch_does_not_mask_a_hung_retry():
@@ -266,7 +271,7 @@ def test_summary_counts_unknown_separately_from_clean():
     rows = [DS.Row(facts=f, git=g, verdict=verdict(f, g)) for f, g in (
         CONTROLS["하트비트 신선"],
         CASE_DONE_UNCOMMITTED,
-        (facts(last_heartbeat_at=None), git(branch="b")),          # UNKNOWN
+        (facts(last_heartbeat_at=None, dispatched_at=mins(30)), git(branch="b")),   # UNKNOWN
     )]
     s = DS.summarize(rows)
     assert s == {**s, "swept": 3, "needs_human": 2, "unknown": 1}
@@ -531,18 +536,30 @@ def test_a_ready_task_is_not_swept_as_a_live_dispatch():
 # 9. 출력 — 사람이 읽는 표에 unknown 과 조치가 빠지지 않는가
 # --------------------------------------------------------------------------- #
 def _rows() -> list[DS.Row]:
-    picked = [CASE_REPORT_LOST, CASE_DONE_UNCOMMITTED,
-              CONTROLS["하트비트 신선"], (facts(last_heartbeat_at=None), git(branch="b"))]
+    picked = [CASE_REPORT_LOST, CASE_DONE_UNCOMMITTED, CONTROLS["하트비트 신선"],
+              (facts(last_heartbeat_at=None, dispatched_at=mins(30)), git(branch="b"))]
     return [DS.Row(facts=f, git=g, verdict=verdict(f, g)) for f, g in picked]
 
 
 def test_the_table_names_the_unknown_count_and_the_action():
     rows = _rows()
-    text = DS.render(rows, skipped=88, summary=DS.summarize(rows))
-    assert "판정 불가(unknown) 1건" in text
+    text = DS.render(rows, skipped=88, summary=DS.summarize(rows), now=NOW)
+    assert "확인(CHECK, 못 잼) 1건" in text
+    assert "★ 조치(ALERT) 2건" in text, "아침에 한 줄만 보고 갈리려면 조치 건수가 앞에 와야 한다"
     assert "건너뜀 88건" in text
     assert "이상 없음" in text and "못 봤다" in text
     assert "게이트" in text, "조치가 안 적히면 표는 읽히고 잊힌다"
+
+
+def test_the_table_shows_elapsed_time_so_a_human_can_see_five_hours():
+    """08-08 아침에 사람이 못 본 것이 바로 이 숫자다 — 표에 안 찍히면 축이 있어도 안 읽힌다."""
+    stuck = facts(last_heartbeat_at=None, dispatched_at=mins(303))
+    rows = [DS.Row(facts=stuck, git=git(branch="b"),
+                   verdict=verdict(stuck, git(branch="b")))]
+    text = DS.render(rows, skipped=0, summary=DS.summarize(rows), now=NOW)
+    assert "5.0h" in text, text
+    assert DS.elapsed_label(facts(dispatched_at=mins(12)), NOW) == "12m"
+    assert DS.elapsed_label(facts(dispatched_at=None), NOW) == "?"
 
 
 def test_the_json_carries_every_axis_for_each_row():
@@ -720,3 +737,409 @@ def test_the_run_id_comes_from_ops_config_when_the_flag_is_absent():
     cfg = load_ops_config(pathlib.Path("ops/ops_config.example.yaml"))
     assert cfg.orchestration_run_id.startswith("run_"), (
         "예시 설정에 Run id 가 없으면 무인 실행이 첫날 조용히 멈춘다")
+
+
+# --------------------------------------------------------------------------- #
+# 12. 08-08 아침에 없어서 갈리지 않은 축 셋 — 경과 / 머지 / 소유
+#
+# 이 절의 성공 기준은 **"조용해졌다"가 아니라 "갈렸다"** 다. 세 축이 전부 판정을 조용하게
+# 만드는 방향이라, 대조군이 같이 조용해지면 그건 수정이 아니라 은폐다. 그래서 다섯 픽스처를
+# 한 표에 넣고 **둘은 반드시 시끄럽고 셋은 반드시 조용한지**를 같이 잰다.
+#
+# 수정 전(2026-08-08 실행): 다섯이 전부 `needs_human`, 그리고 서로 **두 코드로만** 갈렸다.
+#
+#     대조군A 진짜 막힘 (5.05h)          UNKNOWN                     True
+#     대조군B 진짜 미커밋                 DONE_UNCOMMITTED            True
+#     오탐① 갓 출발 (20분)               UNKNOWN                     True   ← A 와 같은 글자
+#     오탐② 이미 main 에 있음             CLOSED_NO_REPORT_COMMITTED  True
+#     오탐③ 살아 있는 소유자               DONE_UNCOMMITTED            True   ← B 와 같은 글자
+# --------------------------------------------------------------------------- #
+#: 사용자가 5시간 멈춤을 발견한 시각. 08-07 21:10Z = 08-08 06:10 KST(아침).
+MORNING = dt.datetime(2026, 8, 7, 21, 10, tzinfo=UTC)
+OVERDUE = dt.timedelta(minutes=DS.DEFAULT_OVERDUE_MIN)
+
+
+def morning_verdict(f: DS.DispatchFacts, g: DS.GitFacts) -> DS.Verdict:
+    return DS.judge(f, g, MORNING, STALE, OVERDUE)
+
+
+#: ① 대조군 A — **진짜 막힌 워커**. 실측 `task_c3ae5a682e95`(W3): 16:07:13Z 디스패치,
+#: 하트비트 한 번도 없음, 브랜치 정지. 사용자가 21:10Z 에 발견했을 때 5.05시간이었다.
+#: (그 뒤 재시작돼 22:53:30Z 에 완료됐다 — 즉 워커는 살아 있었고 **입력이 안 들어간** 것이다.)
+MORNING_STALLED = (
+    facts(task_id="task_c3ae5a682e95", title="W3: 57.6% 가 시장인가 에피소드 경계인가",
+          dispatch_status="dispatched",
+          dispatched_at=dt.datetime(2026, 8, 7, 16, 7, 13, tzinfo=UTC),
+          last_heartbeat_at=None),
+    git(branch="feat/analyzer", commits_since=0),
+)
+
+#: ② 대조군 B — **진짜 미커밋**. 살아 있는 소유자 없음(`live_owner=None`) + main 에 없음.
+#: 이것이 조용해지면 08-07 W4 사고(보고는 왔는데 376줄이 워크트리에만)가 다시 새어나간다.
+MORNING_REAL_UNCOMMITTED = (
+    facts(task_id="task_real_uncommitted", title="닫혔는데 산출물이 워크트리에만",
+          task_status="completed", closed=True, reported=True,
+          manifest=("docs/99_real.md",), manifest_present=True,
+          dispatched_at=dt.datetime(2026, 8, 7, 19, 0, tzinfo=UTC),
+          last_heartbeat_at=dt.datetime(2026, 8, 7, 19, 30, tzinfo=UTC)),
+    git(branch="w9-x", commits_since=0, main_ref="main",
+        touched_paths=("docs/99_real.md",), uncommitted_manifest=("docs/99_real.md",),
+        live_owner=None),
+)
+
+#: ③ 오탐 — **갓 출발한 워커**. 대조군 A 와 하트비트·브랜치가 **완전히 같다**. 경과만 다르다.
+MORNING_JUST_STARTED = (
+    facts(task_id="task_just_started", title="방금 디스패치된 워커",
+          dispatch_status="dispatched",
+          dispatched_at=MORNING - dt.timedelta(minutes=20), last_heartbeat_at=None),
+    git(branch="w9-x", commits_since=0),
+)
+
+#: ④ 오탐 — **이미 main 에 들어간 산출물**. 실측 `task_4c7447a2597a`(W5): 보고 없이 닫혔고
+#: 디스패치 이후 커밋 37건인데 `git log HEAD --not main` 이 **0건**이다(실측). 사람이 할 일이 없다.
+MORNING_ALREADY_MERGED = (
+    facts(task_id="task_4c7447a2597a", title="W5: 결번된 아침 리포트 따라잡기",
+          task_status="completed", closed=True, reported=False, dispatch_status="failed",
+          dispatched_at=dt.datetime(2026, 8, 7, 0, 37, 46, tzinfo=UTC),
+          last_heartbeat_at=dt.datetime(2026, 8, 7, 0, 59, 53, tzinfo=UTC),
+          capability_revoked_at=dt.datetime(2026, 8, 7, 10, 29, 36, tzinfo=UTC)),
+    git(branch="w5-ops", commits_since=37, main_ref="main", unmerged_since=0),
+)
+
+#: ⑤ 오탐 — **살아 있는 다음 디스패치가 그 경로의 주인**. 실측 `task_e265dd5e2c83`(W3):
+#: 15:02:29Z~15:48:49Z. 그 워크트리(w3-analyzer)에는 16:07:13Z 에 다음 태스크가 들어와 있었고
+#: 미커밋 `docs/44_tick_stages.md` 는 **2분 전에 수정됐다**(224줄 추가).
+MORNING_LIVE_OWNER = (
+    facts(task_id="task_e265dd5e2c83", title="W3: 초 막대 위에서 1~3단계",
+          task_status="completed", closed=True, reported=True,
+          manifest=("docs/44_tick_stages.md",), manifest_present=True,
+          dispatched_at=dt.datetime(2026, 8, 7, 15, 2, 29, tzinfo=UTC),
+          last_heartbeat_at=dt.datetime(2026, 8, 7, 15, 23, 29, tzinfo=UTC)),
+    git(branch="feat/analyzer", commits_since=3, main_ref="main", unmerged_since=3,
+        touched_paths=("docs/44_tick_stages.md",),
+        live_owner=DS.LiveOwner("task_c3ae5a682e95",
+                                dt.datetime(2026, 8, 7, 16, 7, 13, tzinfo=UTC)),
+        live_owned_manifest=("docs/44_tick_stages.md",)),
+)
+
+MORNING_FIVE = {
+    "대조군A 진짜 막힘 (5.05h)": (MORNING_STALLED, "NO_SIGNAL_STALLED", DS.GRADE_ALERT),
+    "대조군B 진짜 미커밋": (MORNING_REAL_UNCOMMITTED, "DONE_UNCOMMITTED", DS.GRADE_ALERT),
+    "오탐① 갓 출발 (20분)": (MORNING_JUST_STARTED, "UNKNOWN", DS.GRADE_CHECK),
+    "오탐② 이미 main 에 있음": (MORNING_ALREADY_MERGED, "CLOSED_NO_REPORT_MERGED", DS.GRADE_NOTE),
+    "오탐③ 살아 있는 소유자": (MORNING_LIVE_OWNER, "DONE_UNCOMMITTED_LIVE", DS.GRADE_NOTE),
+}
+
+
+def test_before_the_three_axes_the_two_controls_and_two_false_alarms_are_the_same_glyph():
+    """고치기 전 재현 — 세 축이 없으면 대조군과 오탐이 **같은 코드**로 나온다.
+
+    두 축(하트비트·브랜치)만으로 판정하면 무엇을 붙여도 A 와 ①, B 와 ③ 을 못 가른다.
+    코드가 같으면 등급도 같고, 등급이 같으면 아침에 갈 수 없다.
+    """
+    def two_axis_view(f: DS.DispatchFacts, g: DS.GitFacts) -> tuple[str, str]:
+        return DS.heartbeat_axis(f, MORNING, STALE), DS.branch_axis(g)
+
+    a, one = MORNING_STALLED, MORNING_JUST_STARTED
+    assert two_axis_view(*a) == two_axis_view(*one) == ("never", "still")
+    b, three = MORNING_REAL_UNCOMMITTED, MORNING_LIVE_OWNER
+    assert two_axis_view(*b)[0] == two_axis_view(*three)[0] == "stale"
+    # 그리고 실제로 08-08 아침에 다섯이 전부 사람을 불렀다.
+    assert all(DS.VERDICTS[c].needs_human
+               for c in ("UNKNOWN", "DONE_UNCOMMITTED", "CLOSED_NO_REPORT_COMMITTED"))
+
+
+@pytest.mark.parametrize("name", list(MORNING_FIVE))
+def test_the_morning_five_split_into_two_alerts_two_notes_and_one_check(name):
+    (f, g), expected, grade = MORNING_FIVE[name]
+    v = morning_verdict(f, g)
+    assert v.code == expected, f"{name}: {v.code} (note={v.note})"
+    assert v.kind.grade == grade, f"{name}: 등급이 {v.kind.grade}"
+
+
+def test_the_morning_five_counted_by_grade():
+    """★ 결론 형식 — "오탐이 줄었다"가 아니라 **몇 건이 어느 등급으로 갈렸는가**."""
+    rows = [DS.Row(facts=f, git=g, verdict=morning_verdict(f, g))
+            for (f, g), _, _ in MORNING_FIVE.values()]
+    s = DS.summarize(rows)
+    assert s["by_grade"] == {DS.GRADE_ALERT: 2, DS.GRADE_CHECK: 1,
+                             DS.GRADE_NOTE: 2, DS.GRADE_NONE: 0}
+    # 수정 전에는 다섯이 전부 `needs_human` 이었다. 이제 조치는 둘이다.
+    assert s["alert"] == 2 and s["needs_human"] == 3
+    assert DS.exit_code(s) == 1, "진짜 조치 2건이 남아 있으니 종료 코드는 여전히 1이다"
+
+
+def test_the_two_controls_stay_loud_when_the_three_quieting_axes_are_all_on():
+    """★ 대조군 — 세 축을 전부 켠 채로도 **진짜 둘은 조치로 남아야 한다**."""
+    for name in ("대조군A 진짜 막힘 (5.05h)", "대조군B 진짜 미커밋"):
+        (f, g), _, _ = MORNING_FIVE[name]
+        v = morning_verdict(f, g)
+        assert v.kind.grade == DS.GRADE_ALERT, f"{name} 이 조용해졌다 — 이건 수정이 아니라 은폐다"
+
+
+def test_a_note_never_makes_the_exit_code_one():
+    """NOTE 가 종료 코드를 1로 만들면 등급을 넣은 의미가 없다 — 08-08 아침이 그 상태였다."""
+    notes = [DS.Row(facts=f, git=g, verdict=morning_verdict(f, g))
+             for name in ("오탐② 이미 main 에 있음", "오탐③ 살아 있는 소유자")
+             for (f, g), _, _ in [MORNING_FIVE[name]]]
+    s = DS.summarize(notes)
+    assert s["by_grade"][DS.GRADE_NOTE] == 2 and s["needs_human"] == 0
+    assert DS.exit_code(s) == 0
+
+
+# --- 축 ① 경과 -------------------------------------------------------------- #
+def test_age_axis_buckets():
+    assert DS.age_axis(facts(dispatched_at=mins(5)), NOW, STALE, OVERDUE) == "warming"
+    assert DS.age_axis(facts(dispatched_at=mins(60)), NOW, STALE, OVERDUE) == "normal"
+    assert DS.age_axis(facts(dispatched_at=mins(89)), NOW, STALE, OVERDUE) == "normal"
+    assert DS.age_axis(facts(dispatched_at=mins(90)), NOW, STALE, OVERDUE) == "overdue"
+    assert DS.age_axis(facts(dispatched_at=None), NOW, STALE, OVERDUE) == "unknown"
+
+
+def test_the_overdue_threshold_sits_above_every_dispatch_this_run_actually_took():
+    """문턱의 근거는 추측이 아니라 실측이다 — `run_92948a1f80a5` 최장 정상 디스패치 72.7분."""
+    longest_normal = dt.timedelta(minutes=72.7)
+    assert OVERDUE > longest_normal, "실측 최장값보다 낮으면 멀쩡한 워커가 빨개진다"
+    assert OVERDUE < dt.timedelta(hours=5), "08-08 의 5시간 멈춤보다 낮아야 잡는다"
+
+
+def test_age_alone_never_reddens_a_worker_that_is_sending_heartbeats():
+    """경과가 길어도 하트비트가 살아 있으면 건드리지 않는다 — 긴 태스크는 고장이 아니다."""
+    long_but_alive = facts(dispatched_at=mins(600), last_heartbeat_at=mins(2))
+    v = verdict(long_but_alive, git(branch="b"))
+    assert v.code == "WORKING" and v.age_axis == "overdue" and not v.kind.needs_human
+
+
+def test_age_alone_never_reddens_a_worker_whose_branch_is_moving():
+    """하트비트를 안 보내도 브랜치가 증거면 조용하다 — 08-07 W3 모양은 그대로 지킨다."""
+    v = verdict(facts(dispatched_at=mins(600), last_heartbeat_at=None),
+                git(branch="b", commits_since=2))
+    assert v.code == "WORKING_SILENT" and v.age_axis == "overdue"
+    assert not v.kind.needs_human
+
+
+def test_sabotage_removing_the_age_axis_makes_the_stalled_worker_indistinguishable():
+    """경과 축을 빼면 대조군 A 와 오탐 ① 이 다시 한 글자가 된다."""
+    (stalled, g1), _, _ = MORNING_FIVE["대조군A 진짜 막힘 (5.05h)"]
+    (young, g2), _, _ = MORNING_FIVE["오탐① 갓 출발 (20분)"]
+    assert morning_verdict(stalled, g1).code != morning_verdict(young, g2).code
+    # 사보타주: overdue 문턱을 무한대로 (= 축이 없던 상태)
+    never_overdue = dt.timedelta(days=365)
+    a = DS.judge(stalled, g1, MORNING, STALE, never_overdue)
+    b = DS.judge(young, g2, MORNING, STALE, never_overdue)
+    assert a.code == b.code == "UNKNOWN", "축을 빼면 5시간 멈춤이 갓 출발과 같아진다"
+
+
+# --- 축 ② 머지 -------------------------------------------------------------- #
+def test_merge_axis_values():
+    assert DS.merge_axis(git(commits_since=3, main_ref="main", unmerged_since=0)) == "merged"
+    assert DS.merge_axis(git(commits_since=3, main_ref="main", unmerged_since=2)) == "unmerged"
+    assert DS.merge_axis(git(commits_since=0, main_ref="main")) == "none"
+    assert DS.merge_axis(git(commits_since=3, main_ref=None)) == "unknown"
+    assert DS.merge_axis(git(commits_since=3, main_ref="main", unmerged_since=None)) == "unknown"
+    assert DS.merge_axis(DS.GitFacts(ok=False)) == "unknown"
+
+
+def test_control_an_unmergeable_repo_does_not_go_quiet():
+    """`main` 을 못 찾은 것을 '들어갔다'로 읽으면 보고 유실이 전부 사라진다."""
+    f, _ = MORNING_ALREADY_MERGED
+    no_ref = git(branch="w5-ops", commits_since=37, main_ref=None)
+    v = morning_verdict(f, no_ref)
+    assert v.code == "CLOSED_NO_REPORT_COMMITTED" and v.kind.grade == DS.GRADE_ALERT
+    assert v.merge_axis == "unknown"
+
+
+def test_a_lost_report_that_is_already_merged_still_needs_closing_but_says_so():
+    """머지됐어도 **아직 열려 있는** 디스패치는 닫아야 한다 — 조치가 사라지지는 않는다."""
+    v = verdict(facts(last_heartbeat_at=mins(90)),
+                git(branch="b", commits_since=2, main_ref="main", unmerged_since=0))
+    assert v.code == "REPORT_LOST" and v.kind.grade == DS.GRADE_ALERT
+    assert "이미 main 에 있다" in v.note and "닫기만 남았다" in v.note
+
+
+# --- 축 ③ 소유 -------------------------------------------------------------- #
+def test_owner_axis_values():
+    owner = DS.LiveOwner("task_next", NOW)
+    assert DS.owner_axis(git()) == "none"
+    assert DS.owner_axis(git(live_owner=owner)) == "live"
+    assert DS.owner_axis(git(live_owner=owner, live_owned_manifest=("a.md",))) == "held"
+
+
+def test_live_owners_picks_the_newest_dispatch_per_worktree():
+    wt = pathlib.Path("C:/wt/w3")
+    old = facts(task_id="t_old", worktree=wt, dispatched_at=mins(300),
+                dispatch_status="dispatched")
+    new = facts(task_id="t_new", worktree=wt, dispatched_at=mins(30),
+                dispatch_status="dispatched")
+    closed = facts(task_id="t_closed", worktree=wt, dispatched_at=mins(10),
+                   dispatch_status="dispatched", closed=True, task_status="completed")
+    owners = DS.live_owners([old, new, closed])
+    assert owners[wt].task_id == "t_new", "가장 최근 살아 있는 디스패치가 주인이다"
+    assert DS.live_owners([closed]) == {}, "닫힌 태스크는 소유자가 아니다"
+
+
+def test_owner_for_never_makes_a_task_its_own_owner():
+    """자기 자신을 소유자로 세면 **살아 있는 디스패치가 자기 미커밋을 전부 감춘다**."""
+    wt = pathlib.Path("C:/wt/w3")
+    me = facts(task_id="t_me", worktree=wt, dispatched_at=mins(30),
+               dispatch_status="dispatched")
+    assert DS.owner_for(me, DS.live_owners([me])) is None
+    earlier = facts(task_id="t_earlier", worktree=wt, dispatched_at=mins(300), closed=True,
+                    task_status="completed")
+    assert DS.owner_for(earlier, DS.live_owners([me])).task_id == "t_me"
+    # 나보다 **먼저** 출발한 디스패치는 내 다음 주인이 아니다.
+    later = facts(task_id="t_later", worktree=wt, dispatched_at=mins(5), closed=True,
+                  task_status="completed")
+    assert DS.owner_for(later, DS.live_owners([me])) is None
+
+
+def test_owned_by_live_needs_a_measurable_mtime(tmp_path):
+    """★ 못 재면 소유권을 주지 않는다 — 조용해지는 쪽으로 기울면 진짜 미커밋이 사라진다."""
+    import os
+    owner = DS.LiveOwner("task_next", dt.datetime(2026, 8, 7, 16, 7, 13, tzinfo=UTC))
+    (tmp_path / "docs").mkdir()
+    fresh, old = tmp_path / "docs" / "new.md", tmp_path / "docs" / "old.md"
+    for p in (fresh, old):
+        p.write_text("x", encoding="utf-8")
+    os.utime(fresh, (0, dt.datetime(2026, 8, 7, 21, 8, tzinfo=UTC).timestamp()))
+    os.utime(old, (0, dt.datetime(2026, 8, 7, 15, 30, tzinfo=UTC).timestamp()))
+    got = DS.owned_by_live(tmp_path, ("docs/new.md", "docs/old.md", "docs/gone.md"), owner)
+    assert got == ("docs/new.md",), got     # 옛것도, 없는 파일도 소유자에게 안 준다
+    assert DS.owned_by_live(tmp_path, ("docs/new.md",), None) == ()
+
+
+def test_control_a_live_owner_does_not_silence_a_path_it_did_not_touch(repo):
+    """살아 있는 디스패치가 **있기만 해서** 조용해지면 대조군 B 가 무너진다."""
+    import os
+    (repo / "docs").mkdir()
+    (repo / "docs" / "99_real.md").write_text("x" * 100, encoding="utf-8")
+    owner_start = dt.datetime(2026, 8, 7, 20, 0, tzinfo=UTC)
+    os.utime(repo / "docs" / "99_real.md",
+             (0, dt.datetime(2026, 8, 7, 19, 10, tzinfo=UTC).timestamp()))   # 소유자보다 이르다
+    g = DS.git_facts(repo, dt.datetime(2026, 8, 7, 19, 0, tzinfo=UTC),
+                     ("docs/99_real.md",), DS.LiveOwner("task_next", owner_start))
+    assert g.uncommitted_manifest == ("docs/99_real.md",)
+    assert g.live_owned_manifest == ()
+    f, _ = MORNING_REAL_UNCOMMITTED
+    assert morning_verdict(f, g).code == "DONE_UNCOMMITTED"
+
+
+def test_git_axis_hands_a_path_to_the_live_owner_when_the_mtime_says_so(repo):
+    """08-08 아침의 `docs/44` 재현 — 끝난 태스크의 매니페스트를 다음 태스크가 쓰고 있다."""
+    import os
+    (repo / "docs").mkdir()
+    (repo / "docs" / "44_tick_stages.md").write_text("224 lines\n" * 224, encoding="utf-8")
+    owner = DS.LiveOwner("task_c3ae5a682e95", dt.datetime(2026, 8, 7, 16, 7, 13, tzinfo=UTC))
+    os.utime(repo / "docs" / "44_tick_stages.md",
+             (0, dt.datetime(2026, 8, 7, 21, 8, tzinfo=UTC).timestamp()))    # 2분 전 수정
+    g = DS.git_facts(repo, dt.datetime(2026, 8, 7, 15, 2, 29, tzinfo=UTC),
+                     ("docs/44_tick_stages.md",), owner)
+    assert g.live_owned_manifest == ("docs/44_tick_stages.md",)
+    assert g.uncommitted_manifest == ()
+    f, _ = MORNING_LIVE_OWNER
+    v = morning_verdict(f, g)
+    assert v.code == "DONE_UNCOMMITTED_LIVE" and v.kind.grade == DS.GRADE_NOTE
+    assert "task_c3ae5a682e95" in v.note, "누가 주인인지 안 적으면 사람이 확인할 수 없다"
+
+
+# --- 진짜 리포지토리에서 머지 축을 잰다 ------------------------------------------ #
+def test_merge_axis_on_a_real_repository(repo):
+    """`git log HEAD --not main` 이 실제로 무엇을 세는지 리포지토리에 대고 확인한다."""
+    since = dt.datetime(2026, 8, 7, 0, 0, tzinfo=UTC)
+    _git(repo, "branch", "main")                       # seed 에서 main 을 딴다
+    _commit(repo, "docs/a.md", "2026-08-07T05:00:00+00:00")
+    _commit(repo, "docs/b.md", "2026-08-07T06:00:00+00:00")
+    g = DS.git_facts(repo, since)
+    assert g.main_ref == "main" and g.commits_since == 2
+    assert g.unmerged_since == 2 and DS.merge_axis(g) == "unmerged"
+
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "-c", "commit.gpgsign=false", "merge", "-q", "--no-ff", "-m", "merge",
+         "w9-test", when="2026-08-07T07:00:00+00:00")
+    _git(repo, "checkout", "-q", "w9-test")
+    g2 = DS.git_facts(repo, since)
+    assert g2.unmerged_since == 0 and DS.merge_axis(g2) == "merged"
+
+
+def test_a_repository_without_a_main_ref_reports_unknown_not_merged(repo):
+    g = DS.git_facts(repo, dt.datetime(2026, 8, 1, tzinfo=UTC))
+    assert g.main_ref is None and DS.merge_axis(g) == "unknown"
+
+
+def test_a_later_tasks_commit_must_not_reopen_an_older_tasks_merge_verdict(repo):
+    """★ 커밋 직후 실측으로 잡은 결함 — 상한이 없으면 상시 경보가 그대로 되살아난다.
+
+    워크트리는 태스크마다가 아니라 **워커마다다**(§7). `task_4c7447a2597a` 의 창을 하한만으로
+    잡으면 그 뒤에 돈 태스크의 커밋이 창에 들어와 미머지 1건이 되고, `CLOSED_NO_REPORT_MERGED`
+    가 다시 `CLOSED_NO_REPORT_COMMITTED`(ALERT) 로 뒤집힌다. 실측(2026-08-08): 하한만이면
+    미머지 1건, 상한을 넣으면 창 안 8건이 **전부** main 이었다.
+    """
+    since = dt.datetime(2026, 8, 7, 0, 37, 46, tzinfo=UTC)
+    done = dt.datetime(2026, 8, 7, 10, 29, 36, tzinfo=UTC)      # 이 태스크의 종료 시각
+    _git(repo, "branch", "main")
+    _commit(repo, "ops/mine.py", "2026-08-07T05:00:00+00:00")   # 이 태스크의 산출물
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "-c", "commit.gpgsign=false", "merge", "-q", "--no-ff", "-m", "merge",
+         "w9-test", when="2026-08-07T11:00:00+00:00")           # 머지됨
+    _git(repo, "checkout", "-q", "w9-test")
+    _commit(repo, "ops/next_task.py", "2026-08-08T08:48:00+00:00")   # **다음 태스크**의 커밋
+
+    f = facts(task_id="task_4c7447a2597a", task_status="completed", closed=True,
+              reported=False, dispatched_at=since, completed_at=done,
+              last_heartbeat_at=dt.datetime(2026, 8, 7, 0, 59, 53, tzinfo=UTC))
+    bounded = DS.git_facts(repo, since, (), None, done)
+    assert bounded.merge_window_commits == 1 and bounded.unmerged_since == 0
+    assert DS.merge_axis(bounded) == "merged"
+    assert morning_verdict(f, bounded).code == "CLOSED_NO_REPORT_MERGED"
+
+    # 상한을 빼면(= 결함 재현) 다음 태스크의 커밋이 미머지로 세어져 경보가 되살아난다.
+    unbounded = DS.git_facts(repo, since)
+    assert unbounded.unmerged_since == 1 and DS.merge_axis(unbounded) == "unmerged"
+    assert morning_verdict(f, unbounded).code == "CLOSED_NO_REPORT_COMMITTED"
+
+
+def test_the_window_bound_is_not_applied_to_the_branch_axis(repo):
+    """상한을 브랜치 축에까지 걸면 **닫은 뒤에 사람이 커밋해준 것**이 사라진다.
+
+    08-07 W4 가 그랬다 — 코디네이터가 태스크를 닫은 뒤 워커의 잔여물을 `ba9a570` 으로
+    커밋했다. 거기까지 잘라내면 그 태스크가 `DONE_UNACCOUNTED`(ALERT) 로 되살아난다.
+    """
+    since = dt.datetime(2026, 8, 7, 0, 0, tzinfo=UTC)
+    done = dt.datetime(2026, 8, 7, 2, 0, tzinfo=UTC)
+    _commit(repo, "docs/37_quiet_counters.md", "2026-08-07T11:00:00+00:00")   # 닫은 뒤 커밋
+    g = DS.git_facts(repo, since, ("docs/37_quiet_counters.md",), None, done)
+    assert g.commits_since == 1, "브랜치 축은 상한을 안 받는다"
+    assert g.committed_manifest == ("docs/37_quiet_counters.md",)
+    f = facts(closed=True, task_status="completed", reported=True, completed_at=done,
+              manifest=("docs/37_quiet_counters.md",), manifest_present=True,
+              last_heartbeat_at=mins(40))
+    assert morning_verdict(f, g).code == "DONE_COMMITTED"
+
+
+# --- 등급 계약 --------------------------------------------------------------- #
+def test_every_verdict_has_a_grade_from_the_contract():
+    for code, kind in DS.VERDICTS.items():
+        assert kind.grade in DS.GRADE_ORDER, code
+        # `CHECK` 는 정의상 사람에게 올라간다 — "unknown 인데 조용한" 조합은 만들 수 없다.
+        assert kind.is_unknown == (kind.grade == DS.GRADE_CHECK), code
+        assert kind.needs_human == (kind.grade in (DS.GRADE_ALERT, DS.GRADE_CHECK)), code
+
+
+def test_a_note_grade_verdict_still_prints_so_it_is_not_silently_cut():
+    """조용히 하라는 것은 **조치 건수에서 빼라**는 뜻이지 표에서 지우라는 뜻이 아니다."""
+    (f, g), _, _ = MORNING_FIVE["오탐② 이미 main 에 있음"]
+    rows = [DS.Row(facts=f, git=g, verdict=morning_verdict(f, g))]
+    text = DS.render(rows, skipped=0, summary=DS.summarize(rows), now=MORNING)
+    assert "task_4c7447a2597a" in text and "CLOSED_NO_REPORT_MERGED" in text
+    assert "NOTE" in text
+
+
+def test_the_json_carries_the_three_new_axes():
+    rows = [DS.Row(facts=f, git=g, verdict=morning_verdict(f, g))
+            for (f, g), _, _ in MORNING_FIVE.values()]
+    payload = json.loads(DS.as_json(rows, 0, DS.summarize(rows)))
+    assert payload["summary"]["by_grade"][DS.GRADE_ALERT] == 2
+    for row in payload["rows"]:
+        for key in ("age_axis", "merge_axis", "owner_axis", "grade",
+                    "unmerged_since_dispatch", "live_owner_task", "manifest_live_owned"):
+            assert key in row, key
