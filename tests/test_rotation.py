@@ -37,10 +37,16 @@ def test_print_frame_drops_zero_volume_bars_and_never_fills_gaps():
     assert len(p) == 2
 
 
-def test_print_frame_strict_cutoff_is_exclusive():
+def test_print_frame_observable_cutoff_is_inclusive():
+    """계약 A2 §1: `t_to` 는 포함적이다 — 라벨 `t_to` 봉의 내용은 전부 `t_to` 이전이다.
+
+    (A2) 이 파일에서 **기대값이 실제로 바뀐 유일한 곳**이다. 함수 계약 자체가 개정됐고
+    옛 이름(`strict_cutoff_is_exclusive`)이 옛 계약을 선언하고 있었다.
+    절대 시각으로 고정한 판본은 `test_cutoff_amendment_a2.py` 에 있다.
+    """
     df = bars([0, 1, 2], [1, 1, 1])
     p = R.print_frame(df, t_to=2 * MIN_MS)
-    assert p["ts_ms"].tolist() == [0, MIN_MS]
+    assert p["ts_ms"].tolist() == [0, MIN_MS, 2 * MIN_MS]
 
 
 def test_print_frame_amount_uses_python_ints_no_overflow():
