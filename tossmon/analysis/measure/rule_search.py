@@ -46,6 +46,39 @@ def ro(p: Path) -> sqlite3.Connection:
 # --------------------------------------------------------------------------- #
 # 1. per-event attributes + paths
 # --------------------------------------------------------------------------- #
+def event_frames(conn: sqlite3.Connection, sym: str,
+                 t0: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """One event's (pre, post) candle frames under contract C-7 amendment A2.
+
+    Both sides are CANDLES, and `ts_ms` is an END-time label (prereg 6.1): the bar
+    labelled T holds `[T-60s, T)`. So the two boundaries are not symmetric in form
+    even though they come from one rule - "the bar labelled t0 belongs to t0":
+
+        pre  `ts_ms <= t0`  the t0 bar is complete at t0, so it is observable and
+                            belongs to the signal (A2 1). This is the amended cutoff.
+        post `ts_ms >  t0`  the t0 bar's CONTENT precedes t0, so it is not outcome.
+                            Keeping it here would have let the entry bar's own
+                            high/low fill a target with a minute that happened
+                            before entry, and would double-count it against `pre`.
+
+    `t0_u` (the entry price) is the t0 bar's close and now comes from `pre`.
+    No ranking frame is read here; A2 2's `snap_ms < t0` does not apply.
+
+    Split out of `build_events` so the boundary can be pinned by an absolute-time
+    test (`tests/test_cutoff_amendment_a2.py`) without the parquet fixtures -
+    docs/36 4 showed a shared-convention synthesiser passes label defects through.
+    """
+    pre = pd.read_sql_query(
+        "SELECT ts_ms, close_u, vol_qu FROM candles_1m WHERE symbol=? "
+        "AND ts_ms>=? AND ts_ms<=? ORDER BY ts_ms", conn,
+        params=(sym, t0 - PRE_MIN * MIN_MS, t0))
+    post = pd.read_sql_query(
+        "SELECT ts_ms, open_u, high_u, low_u, close_u, vol_qu FROM candles_1m "
+        "WHERE symbol=? AND ts_ms>? AND ts_ms<=? ORDER BY ts_ms", conn,
+        params=(sym, t0, t0 + HORIZON_MIN * MIN_MS))
+    return pre, post
+
+
 def build_events() -> tuple[pd.DataFrame, dict]:
     ev = pd.read_parquet(V2 / "ev_v3.parquet")
     ev = ev[ev["period"] == "train"].copy()
@@ -59,23 +92,13 @@ def build_events() -> tuple[pd.DataFrame, dict]:
     try:
         for _i, e in ev.iterrows():
             sym, t0 = e["symbol"], int(e["t0_ms"])
-            pre = pd.read_sql_query(
-                "SELECT ts_ms, close_u, vol_qu FROM candles_1m WHERE symbol=? "
-                "AND ts_ms>=? AND ts_ms<? ORDER BY ts_ms", conn,
-                # strict cutoff (prereg 2.1 P1 forecast 1a: "ts_ms < t0_ms").
-                # NOTE (docs/47 5): ts_ms is an END-time label, so the bar labelled t0
-                # is already complete at t0 - excluding it is 1 bar (60 s) of extra
-                # conservatism, not leakage protection. The post frame's `ts_ms >= t0`
-                # side has the mirror shift. Arithmetic left AS IS: changing it rewrites
-                # a preregistered forecast. SEPARATE TASK, AFTER the prereg 9 amendment.
-                params=(sym, t0 - PRE_MIN * MIN_MS, t0))
-            post = pd.read_sql_query(
-                "SELECT ts_ms, open_u, high_u, low_u, close_u, vol_qu FROM candles_1m "
-                "WHERE symbol=? AND ts_ms>=? AND ts_ms<=? ORDER BY ts_ms", conn,
-                params=(sym, t0, t0 + HORIZON_MIN * MIN_MS))
+            # observability cutoff, contract C-7 amendment A2 (see `event_frames`):
+            # pre `ts_ms <= t0`, post `ts_ms > t0`.
+            pre, post = event_frames(conn, sym, t0)
             if post.empty:
                 continue
-            t0_row = post[post["ts_ms"] == t0]
+            # the entry price is the t0 bar's close - that bar now lives in `pre`
+            t0_row = pre[pre["ts_ms"] == t0]
             if t0_row.empty:
                 continue
             t0_u = float(t0_row["close_u"].to_numpy()[0])
@@ -84,7 +107,7 @@ def build_events() -> tuple[pd.DataFrame, dict]:
             prints = ROT.print_frame(pre.assign(symbol=sym))
             slope = R.log_amount_rate_ratio(prints, recent_prints=10,
                                             baseline_prints=30)
-            # pre-T0 price response over the last 30 minutes (strictly before T0)
+            # pre-T0 price response over the last 30 minutes (observable at T0)
             p30 = pre[pre["ts_ms"] >= t0 - 30 * MIN_MS]
             ret30 = (float(p30["close_u"].to_numpy()[-1])
                      / float(p30["close_u"].to_numpy()[0]) - 1.0) if len(p30) >= 2 \
@@ -93,7 +116,9 @@ def build_events() -> tuple[pd.DataFrame, dict]:
             gaps = ROT.inter_print_gaps_min(prints["ts_ms"]) if len(prints) > 1 \
                 else np.empty(0)
             max_gap = float(gaps.max()) if gaps.size else float("nan")
-            # flow available around T0 (capacity proxy - no absolute size assumed)
+            # flow available AFTER T0 (capacity proxy - no absolute size assumed).
+            # `post` starts strictly after t0, so this is the 30 bars covering
+            # [t0, t0+30min) - the minutes you could actually have traded into.
             flow = post[post["ts_ms"] <= t0 + 30 * MIN_MS]
             flow_usd = [(int(c) * int(v)) / R.MICRO / R.MICRO
                         for c, v in zip(flow["close_u"], flow["vol_qu"]) if v > 0]

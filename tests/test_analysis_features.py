@@ -34,11 +34,15 @@ def _extract(df, truth, curve, base, t0, **kw):
 # 룩어헤드 부재 증명
 # --------------------------------------------------------------------------- #
 def test_no_lookahead_future_bars_are_ignored(coil) -> None:
-    """T0 이후 봉을 넣든 빼든 결과 dict 이 **완전히 동일**해야 한다."""
+    """T0 이후 봉을 넣든 빼든 결과 dict 이 **완전히 동일**해야 한다.
+
+    (A2) 자르는 기준은 **컷오프와 같은 `<= t0`** 다 — 기본 모드가 `obs_le` 로 바뀌었으므로
+    `< t0` 로 자르면 T0 봉을 뺏는 것이지 미래를 뺏는 것이 아니다.
+    """
     df, truth, curve, base = coil
     t0 = truth["t0_expected_ms"]
     full = _extract(df, truth, curve, base, t0)
-    truncated_df = df[df["ts_ms"] < t0]
+    truncated_df = df[df["ts_ms"] <= t0]
     trunc = _extract(truncated_df, truth, curve, base, t0)
     assert full.keys() == trunc.keys()
     for k in full:
@@ -47,11 +51,16 @@ def test_no_lookahead_future_bars_are_ignored(coil) -> None:
 
 
 def test_no_lookahead_future_bars_can_be_corrupted(coil) -> None:
-    """T0 이후 데이터를 극단적으로 변조해도 피처가 흔들리지 않아야 한다."""
+    """T0 이후 데이터를 극단적으로 변조해도 피처가 흔들리지 않아야 한다.
+
+    (A2) 변조 대상은 **`> t0`** 다. 라벨 `t0` 봉은 `[t0−60초, t0)` 를 담아 t0 에 관측
+    가능하므로 미래가 아니다 — 그것까지 변조하면 이 테스트는 룩어헤드가 아니라
+    "관측 가능한 봉을 쓰는가"를 재게 된다.
+    """
     df, truth, curve, base = coil
     t0 = truth["t0_expected_ms"]
     poisoned = df.copy()
-    fut = poisoned["ts_ms"] >= t0
+    fut = poisoned["ts_ms"] > t0
     for col, mult in (("close_u", 50), ("high_u", 50), ("low_u", 50), ("open_u", 50),
                       ("vol_qu", 1000)):
         poisoned.loc[fut, col] = poisoned.loc[fut, col] * mult
@@ -80,19 +89,26 @@ def test_no_lookahead_in_rankings(coil) -> None:
         assert (x == y) or (x != x and y != y), f"{k} 가 미래 랭킹에 반응했다"
 
 
-def test_cutoff_is_strictly_before_t0(coil) -> None:
+def test_cutoff_is_strictly_before_t0_in_strict_mode(coil) -> None:
+    """`strict_lt` 모드는 남아 있고 성질도 그대로다 (개정 전 수치 병기용, 사전등록 §1 P1).
+
+    기본(`obs_le`)의 경계는 `test_cutoff_amendment_a2.py` 가 고정한다.
+    """
     df, truth, curve, base = coil
     t0 = truth["t0_expected_ms"]
-    f = _extract(df, truth, curve, base, t0)
+    f = _extract(df, truth, curve, base, t0, include_t0=False)
     assert f["cutoff_ms"] < t0
     assert f["cutoff_lag_min"] >= 1
 
 
 def test_include_t0_admits_the_t0_bar_only(coil) -> None:
-    """A1 §1: include_t0=True 는 T0 봉까지만 포함한다 (그 이후는 여전히 금지)."""
+    """A2 §1: include_t0=True 는 T0 봉까지만 포함한다 (그 이후는 여전히 금지).
+
+    (A2) `strict` 는 이제 **명시**해야 한다 — 기본값이 `obs_le` 로 뒤집혔다.
+    """
     df, truth, curve, base = coil
     t0 = truth["t0_expected_ms"]
-    strict = _extract(df, truth, curve, base, t0)
+    strict = _extract(df, truth, curve, base, t0, include_t0=False)
     live = _extract(df, truth, curve, base, t0, include_t0=True)
     assert live["cutoff_ms"] == float(t0)
     assert strict["cutoff_ms"] < float(t0)
@@ -111,8 +127,9 @@ def test_include_t0_admits_the_t0_bar_only(coil) -> None:
 
 def test_cut_frame_boundaries() -> None:
     df = pd.DataFrame({"ts_ms": [10, 20, 30], "v": [1, 2, 3]})
-    assert list(F.cut_frame(df, 20)["ts_ms"]) == [10]
+    assert list(F.cut_frame(df, 20)["ts_ms"]) == [10, 20]          # A2 기본 = obs_le
     assert list(F.cut_frame(df, 20, include_t0=True)["ts_ms"]) == [10, 20]
+    assert list(F.cut_frame(df, 20, include_t0=False)["ts_ms"]) == [10]   # strict_lt
     assert F.cut_frame(None, 20).empty
     assert F.cut_frame(df.iloc[0:0], 20).empty
 
@@ -156,7 +173,13 @@ def test_empty_input_returns_all_nan_but_metadata(coil) -> None:
 # 피처 의미 검증
 # --------------------------------------------------------------------------- #
 def test_coil_pop_shows_volume_precursor_but_instant_does_not() -> None:
-    """coil→폭발형은 T0 이전에 이미 RVOL 이 높고, 즉발형은 정상이다."""
+    """coil→폭발형은 T0 이전에 이미 RVOL 이 높고, 즉발형은 정상이다.
+
+    (A2) **`strict_lt` 로 잰다.** 이 테스트가 재는 것은 "**T0 이전**에 전조가 있는가"이고,
+    `obs_le` 에서는 관측 봉과 트리거 봉이 같은 봉이라 그 질문의 시간축이 사라진다 —
+    즉발형 `rvol_at_cutoff` 가 21.6 이 되는 것은 전조가 아니라 **이벤트 자신의 세기**다
+    (사전등록 §3 동어반복 상자, docs/49 §5). 임계값 3.0 은 손대지 않았다.
+    """
     out = {}
     for kind in ("coil_pop", "instant", "noise"):
         df, truth = synth.make_scenario(kind, seed=3)
@@ -165,7 +188,7 @@ def test_coil_pop_shows_volume_precursor_but_instant_does_not() -> None:
                                          + 200 * 60_000)
         out[kind] = F.extract_precursor_features(
             df, truth["rankings"], t0, curve=curve, calendar=truth["calendar"],
-            symbol=truth["symbol"])
+            symbol=truth["symbol"], include_t0=False)
     assert out["coil_pop"]["rvol_at_cutoff"] > 3.0
     assert out["instant"]["rvol_at_cutoff"] < 3.0, "즉발형에 전조가 있으면 시나리오가 틀렸다"
     assert out["noise"]["rvol_at_cutoff"] < 3.0

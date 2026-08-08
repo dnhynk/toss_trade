@@ -73,13 +73,17 @@ def print_frame(df_1m: pd.DataFrame, *, t_from: int | None = None,
                 t_to: int | None = None) -> pd.DataFrame:
     """거래량이 있는 봉만 시간순으로. **무체결 분은 채우지 않는다** (금지 규칙 1).
 
-    `t_to` 는 **배타적**이다 — 엄격 컷오프(`ts_ms < t0_ms`, A1 §1)를 그대로 따른다.
+    `t_to` 는 **포함적**이다 — 관측가능 컷오프(`ts_ms <= t0_ms`, 계약 A2 §1).
+    `ts_ms` 는 **종료 시각 라벨**이라(사전등록 §6.1) 라벨 `t_to` 인 봉의 내용은
+    `[t_to−60초, t_to)` 로 전부 `t_to` **이전**이다 — 즉 이 봉을 들이는 것은 누출이
+    아니라 예전 배타 컷이 버리던 **1봉(60초) 과보수의 회수**다.
+    이 함수는 **캔들 전용**이다. 랭킹(`snap_ms`)에는 쓰지 마라 — A2 §2 는 랭킹을
+    `< t0_ms` 엄격으로 못 박았다(도착 시 중앙 16.1초 지연, docs/35).
 
-    **주의 (docs/47 §5)**: `ts_ms` 는 **종료 시각 라벨**이라(사전등록 §6.1) 라벨 `t_to`
-    인 봉의 내용도 `t_to` **이전**이다. 즉 이 배타적 컷은 누출 방지가 아니라
-    **1봉(60초) 과보수**다. `t_from` 쪽도 같은 이유로 `[t_from−60초, t_from)` 을 담은
-    봉 하나를 더 들인다. **산술은 사전등록 §2.1 예측 1a 문언에 묶여 있어 그대로 뒀다 —
-    변경은 §9 개정 후 별도 태스크다.** (창/경계 판정인 `_window_stats` 는 이번에 고쳤다.)
+    `t_from` 쪽은 **이번에 건드리지 않았다**: 같은 종료 라벨 때문에 `>= t_from` 은
+    `[t_from−60초, t_from)` 을 담은 봉을 하나 더 들이지만, 그것은 나-컷(룩어헤드 경계)이
+    아니라 **나-창(창 길이) 문제**라 D-10 의 `_window_stats` 계열과 같은 갈래다
+    (docs/47 §5 분류, docs/49 §6).
     """
     if df_1m is None or len(df_1m) == 0 or "ts_ms" not in df_1m.columns:
         return pd.DataFrame(columns=["ts_ms", "vol_qu", "close_u", "amount_u12"])
@@ -87,7 +91,7 @@ def print_frame(df_1m: pd.DataFrame, *, t_from: int | None = None,
     if t_from is not None:
         d = d[d["ts_ms"] >= t_from]
     if t_to is not None:
-        d = d[d["ts_ms"] < t_to]
+        d = d[d["ts_ms"] <= t_to]
     vol = pd.to_numeric(d.get("vol_qu"), errors="coerce")
     d = d[vol.reindex(d.index).fillna(0) >= PRINT_MIN_VOL_QU]
     if len(d) == 0:

@@ -1,28 +1,30 @@
-"""전조 피처 추출 — 계약 C-7 + C-7 개정 A1. 소유: W3.
+"""전조 피처 추출 — 계약 C-7 + C-7 개정 A2. 소유: W3.
 
 **룩어헤드 금지가 이 모듈의 존재 이유다.**
 `t0_ms` 이후 데이터는 한 바이트도 섞이면 안 된다. 함수가 입력을 직접 잘라내고
-(`cut_frame`), 이를 증명하는 테스트(`test_analysis_features.py`)가 있다.
+(`cut_frame`), 이를 증명하는 테스트(`test_analysis_features.py`·
+`test_cutoff_amendment_a2.py`)가 있다.
 
-컷오프 (A1 §1)
-    include_t0=False (기본, 연구용) : `ts_ms <  t0_ms` — T0 봉 자체도 제외.
-    include_t0=True  (W4 실시간)    : `ts_ms <= t0_ms` — T0 봉 종료 시점에 판정하므로 합법.
-    랭킹도 동일 규칙(`snap_ms`)을 적용한다.
+컷오프 (A2, 2026-08-09 — **봉과 스냅이 갈렸다. 한 플래그로 밀지 마라**)
+    캔들(구간·종료 라벨) : `ts_ms   <= t0_ms`  ← `include_t0` 로 모드 선택, **기본 `<=`**
+    랭킹(순간·도착 지연)  : `snap_ms <  t0_ms`  ← **항상 엄격. 플래그 대상이 아니다.**
 
-    **근거 정정 (2026-08-09, docs/47 §5).** 예전 근거는 *"T0 봉의 종가·거래량은 그 분이
-    끝난 뒤에만 관측되므로 T0 시점 판단에 쓸 수 없다"* 였다. 이건 **시작 시각 라벨 전제**라
-    성립하지 않는다 — `candles_1m.ts_ms` 는 **종료 시각 라벨**이고(사전등록 §6.1,
-    docs/36 §1) 라벨 `t0` 인 봉은 `[t0−60초, t0)` 를 담아 **`t0` 에 이미 완결**돼 있다.
-    종료 라벨에서 두 모드의 실제 성격은 문서와 **반대**다:
-        `True`  = **정확히 맞다** (t0 시점에 가용한 정보와 일치)
-        `False` = **1봉(60초) 과보수** — 쓸 수 있는 봉을 버린다. 누출은 원리적으로 불가능
-                  (`ts < t0` 든 `ts <= t0` 든 남는 내용은 전부 t0 이전, docs/36 §3-1)
-    그 결과 `cutoff_lag_min` 은 `False` 모드에서 **구조적으로 1 이상**이 된다.
+    **왜 캔들이 `<=` 인가.** 예전 근거는 *"T0 봉의 종가·거래량은 그 분이 끝난 뒤에만
+    관측되므로 T0 시점 판단에 쓸 수 없다"* 였다. 이건 **시작 시각 라벨 전제**라 성립하지
+    않는다 — `candles_1m.ts_ms` 는 **종료 시각 라벨**이고(사전등록 §6.1, docs/36 §1)
+    라벨 `t0` 인 봉은 `[t0−60초, t0)` 를 담아 **`t0` 에 이미 완결**돼 있다. 즉 T0 봉은
+    실시간 검출기에만이 아니라 **누구에게나 t0 에 관측 가능**하다. `<` 는 완전히 관측된
+    1분을 버려 `cutoff_lag_min ≥ 1` 이라는 구조적 60초 사각을 강제했다.
 
-    **산술은 일부러 그대로 뒀다.** 사전등록 §2.1 P1 '예측 1a' 가 문언으로
-    "엄격 컷오프(`ts_ms < t0_ms`)" 를 박고 있어 `False` 모드를 `<=` 로 바꾸는 것은
-    **가설 문언 변경 = §9 개정 사안**이다. **산술 변경은 §9 개정 후 별도 태스크**다
-    (사용자 결정 (B), 순서는 W7 개정 → 코드. docs/47 §5).
+    **왜 랭킹은 `<` 인가.** 랭킹은 구간이 아니라 **순간**이고, W1 실측으로 도착 시
+    **중앙 16.1초 늙어 있다**(docs/35, 서버 10초 격자). `snap_ms = t0` 인 스냅은 **t0 에
+    우리 손에 없다** — 여기를 `<=` 로 넓히면 그것은 과보수 회수가 아니라 **진짜 룩어헤드**다.
+    그래서 아래에서 랭킹 컷은 `include_t0` 를 **받지 않고** `False` 를 박아 넘긴다.
+
+    **`cutoff_mode` 표기 (사전등록 §1 P1 개정 상자).** 반환 피처 `include_t0` 가 곧
+    모드 태그다 — `1.0` = `obs_le`(개정 후), `0.0` = `strict_lt`(개정 전). 개정 전
+    시행을 인용할 때 `strict_lt` 를 병기하기 위해 **엄격 모드는 지우지 않고 남긴다.**
+    두 모드 값을 같은 표·분포·CI 에 섞으면 그 집계는 무효다.
 
 반환값은 항상 `dict[str, float]` (bool 은 0.0/1.0, 미가용은 NaN). 키 집합은 입력 가용성과
 무관하게 **항상 동일**하다 — 하류(`detector.precursor_score`)가 키 존재를 가정할 수 있어야
@@ -65,11 +67,16 @@ _NAN = float("nan")
 # 컷오프
 # --------------------------------------------------------------------------- #
 def cut_frame(df: pd.DataFrame, t0_ms: int, ts_col: str = "ts_ms", *,
-              include_t0: bool = False) -> pd.DataFrame:
-    """A1 §1 컷오프 적용. 이 모듈의 모든 입력은 반드시 여기를 통과한다.
+              include_t0: bool = True) -> pd.DataFrame:
+    """A2 컷오프 적용. 이 모듈의 모든 입력은 반드시 여기를 통과한다.
 
-    종료 라벨에서 `include_t0=False` 는 **1봉 과보수**다(누출 아님, 모듈 docstring 참조).
-    **산술 변경은 사전등록 §9 개정 후 별도 태스크** — 여기서 바꾸지 마라 (docs/47 §5).
+    기본은 **관측가능 컷오프**(`obs_le`, `<=`) — 종료 라벨이라 라벨 `t0_ms` 인 봉은
+    `t0_ms` 에 완결돼 있다. `include_t0=False`(`strict_lt`, `<`)는 **1봉 과보수**이며
+    개정 전 수치를 재현·병기하기 위해 남겨 둔 모드다 (모듈 docstring 참조).
+
+    **랭킹(`ts_col="snap_ms"`)에 이 함수를 쓸 때는 `include_t0=False` 를 박아 넘겨라.**
+    A2 §2 는 랭킹의 `<` 를 플래그 없는 불변식으로 정했다 — 유일한 호출부는
+    `extract_precursor_features` 이고 거기서 그렇게 한다.
     """
     if df is None or len(df) == 0:
         return df if df is not None else pd.DataFrame()
@@ -210,7 +217,7 @@ def _locate_session_start(cutoff: int, curve, calendar) -> int | None:
 def extract_precursor_features(df_1m: pd.DataFrame, rankings: pd.DataFrame,
                                t0_ms: int,
                                windows_min: tuple[int, ...] = DEFAULT_WINDOWS_MIN, *,
-                               include_t0: bool = False,
+                               include_t0: bool = True,
                                symbol: str | None = None,
                                curve: pd.Series | None = None,
                                calendar: list[UsMarketDay] | None = None,
@@ -224,7 +231,10 @@ def extract_precursor_features(df_1m: pd.DataFrame, rankings: pd.DataFrame,
     """T0 이전 구간만으로 전조 피처를 만든다. 반환 키는 `feature_names()` 와 동일.
 
     위치인자는 계약 C-7 그대로. 키워드 전용 인자는 A1 §2 확장:
-        include_t0             A1 §1. 기본 False(엄격). W4 실시간 검출기는 True
+        include_t0             A2. **캔들 컷오프 모드에만 작용한다** — 기본 True
+                               (`obs_le`, `ts_ms <= t0_ms`). False 는 개정 전 재현용
+                               (`strict_lt`). **랭킹은 이 값과 무관하게 언제나
+                               `snap_ms < t0_ms` 엄격이다** (A2 §2)
         symbol                 랭킹 필터. None 이면 df_1m 의 symbol 컬럼에서 추론
         curve                  `minute_of_session_volume_curve()` — 시간대 보정 RVOL 분모
         calendar               세션 판정용 (곡선은 이력일, 적용은 당일인 정상 운용)
@@ -243,7 +253,10 @@ def extract_precursor_features(df_1m: pd.DataFrame, rankings: pd.DataFrame,
         # 3차 감사 F-3 계열: calendar 없이는 컷오프의 매매일을 알 수 없어 무음 스킵된다.
         raise ValueError("split_dates 를 쓰려면 calendar 가 필요하다 (3차 감사 F-3)")
     pre = cut_frame(df_1m, t0_ms, include_t0=include_t0).sort_values("ts_ms")
-    rk = cut_frame(rankings, t0_ms, "snap_ms", include_t0=include_t0)
+    # A2 §2: 랭킹은 **캔들 플래그를 따라가지 않는다.** 봉은 구간이라 라벨 t0 봉이 t0 에
+    # 완결되지만, 스냅은 순간이고 도착 시 중앙 16.1초 늙어 있다(docs/35) — `snap_ms = t0`
+    # 인 스냅은 t0 에 손에 없다. 여기에 `include_t0` 를 흘리면 진짜 룩어헤드가 된다.
+    rk = cut_frame(rankings, t0_ms, "snap_ms", include_t0=False)
 
     if symbol is None and df_1m is not None and len(df_1m) and "symbol" in df_1m.columns:
         uniq = df_1m["symbol"].dropna().unique()
