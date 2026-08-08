@@ -1066,6 +1066,56 @@ def test_a_repository_without_a_main_ref_reports_unknown_not_merged(repo):
     assert g.main_ref is None and DS.merge_axis(g) == "unknown"
 
 
+def test_a_later_tasks_commit_must_not_reopen_an_older_tasks_merge_verdict(repo):
+    """★ 커밋 직후 실측으로 잡은 결함 — 상한이 없으면 상시 경보가 그대로 되살아난다.
+
+    워크트리는 태스크마다가 아니라 **워커마다다**(§7). `task_4c7447a2597a` 의 창을 하한만으로
+    잡으면 그 뒤에 돈 태스크의 커밋이 창에 들어와 미머지 1건이 되고, `CLOSED_NO_REPORT_MERGED`
+    가 다시 `CLOSED_NO_REPORT_COMMITTED`(ALERT) 로 뒤집힌다. 실측(2026-08-08): 하한만이면
+    미머지 1건, 상한을 넣으면 창 안 8건이 **전부** main 이었다.
+    """
+    since = dt.datetime(2026, 8, 7, 0, 37, 46, tzinfo=UTC)
+    done = dt.datetime(2026, 8, 7, 10, 29, 36, tzinfo=UTC)      # 이 태스크의 종료 시각
+    _git(repo, "branch", "main")
+    _commit(repo, "ops/mine.py", "2026-08-07T05:00:00+00:00")   # 이 태스크의 산출물
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "-c", "commit.gpgsign=false", "merge", "-q", "--no-ff", "-m", "merge",
+         "w9-test", when="2026-08-07T11:00:00+00:00")           # 머지됨
+    _git(repo, "checkout", "-q", "w9-test")
+    _commit(repo, "ops/next_task.py", "2026-08-08T08:48:00+00:00")   # **다음 태스크**의 커밋
+
+    f = facts(task_id="task_4c7447a2597a", task_status="completed", closed=True,
+              reported=False, dispatched_at=since, completed_at=done,
+              last_heartbeat_at=dt.datetime(2026, 8, 7, 0, 59, 53, tzinfo=UTC))
+    bounded = DS.git_facts(repo, since, (), None, done)
+    assert bounded.merge_window_commits == 1 and bounded.unmerged_since == 0
+    assert DS.merge_axis(bounded) == "merged"
+    assert morning_verdict(f, bounded).code == "CLOSED_NO_REPORT_MERGED"
+
+    # 상한을 빼면(= 결함 재현) 다음 태스크의 커밋이 미머지로 세어져 경보가 되살아난다.
+    unbounded = DS.git_facts(repo, since)
+    assert unbounded.unmerged_since == 1 and DS.merge_axis(unbounded) == "unmerged"
+    assert morning_verdict(f, unbounded).code == "CLOSED_NO_REPORT_COMMITTED"
+
+
+def test_the_window_bound_is_not_applied_to_the_branch_axis(repo):
+    """상한을 브랜치 축에까지 걸면 **닫은 뒤에 사람이 커밋해준 것**이 사라진다.
+
+    08-07 W4 가 그랬다 — 코디네이터가 태스크를 닫은 뒤 워커의 잔여물을 `ba9a570` 으로
+    커밋했다. 거기까지 잘라내면 그 태스크가 `DONE_UNACCOUNTED`(ALERT) 로 되살아난다.
+    """
+    since = dt.datetime(2026, 8, 7, 0, 0, tzinfo=UTC)
+    done = dt.datetime(2026, 8, 7, 2, 0, tzinfo=UTC)
+    _commit(repo, "docs/37_quiet_counters.md", "2026-08-07T11:00:00+00:00")   # 닫은 뒤 커밋
+    g = DS.git_facts(repo, since, ("docs/37_quiet_counters.md",), None, done)
+    assert g.commits_since == 1, "브랜치 축은 상한을 안 받는다"
+    assert g.committed_manifest == ("docs/37_quiet_counters.md",)
+    f = facts(closed=True, task_status="completed", reported=True, completed_at=done,
+              manifest=("docs/37_quiet_counters.md",), manifest_present=True,
+              last_heartbeat_at=mins(40))
+    assert morning_verdict(f, g).code == "DONE_COMMITTED"
+
+
 # --- 등급 계약 --------------------------------------------------------------- #
 def test_every_verdict_has_a_grade_from_the_contract():
     for code, kind in DS.VERDICTS.items():

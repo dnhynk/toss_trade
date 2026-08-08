@@ -258,6 +258,7 @@ class DispatchFacts:
     dispatch_status: str = ""
     assignee: str = ""
     dispatched_at: dt.datetime | None = None
+    completed_at: dt.datetime | None = None     # 머지 축의 창 상한. 열린 디스패치면 None
     last_heartbeat_at: dt.datetime | None = None
     worktree: Path | None = None
     capability_revoked_at: dt.datetime | None = None
@@ -290,7 +291,10 @@ class GitFacts:
     unaccounted_manifest: tuple[str, ...] = ()
     #: 머지 축. `main_ref=None` 이면 못 쟀다 — "안 들어갔다"가 아니다.
     main_ref: str | None = None
-    unmerged_since: int | None = None           # 디스패치 이후 커밋 중 main 에 없는 것
+    #: 머지 축이 실제로 센 커밋 수 — **창 상한(`completed_at`)까지** 적용한 값이다.
+    #: `None` 이면 상한이 없었다는 뜻이고 그때는 `commits_since` 와 같다.
+    merge_window_commits: int | None = None
+    unmerged_since: int | None = None           # 그 중 main 에 없는 것
     #: 소유 축. 살아 있는 다음 디스패치가 쓰고 있다고 판정한 매니페스트 경로.
     live_owner: LiveOwner | None = None
     live_owned_manifest: tuple[str, ...] = ()
@@ -434,6 +438,7 @@ def facts_for(task: dict) -> DispatchFacts:
         dispatch_status=str(d.get("status") or ""),
         assignee=str(d.get("assignee_handle") or ""),
         dispatched_at=parse_ts(d.get("dispatched_at")),
+        completed_at=parse_ts(d.get("completed_at")),
         last_heartbeat_at=parse_ts(d.get("last_heartbeat_at")),
         capability_revoked_at=parse_ts(d.get("capability_revoked_at")),
         worktree=worktree_of(d.get("process_incarnation")),
@@ -443,14 +448,19 @@ def facts_for(task: dict) -> DispatchFacts:
 # --------------------------------------------------------------------------- #
 # 5. git 축 — 워커 워크트리에서 읽기만 한다.
 # --------------------------------------------------------------------------- #
-def git_log_since(worktree: Path, since: dt.datetime,
-                  not_ref: str | None = None) -> tuple[int, bool, set[str], str | None]:
-    """(디스패치 이후 커밋 수, 잘렸는가, 그 커밋들이 건드린 경로, 오류).
+def git_log_since(worktree: Path, since: dt.datetime, not_ref: str | None = None,
+                  until: dt.datetime | None = None) -> tuple[int, bool, set[str], str | None]:
+    """(창 안 커밋 수, 잘렸는가, 그 커밋들이 건드린 경로, 오류).
 
     `not_ref` 를 주면 **그 ref 에 이미 들어간 커밋을 뺀다**(`git log HEAD --not main`).
-    같은 창을 두 번 세어 빼면 "디스패치 이후 커밋 중 아직 main 에 없는 것" 이 나온다.
+    같은 창을 두 번 세어 빼면 "그 창의 커밋 중 아직 main 에 없는 것" 이 나온다.
     가장 최근 커밋 하나만 `merge-base --is-ancestor` 로 물어보는 방법도 있지만, `git log`
     는 커밋 날짜 순이라 머지가 섞이면 "최근 것이 조상이면 나머지도 조상"이 성립하지 않는다.
+
+    `until` 은 **창 상한**이다. 워크트리는 태스크마다가 아니라 워커마다라(§7) 상한이 없으면
+    **뒤에 돈 태스크의 커밋이 앞 태스크의 창에 들어온다.** 커밋 직후 실측으로 확인했다:
+    `task_4c7447a2597a` 의 창에서 상한을 빼면 미머지 1건(= 방금 내가 만든 다른 태스크의
+    커밋)이 잡혀 상시 경보가 되살아났고, 상한을 넣으면 창 안 8건이 전부 main 이었다.
     """
     extra = ["--not", not_ref] if not_ref else []
     rc, out, err = run_read_only(
@@ -465,7 +475,8 @@ def git_log_since(worktree: Path, since: dt.datetime,
             seen += 1
             _, _, ts = line.partition(_SEP)
             when = parse_ts(ts)
-            cur_in_window = when is not None and when >= since
+            cur_in_window = (when is not None and when >= since
+                             and (until is None or when <= until))
             if cur_in_window:
                 count += 1
         elif line.strip() and cur_in_window:
@@ -524,9 +535,15 @@ def owned_by_live(worktree: Path, paths: tuple[str, ...],
 
 
 def git_facts(worktree: Path | None, since: dt.datetime | None,
-              manifest: tuple[str, ...] = (),
-              owner: LiveOwner | None = None) -> GitFacts:
-    """워크트리 하나에 대한 git 축. 못 읽으면 `ok=False` — '안 움직임'이 아니다."""
+              manifest: tuple[str, ...] = (), owner: LiveOwner | None = None,
+              until: dt.datetime | None = None) -> GitFacts:
+    """워크트리 하나에 대한 git 축. 못 읽으면 `ok=False` — '안 움직임'이 아니다.
+
+    `until`(= 태스크의 `completed_at`)은 **머지 축에만** 건다. 브랜치 축(`commits_since`)에
+    걸지 않는 이유는, 코디네이터가 태스크를 닫은 **뒤에** 워커의 잔여물을 커밋해 주는 일이
+    실제로 있었기 때문이다(08-07 W4, `ba9a570`). 거기까지 상한으로 잘라내면 그 태스크가
+    `DONE_UNACCOUNTED` 로 되살아난다 — 시끄러워지는 방향의 새 오탐이다.
+    """
     if worktree is None:
         return GitFacts(ok=False, error="워크트리 경로를 못 읽었다(process_incarnation)")
     if not (worktree / ".git").exists() and not worktree.exists():
@@ -546,13 +563,22 @@ def git_facts(worktree: Path | None, since: dt.datetime | None,
     if st_err:
         return GitFacts(ok=False, error=st_err, branch=branch)
 
-    # 머지 축 — 디스패치 이후 커밋 중 아직 main 에 없는 것. ref 를 못 찾으면 None(못 쟀다).
+    # 머지 축 — **창 상한까지 적용한** 커밋 중 아직 main 에 없는 것.
+    # ref 를 못 찾거나 어느 한쪽을 못 세면 None 이다(= 못 쟀다. "안 들어갔다"가 아니다).
     main_ref = git_main_ref(worktree)
+    window_commits: int | None = None
     unmerged: int | None = None
-    if main_ref is not None and count > 0:
-        unmerged_count, unmerged_trunc, _, merge_err = git_log_since(worktree, since, main_ref)
-        if merge_err is None and not unmerged_trunc:
-            unmerged = unmerged_count
+    if main_ref is not None:
+        if until is None:
+            window_commits, window_trunc = count, truncated
+        else:
+            window_commits, window_trunc, _, w_err = git_log_since(worktree, since, None, until)
+            if w_err is not None:
+                window_commits = None
+        if window_commits and not window_trunc:
+            u_count, u_trunc, _, m_err = git_log_since(worktree, since, main_ref, until)
+            if m_err is None and not u_trunc:
+                unmerged = u_count
 
     committed, uncommitted, unaccounted, live_owned = [], [], [], []
     dirty_set = set(dirty) | set(noise)
@@ -581,7 +607,7 @@ def git_facts(worktree: Path | None, since: dt.datetime | None,
         committed_manifest=tuple(committed),
         uncommitted_manifest=tuple(uncommitted),
         unaccounted_manifest=tuple(unaccounted),
-        main_ref=main_ref, unmerged_since=unmerged,
+        main_ref=main_ref, merge_window_commits=window_commits, unmerged_since=unmerged,
         live_owner=owner, live_owned_manifest=tuple(live_owned),
     )
 
@@ -639,11 +665,16 @@ def age_axis(facts: DispatchFacts, now: dt.datetime,
     return "normal" if elapsed < overdue_after else "overdue"
 
 
+def merge_window(git: GitFacts) -> int:
+    """머지 축이 실제로 센 커밋 수. 창 상한이 없었으면 `commits_since` 와 같다."""
+    return git.commits_since if git.merge_window_commits is None else git.merge_window_commits
+
+
 def merge_axis(git: GitFacts) -> str:
     """`unknown`(기준 ref 를 못 찾음) | `none`(잴 커밋 없음) | `merged` | `unmerged`."""
     if not git.ok or git.main_ref is None:
         return "unknown"
-    if git.commits_since == 0:
+    if merge_window(git) == 0:
         return "none"
     if git.unmerged_since is None:
         return "unknown"
@@ -758,11 +789,12 @@ def judge_closed(facts: DispatchFacts, git: GitFacts, now: dt.datetime,
             #    이 한 줄이 없어서 `task_4c7447a2597a` 가 상시 경보로 남아 있었다.
             if ax["merge_axis"] == "merged":
                 return Verdict("CLOSED_NO_REPORT_MERGED", hb, br,
-                               f"디스패치 이후 커밋 {git.commits_since}건이 전부 "
-                               f"{git.main_ref} 에 들어가 있다 — 조치 없음", **ax)
+                               f"이 태스크의 창(디스패치~종료) 안 커밋 {merge_window(git)}건이 "
+                               f"전부 {git.main_ref} 에 들어가 있다 — 조치 없음", **ax)
             return Verdict("CLOSED_NO_REPORT_COMMITTED", hb, br,
                            f"worker_done 없음 / 디스패치 이후 커밋 {git.commits_since}건"
-                           + (f" (그 중 {git.unmerged_since}건이 아직 {git.main_ref} 밖)"
+                           + (f" (창 안 {merge_window(git)}건 중 {git.unmerged_since}건이 "
+                              f"아직 {git.main_ref} 밖)"
                               if ax["merge_axis"] == "unmerged" else ""), **ax)
         return Verdict("CLOSED_NO_REPORT_UNVERIFIED", hb, br,
                        "worker_done 도 없고 디스패치 이후 커밋도 없다", **ax)
@@ -870,7 +902,7 @@ def sweep(run_id: str, *, now: dt.datetime | None = None,
     rows = []
     for facts in all_facts:
         git = git_facts(facts.worktree, facts.dispatched_at, facts.manifest,
-                        owner_for(facts, owners))
+                        owner_for(facts, owners), facts.completed_at)
         rows.append(Row(facts=facts, git=git,
                         verdict=judge(facts, git, now, stale_after, overdue_after)))
     return rows, skipped, None
@@ -965,6 +997,7 @@ def as_json(rows: list[Row], skipped: int, summary: dict) -> str:
             "merge_axis": r.verdict.merge_axis,
             "owner_axis": r.verdict.owner_axis,
             "main_ref": r.git.main_ref,
+            "merge_window_commits": merge_window(r.git),
             "unmerged_since_dispatch": r.git.unmerged_since,
             "live_owner_task": r.git.live_owner.task_id if r.git.live_owner else None,
             "manifest_live_owned": list(r.git.live_owned_manifest),
