@@ -241,3 +241,76 @@ def test_main_fills_the_hole_end_to_end(tmp_path, capsys):
     assert (tmp_path / f"daily_health_{_label(1)}.txt").exists()   # 결번이 채워졌다
     out = capsys.readouterr().out
     assert f"catch-up: made=1 ['{_label(1)}']" in out
+
+
+# --------------------------------------------------------------------------- #
+# 4. `--date` 가 기존 리포트를 말없이 덮어쓰지 않는가 (2026-08-09 발견)
+#
+# 따라잡기 경로는 `write_if_absent` 로 덮지 않게 만들어 놨는데(bf81c3b), **사람이
+# `--date` 로 과거 날을 재구성하는 경로만 무방비**였다 — `out.write_text(...)` 무조건
+# 덮어쓰기. 리포트 무결성이 08-06 정전을 잡아낸 근거였던 만큼(COORDINATOR-STATE §4.11)
+# 원본이 사라지는 것은 그 근거가 사라지는 것이다.
+#
+# 정시 경로(`--date` 없음)는 **일부러 그대로 둔다.** 그날의 리포트를 늘 최신으로
+# 갱신하는 것이 그 경로의 일이고, 거기서 거부하면 재실행이 깨진다.
+# --------------------------------------------------------------------------- #
+def test_explicit_date_refuses_to_overwrite_an_existing_report(tmp_path, capsys):
+    """이것이 고치기 전 실패다 — 원본이 조용히 사라졌다."""
+    _cfg(tmp_path)
+    label = _label(2)
+    original = tmp_path / f"daily_health_{label}.txt"
+    original.write_text("원본 — 08-06 정전의 근거", encoding="utf-8")
+
+    rc = DH.main(["--config", str(_write_cfg(tmp_path)), "--date", label])
+
+    assert original.read_text(encoding="utf-8") == "원본 — 08-06 정전의 근거", (
+        "--date 가 기존 리포트를 덮어썼다 — 그 날의 근거가 사라진다")
+    assert rc != 0, "아무것도 안 썼으면 종료코드로 말해야 한다"
+    out = capsys.readouterr().out
+    assert "거부" in out and "--force" in out, "거부한 사실이 stdout 에 안 찍힌다"
+
+
+def test_explicit_date_with_force_overwrites_and_says_so(tmp_path, capsys):
+    """사람이 명시적으로 덮으려는 경로는 남긴다 — 다만 조용히는 아니다."""
+    _cfg(tmp_path)
+    label = _label(2)
+    original = tmp_path / f"daily_health_{label}.txt"
+    original.write_text("원본", encoding="utf-8")
+
+    rc = DH.main(["--config", str(_write_cfg(tmp_path)), "--date", label, "--force"])
+
+    assert rc == 0
+    assert original.read_text(encoding="utf-8") != "원본", "--force 인데 안 덮었다"
+    out = capsys.readouterr().out
+    assert "덮어썼다" in out and "--force" in out, "덮은 사실이 stdout 에 안 찍힌다"
+
+
+def test_explicit_date_still_writes_when_the_file_is_absent(tmp_path, capsys):
+    """보호가 새 파일 생성까지 막으면 재구성 기능 자체가 죽는다."""
+    _cfg(tmp_path)
+    label = _label(2)
+    rc = DH.main(["--config", str(_write_cfg(tmp_path)), "--date", label])
+    assert rc == 0
+    assert (tmp_path / f"daily_health_{label}.txt").exists()
+    assert "written:" in capsys.readouterr().out
+
+
+def test_the_scheduled_path_still_overwrites_todays_report(tmp_path):
+    """정시 경로는 보호 대상이 아니다 — 오늘 것은 늘 최신이어야 하고 재실행이 깨지면 안 된다."""
+    _cfg(tmp_path)
+    today = tmp_path / f"daily_health_{_label(0)}.txt"
+    today.write_text("낡은 오늘치", encoding="utf-8")
+    rc = DH.main(["--config", str(_write_cfg(tmp_path))])
+    assert rc == 0
+    assert today.read_text(encoding="utf-8") != "낡은 오늘치"
+
+
+def test_a_refused_date_does_not_pay_for_the_reconstruction(tmp_path, monkeypatch):
+    """거부할 것을 알면서 재구성부터 하면 몇 분을 버린다 — 존재 확인이 먼저다."""
+    _cfg(tmp_path)
+    label = _label(2)
+    (tmp_path / f"daily_health_{label}.txt").write_text("원본", encoding="utf-8")
+    called = []
+    monkeypatch.setattr(DH, "build_summary", lambda *a, **k: called.append(1) or "x")
+    DH.main(["--config", str(_write_cfg(tmp_path)), "--date", label])
+    assert called == [], "거부할 파일인데 build_summary 를 불렀다"

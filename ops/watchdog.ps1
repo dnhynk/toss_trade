@@ -148,7 +148,19 @@ param(
     [double]$PlannedDefaultMin = 30,
 
     [string]$WatchdogTaskName = "tossmon-watchdog",
-    [string]$SentinelTaskName = "tossmon-sentinel"
+    [string]$SentinelTaskName = "tossmon-sentinel",
+
+    # Sibling scheduled tasks whose LAST RESULT this watchdog checks (see section 8).
+    [string[]]$SiblingTasks = @("tossmon-dailyhealth", "tossmon-logrotate",
+                                "tossmon-watchdog", "tossmon-sentinel",
+                                "tossmon-collector-oneshot"),
+    # Only judge a run this recent. Beyond it the result is history, not news - see the
+    # comment on section 8 for why this bound exists at all.
+    [double]$TaskResultMaxAgeH = 24,
+    # Test seam: read task info from a JSON file instead of Task Scheduler, for the same
+    # reason the disk thresholds are overridable - a unit test must not depend on the
+    # real state of this machine. Empty (default) = query the live scheduler.
+    [string]$TaskInfoJson = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -550,6 +562,16 @@ function Get-LogTail([int]$lines = 400) {
     $t = Get-Content $CollectorLog -Tail $lines -ErrorAction SilentlyContinue
     if ($null -eq $t) { return @() }
     return $t
+}
+
+# A collector.log line starts with 'yyyy-MM-dd HH:mm:ss,mmm'. Returns $null when the line
+# has no such prefix (continuation lines of a traceback, for instance). Callers must treat
+# $null as "cannot date this" and KEEP the line - never as "old".
+function Get-LogLineTime([string]$line) {
+    if ($line -match "^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[,.]\d+") {
+        try { return [datetime]::ParseExact($Matches[1], "yyyy-MM-dd HH:mm:ss", $null) } catch { return $null }
+    }
+    return $null
 }
 
 function Get-PowerInfo {
@@ -1475,8 +1497,36 @@ if ($null -ne $tele) {
 }
 
 # (7) W4 contract log strings - things that are logged but may not be counted.
-$tailText = (Get-LogTail 500) -join "`n"
-if ($tailText.Length -gt 0) {
+#
+# The window is bounded by LINES **and** BY TIME. Lines alone were not a window at all:
+# how much time 500 lines cover depends entirely on how busy the market is. Measured
+# 2026-08-09 on the live collector.log:
+#
+#     Fri regular 23:30 -> 113 min      Fri regular 03:00 ->   74 min
+#     Fri regular 01:00 ->  77 min      Sun idle    09:33 -> 1507 min (25.1 h)
+#
+# The damage is one-directional. collector.log is 5-minute telemetry, not per-request, so
+# even at peak the 500 lines still cover 74+ minutes - nothing is missed by being busy.
+# But when the market is shut the log barely grows, one old line never leaves the window,
+# and Raise-Alert's 3600s dedup re-fires it every hour: a single 'precision drift' at
+# 2026-08-08 08:46 had produced 25 ALERT files by 08-09 09:21. A dead event shouting
+# forever trains the reader to skip the file - which is how a real one gets missed.
+#
+# WHY 180 MINUTES, AND WHY THE SAME BOUND FOR ALL SIX PATTERNS:
+#  - 180 sits 59% above the busiest measured span of the 500-line window (113 min), so
+#    during market hours the LINE cap still binds and detection is unchanged from today.
+#    That margin is not cosmetic: log_tape_gap fires on a COUNT (Min=20), and a binding
+#    time cap would quietly shrink that numerator.
+#  - It is 36x the 5-minute watchdog cadence, so every log line is examined by ~36
+#    consecutive runs before it ages out.
+#  - Same bound regardless of Level (CRIT..INFO): all six are "a line appeared" detectors,
+#    so the bound only decides how long we keep shouting AFTER the condition stops. A
+#    condition that is still happening keeps writing fresh lines and keeps the alert alive.
+#    Severity changes how loud the file is, not how long a finished event stays news.
+$LogWindowMin = 180
+$logCutoff = (Get-Date).AddMinutes(-$LogWindowMin)
+$tailLines = @(Get-LogTail 500)
+if ($tailLines.Count -gt 0) {
     $logPatterns = @(
         @{ Key = "log_auth_failure"; Rx = "AUTH-FAILURE"; Level = "CRIT"; Min = 1;
            Msg = "AUTH-FAILURE lines are present in the recent log - token expired/rejected or issuance/lease failure." },
@@ -1492,14 +1542,155 @@ if ($tailText.Length -gt 0) {
            Msg = "Many 'tape gap' lines in the recent log - normal right after a restart, suspicious otherwise." }
     )
     foreach ($lp in $logPatterns) {
-        $n = ([regex]::Matches($tailText, $lp.Rx)).Count
+        $n = 0; $aged = 0; $undated = 0
+        $newest = $null; $newestLine = ""; $newestAged = $null
+        foreach ($ln in $tailLines) {
+            if ($ln -notmatch $lp.Rx) { continue }
+            $ts = Get-LogLineTime $ln
+            if ($null -eq $ts) {
+                # Cannot date it -> KEEP it. Discarding a line we failed to parse would
+                # drop a real alert silently, which is the one direction we cannot afford.
+                $undated++; $n++
+                if ($newestLine -eq "") { $newestLine = $ln }
+                continue
+            }
+            if ($ts -lt $logCutoff) {
+                $aged++
+                if ($null -eq $newestAged -or $ts -gt $newestAged) { $newestAged = $ts }
+                continue
+            }
+            $n++
+            if ($null -eq $newest -or $ts -gt $newest) { $newest = $ts; $newestLine = $ln }
+        }
         if ($n -ge $lp.Min) {
             $problems += "$($lp.Key)_$n"
-            Raise-Alert $state $lp.Key $lp.Level ("$($lp.Msg)`r`n`r`nOccurrences in the last 500 log lines: $n") 3600 | Out-Null
+            $when = if ($null -ne $newest) { "{0:yyyy-MM-dd HH:mm:ss}" -f $newest }
+                    else { "(undated - no parseable timestamp on the matched line)" }
+            $body = "$($lp.Msg)`r`n`r`n" +
+                    "Occurrences in the last 500 log lines within ${LogWindowMin}min: $n`r`n" +
+                    "Most recent match: $when`r`n" +
+                    "  $($newestLine.Trim())"
+            if ($undated -gt 0) { $body += "`r`n($undated match(es) had no parseable timestamp and were kept.)" }
+            if ($aged -gt 0) { $body += "`r`n($aged older match(es) were outside the ${LogWindowMin}min bound and not counted.)" }
+            Raise-Alert $state $lp.Key $lp.Level $body 3600 | Out-Null
         } else {
             Clear-AlertKey $state $lp.Key
+            # A suppression nobody can see is just a different blind spot. This does NOT
+            # become an alert file: doing so would recreate the every-hour noise it cures.
+            # It goes to watchdog.log, which is permanent and greppable.
+            if ($aged -gt 0) {
+                Write-Log ("LOG-PATTERN-AGED key=$($lp.Key) n=$aged older_than=${LogWindowMin}min " +
+                           ("newest={0:yyyy-MM-dd HH:mm:ss}" -f $newestAged) +
+                           " - matched the 500-line window but not the time bound, so no alert.")
+            }
         }
     }
+}
+
+# (8) Sibling scheduled tasks - they can die and nobody finds out.
+#
+# 2026-08-09: the morning report was simply missing. The machine was on, the collector was
+# fine, and tossmon-dailyhealth had RUN and died:
+#     last=2026-08-09 08:52:01  result=3221225786 = 0xC000013A = STATUS_CONTROL_C_EXIT
+# Not a timeout (ExecutionTimeLimit is PT10M). The same signature is on
+# tossmon-collector-oneshot from 08-04. WHAT cleaned up the console at 08:52 is unknown -
+# the Task Scheduler operational log is empty, so there is no evidence. This section adds
+# OBSERVATION ONLY; it does not try to fix a cause nobody has evidence for.
+#
+# No alert fired for any of it. Get-ScheduledTaskInfo hands us LastTaskResult for free and
+# the watchdog simply never looked at its own siblings.
+#
+# TWO THINGS KEEP THIS FROM BECOMING THE NOISE IT REPLACES:
+#  - Per-task expected results. tossmon-watchdog exits 1 whenever it found problems and 2
+#    when it restarted the collector (watchdog.ps1 bottom) - both are NORMAL, and both are
+#    already reported through its own alert files. Alerting on them would double-report and
+#    would fire on nearly every cycle.
+#  - A recency bound. tossmon-collector-oneshot is a manual one-shot whose last result has
+#    been 0xC000013A since 08-04 with no next run; without the bound it would alert forever,
+#    which is exactly the disease section 7 just cured.
+$TASK_RUNNING = 267009      # 0x41301 SCHED_S_TASK_RUNNING - not a verdict yet
+$TASK_NEVER_RAN = 267011    # 0x41303 SCHED_S_TASK_HAS_NOT_RUN
+$TASK_NO_MORE_RUNS = 267012 # 0x41304 SCHED_S_TASK_NO_MORE_RUNS
+$taskOkResults = @{
+    # exits 0 clean / 1 "problems found, already alerted" / 2 "restarted the collector"
+    "tossmon-watchdog" = @(0, 1, 2)
+    "tossmon-sentinel" = @(0, 1, 2)
+}
+function Get-SiblingTaskInfo([string[]]$names, [string]$jsonPath) {
+    if ($jsonPath -ne "") {
+        if (-not (Test-Path $jsonPath)) { return @() }
+        try {
+            $parsed = Get-Content $jsonPath -Raw | ConvertFrom-Json
+        } catch { return @() }
+        # An empty array parses to $null; @($null) is a one-element array of nothing,
+        # which would walk into the loop below and read properties off $null.
+        if ($null -eq $parsed) { return @() }
+        return @($parsed | Where-Object { $null -ne $_ })
+    }
+    $out = @()
+    foreach ($n in $names) {
+        try {
+            $i = Get-ScheduledTaskInfo -TaskName $n -ErrorAction Stop
+            $out += [pscustomobject]@{ TaskName = $n; LastRunTime = $i.LastRunTime
+                                       LastTaskResult = [int64]$i.LastTaskResult }
+        } catch {
+            # A missing task is itself worth saying, but it is not the same event as a
+            # task that ran and died - keep them apart.
+            $out += [pscustomobject]@{ TaskName = $n; LastRunTime = $null
+                                       LastTaskResult = $null; Missing = $true }
+        }
+    }
+    return $out
+}
+foreach ($ti in (Get-SiblingTaskInfo $SiblingTasks $TaskInfoJson)) {
+    $tn = [string]$ti.TaskName
+    $key = "task_result_" + ($tn -replace "[^A-Za-z0-9]", "_")
+    if ($ti.PSObject.Properties["Missing"] -and $ti.Missing) {
+        $problems += "task_missing_$tn"
+        Raise-Alert $state $key "WARN" (
+            "Scheduled task '$tn' is not registered. Unattended work this project relies " +
+            "on is simply not scheduled - re-register with ops\register_task_scheduler.ps1."
+        ) 21600 | Out-Null
+        continue
+    }
+    $res = $ti.LastTaskResult
+    if ($null -eq $res) { Clear-AlertKey $state $key; continue }
+    $res = [int64]$res
+    $lastRun = $null
+    if ($null -ne $ti.LastRunTime -and "$($ti.LastRunTime)" -ne "") {
+        try { $lastRun = [datetime]$ti.LastRunTime } catch { $lastRun = $null }
+    }
+    $ageH = if ($null -ne $lastRun) { ((Get-Date) - $lastRun).TotalHours } else { [double]::PositiveInfinity }
+    $ok = if ($taskOkResults.ContainsKey($tn)) { $taskOkResults[$tn] } else { @(0) }
+    if ($res -in $ok -or $res -eq $TASK_RUNNING -or $res -eq $TASK_NEVER_RAN -or
+        $res -eq $TASK_NO_MORE_RUNS) {
+        Clear-AlertKey $state $key
+        continue
+    }
+    if ($ageH -gt $TaskResultMaxAgeH) {
+        Clear-AlertKey $state $key
+        # Visible but not an alert - same rule as the aged-out log patterns above.
+        Write-Log ("TASK-RESULT-AGED task=$tn result=$res (0x{0:X}) " -f $res +
+                   ("last_run={0:yyyy-MM-dd HH:mm:ss}" -f $lastRun) +
+                   " age=$([int]$ageH)h older_than=${TaskResultMaxAgeH}h - not alerted.")
+        continue
+    }
+    $problems += "task_result_${tn}_$res"
+    $hint = switch ($res) {
+        3221225786 { "0xC000013A STATUS_CONTROL_C_EXIT - the process was killed by a console control event. Not a timeout." }
+        267014     { "0x41306 SCHED_S_TASK_TERMINATED - Task Scheduler stopped it (ExecutionTimeLimit)." }
+        267010     { "0x41302 SCHED_S_TASK_DISABLED - the task is disabled and will not run again." }
+        default    { "non-zero exit from the task's own program." }
+    }
+    Raise-Alert $state $key "WARN" (
+        "Scheduled task '$tn' last run FAILED.`r`n`r`n" +
+        ("  last run : {0:yyyy-MM-dd HH:mm:ss} ($([int]$ageH)h ago)`r`n" -f $lastRun) +
+        ("  result   : $res (0x{0:X})`r`n" -f $res) +
+        "  meaning  : $hint`r`n" +
+        "  expected : $($ok -join ', ')`r`n`r`n" +
+        "Its output for that run does not exist. Check whether the artefact it produces " +
+        "(report / rotation / health file) is missing for that slot."
+    ) 21600 | Out-Null
 }
 
 # (e) token state: only meaningful during open sessions

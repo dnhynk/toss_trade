@@ -139,6 +139,12 @@ function Write-SettledOpenState([string]$dir, [hashtable]$extra = $null) {
 
 # ---------------- runner ----------------
 
+function _EmptyTaskInfo([string]$dir) {
+    $p = Join-Path $dir "taskinfo_empty.json"
+    if (-not (Test-Path $p)) { [IO.File]::WriteAllText($p, "[]", [Text.UTF8Encoding]::new($false)) }
+    return $p
+}
+
 function Invoke-Watchdog([string]$dir, [hashtable]$override = $null) {
     $p = [ordered]@{
         RepoRoot          = $dir
@@ -154,6 +160,11 @@ function Invoke-Watchdog([string]$dir, [hashtable]$override = $null) {
         DiskReclaimGB     = 0
         DiskWarnGB        = 0
         DiskCritGB        = 0
+        # Same reason as the disk thresholds above: without this the sibling-task check
+        # queries THIS machine's real Task Scheduler, and every case that asserts "no
+        # ALERT files" fails whenever a real tossmon task happens to be in a failed
+        # state. A unit test must not depend on the state of the box it runs on.
+        TaskInfoJson      = (_EmptyTaskInfo $dir)
     }
     if ($null -ne $override) { foreach ($k in $override.Keys) { $p[$k] = $override[$k] } }
     $cmdArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $Watchdog, "-DryRunRestart")
@@ -606,6 +617,248 @@ function Test-TC3-YieldTurningIntoAStallIsNotDedupedAway {
         (@($alerts | Where-Object { $_ -match "tier2_orderbook_flat" }).Count -eq 1) ($alerts -join ",")
 }
 
+# --------------------------------------------------------------------------- #
+# LOG-PATTERN WINDOW (2026-08-09). The six log-pattern checks shared one 500-LINE
+# window with no time bound. Measured span of those 500 lines:
+#
+#     Fri regular 23:30 -> 113 min      Fri regular 03:00 ->   74 min
+#     Fri regular 01:00 ->  77 min      Sun idle    09:33 -> 1507 min (25.1 h)
+#
+# So on a quiet weekend one ERROR line stays inside the window for a day, and with
+# Raise-Alert's 3600s dedup it re-fires every hour: one 08-08 08:46 'precision drift'
+# produced 25 ALERT files by 08-09 09:21. The damage is one-directional - a dead event
+# shouting forever - because the log is 5-minute telemetry, not per-request.
+#
+# The fix is a TIME cap on top of the line cap, plus the matched line's timestamp in the
+# body so a reader knows at a glance whether it happened now or yesterday.
+# --------------------------------------------------------------------------- #
+function _LogLine([double]$agoMin, [string]$text) {
+    $t = (Get-Date).AddMinutes(-$agoMin).ToString("yyyy-MM-dd HH:mm:ss")
+    return "$t,000 ERROR   $text"
+}
+
+function Test-LP1-A25HourOldEventMustNotKeepAlerting {
+    # THE PRE-FIX FAILURE. Before the time cap this raised ALERT_log_precision_drift,
+    # and kept doing it every hour for as long as the log stayed quiet.
+    $d = New-Sandbox
+    Write-StateFile $d "closed" 20 30
+    Write-CollectorLog $d "closed" 25 30 0 @(
+        (_LogLine 1507 "precision drift: max decimal digits 7 -> 8 (sample '5.70891193')"))
+    Write-SettledOpenState $d
+    Invoke-Watchdog $d | Out-Null
+    $alerts = Get-Alerts $d "ALERT"
+    Assert "LP1" "a 25h-old log line raises no ALERT" `
+        (@($alerts | Where-Object { $_ -match "log_precision_drift" }).Count -eq 0) ($alerts -join ",")
+}
+
+function Test-LP2-ARecentEventIsStillCaught {
+    # CONTROL GROUP. The cap must not turn the detector off - this is the whole risk of
+    # a time bound, and the reason the bound is 180min and not 30min.
+    $d = New-Sandbox
+    Write-StateFile $d "day" 20 30
+    Write-CollectorLog $d "day" 25 30 0 @(
+        (_LogLine 10 "precision drift: max decimal digits 7 -> 8 (sample '5.70891193')"))
+    Write-SettledOpenState $d
+    Invoke-Watchdog $d | Out-Null
+    $alerts = Get-Alerts $d "ALERT"
+    Assert "LP2" "a 10min-old log line still raises an ALERT" `
+        (@($alerts | Where-Object { $_ -match "log_precision_drift" }).Count -eq 1) ($alerts -join ",")
+}
+
+function Test-LP3-TheBodyCarriesTheMatchedLineTimestamp {
+    # Opening an alert file used to tell you 'Occurrences in the last 500 log lines: 1'
+    # and nothing else - you could not tell a fresh fault from a day-old one.
+    $d = New-Sandbox
+    Write-StateFile $d "day" 20 30
+    $stamp = (Get-Date).AddMinutes(-12).ToString("yyyy-MM-dd HH:mm")
+    Write-CollectorLog $d "day" 25 30 0 @(
+        (_LogLine 12 "precision drift: max decimal digits 7 -> 8 (sample '5.70891193')"))
+    Write-SettledOpenState $d
+    Invoke-Watchdog $d | Out-Null
+    $body = Get-AlertBody $d (Get-Alerts $d "ALERT") "log_precision_drift"
+    Assert "LP3" "body names when the newest match happened" ($body -match [regex]::Escape($stamp)) $body
+    Assert "LP3" "body states the time bound it used" ($body -match "within \d+ ?min") $body
+}
+
+function Test-LP4-AnAgedOutMatchIsRecordedNotSilent {
+    # A suppression nobody can see is just a different blind spot. It must not become an
+    # ALERT (that would recreate the disease), so it goes to watchdog.log.
+    $d = New-Sandbox
+    Write-StateFile $d "closed" 20 30
+    Write-CollectorLog $d "closed" 25 30 0 @(
+        (_LogLine 1507 "precision drift: max decimal digits 7 -> 8 (sample '5.70891193')"))
+    Write-SettledOpenState $d
+    Invoke-Watchdog $d | Out-Null
+    $log = Get-WatchdogLog $d
+    Assert "LP4" "watchdog.log records the aged-out match" `
+        ($log -match "LOG-PATTERN-AGED key=log_precision_drift") $log
+    Assert "LP4" "and says how old the newest one was" ($log -match "newest=\d{4}-\d{2}-\d{2}") $log
+}
+
+function Test-LP5-ACriticalPatternKeepsTheSameBound {
+    # CONTROL GROUP + the judgement call: all six patterns are 'a line appeared'
+    # detectors, so the bound answers 'how long after it STOPS do we keep shouting',
+    # which does not depend on severity. A live CRIT keeps producing fresh lines.
+    $d = New-Sandbox
+    Write-StateFile $d "day" 20 30
+    Write-CollectorLog $d "day" 25 30 0 @((_LogLine 5 "AUTH-FAILURE token rejected"))
+    Write-SettledOpenState $d
+    Invoke-Watchdog $d | Out-Null
+    $alerts = Get-Alerts $d "ALERT"
+    Assert "LP5" "a fresh CRIT still alerts" `
+        (@($alerts | Where-Object { $_ -match "log_auth_failure" }).Count -eq 1) ($alerts -join ",")
+
+    $d2 = New-Sandbox
+    Write-StateFile $d2 "closed" 20 30
+    Write-CollectorLog $d2 "closed" 25 30 0 @((_LogLine 1507 "AUTH-FAILURE token rejected"))
+    Write-SettledOpenState $d2
+    Invoke-Watchdog $d2 | Out-Null
+    Assert "LP5" "a day-old CRIT does not re-fire forever either" `
+        (@((Get-Alerts $d2 "ALERT") | Where-Object { $_ -match "log_auth_failure" }).Count -eq 0) ""
+}
+
+function Test-LP6-ACountingPatternIsNotTrimmedByTheBound {
+    # log_tape_gap needs Min=20. A time cap can silently lower a COUNT threshold's
+    # numerator - that is why the bound (180min) sits above the measured busiest-session
+    # span of the 500-line window (113min), so during market hours lines never age out.
+    $d = New-Sandbox
+    Write-StateFile $d "regular" 20 30
+    $gaps = @()
+    for ($i = 0; $i -lt 25; $i++) { $gaps += (_LogLine (100 + $i) "tape gap SYM$i prev=1 this=2 n=3") }
+    Write-CollectorLog $d "regular" 25 30 0 $gaps
+    Write-SettledOpenState $d
+    Invoke-Watchdog $d | Out-Null
+    $notes = Get-Alerts $d "NOTE"
+    Assert "LP6" "25 tape gaps spread over 100-124min still clear Min=20" `
+        (@($notes | Where-Object { $_ -match "log_tape_gap" }).Count -eq 1) ($notes -join ",")
+}
+
+function Test-LP7-AnUndatableMatchIsKeptNotDropped {
+    # Dropping a line we cannot date is the dangerous direction: it loses a real alert
+    # silently. Keep it, and say in the body that it could not be dated.
+    $d = New-Sandbox
+    Write-StateFile $d "day" 20 30
+    Write-CollectorLog $d "day" 25 30 0 @("    ...continuation... precision drift in traceback")
+    Write-SettledOpenState $d
+    Invoke-Watchdog $d | Out-Null
+    $alerts = Get-Alerts $d "ALERT"
+    Assert "LP7" "an undatable match still alerts" `
+        (@($alerts | Where-Object { $_ -match "log_precision_drift" }).Count -eq 1) ($alerts -join ",")
+    $body = Get-AlertBody $d $alerts "log_precision_drift"
+    Assert "LP7" "and the body says it could not be dated" ($body -match "undated") $body
+}
+
+# --------------------------------------------------------------------------- #
+# SIBLING SCHEDULED TASK RESULTS (2026-08-09). tossmon-dailyhealth ran at 08:52:01 and
+# died with 0xC000013A (STATUS_CONTROL_C_EXIT). The morning report was simply absent and
+# NOT ONE ALERT FIRED - the coordinator only noticed by counting files by hand.
+#
+# The trap this must avoid: tossmon-watchdog legitimately exits 1 on every cycle that
+# found problems (and 2 when it restarted the collector), and tossmon-collector-oneshot
+# has carried a failed result since 08-04 with no next run. Alerting on either would make
+# this feature a standing alarm - the same disease as the log-pattern window.
+# --------------------------------------------------------------------------- #
+function _TaskInfo([string]$dir, [array]$rows) {
+    $p = Join-Path $dir "taskinfo.json"
+    [IO.File]::WriteAllText($p, (ConvertTo-Json @($rows) -Depth 4), [Text.UTF8Encoding]::new($false))
+    return $p
+}
+
+function _Task([string]$name, $result, [double]$ranHoursAgo) {
+    return @{ TaskName = $name
+              LastRunTime = (Get-Date).AddHours(-$ranHoursAgo).ToString("yyyy-MM-dd HH:mm:ss")
+              LastTaskResult = $result }
+}
+
+function _RunWithTasks([string]$d, [array]$rows) {
+    Write-StateFile $d "day" 20 30
+    Write-CollectorLog $d "day" 25 30
+    Write-SettledOpenState $d
+    Invoke-Watchdog $d @{ TaskInfoJson = (_TaskInfo $d $rows) } | Out-Null
+}
+
+function Test-TS1-ATaskThatRanAndDiedRaisesAnAlert {
+    # THE PRE-FIX FAILURE: this exact record produced no alert at all on 2026-08-09.
+    $d = New-Sandbox
+    _RunWithTasks $d @((_Task "tossmon-dailyhealth" 3221225786 1.0))
+    $alerts = Get-Alerts $d "ALERT"
+    Assert "TS1" "a dead sibling task raises an ALERT" `
+        (@($alerts | Where-Object { $_ -match "task_result_tossmon_dailyhealth" }).Count -eq 1) ($alerts -join ",")
+    $body = Get-AlertBody $d $alerts "task_result_tossmon_dailyhealth"
+    Assert "TS1" "body decodes the exit code" ($body -match "STATUS_CONTROL_C_EXIT") $body
+    Assert "TS1" "body names when it ran" ($body -match "\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}") $body
+    Assert "TS1" "body says what was expected instead" ($body -match "expected : 0") $body
+}
+
+function Test-TS2-TheWatchdogsOwnExitOneIsNormal {
+    # CONTROL GROUP. watchdog.ps1 exits 1 whenever $problems is non-empty. If that counted
+    # as failure this check would fire on nearly every cycle and mean nothing.
+    $d = New-Sandbox
+    _RunWithTasks $d @((_Task "tossmon-watchdog" 1 0.1), (_Task "tossmon-sentinel" 0 0.1))
+    Assert "TS2" "watchdog result=1 raises nothing" `
+        (@((Get-Alerts $d "ALERT") | Where-Object { $_ -match "task_result" }).Count -eq 0) ""
+}
+
+function Test-TS3-TheWatchdogsRestartExitIsAlsoNormal {
+    # exit 2 = "I restarted the collector" - already reported by its own alert files.
+    $d = New-Sandbox
+    _RunWithTasks $d @((_Task "tossmon-watchdog" 2 0.1))
+    Assert "TS3" "watchdog result=2 raises nothing" `
+        (@((Get-Alerts $d "ALERT") | Where-Object { $_ -match "task_result" }).Count -eq 0) ""
+}
+
+function Test-TS4-AllCleanTasksAreQuiet {
+    $d = New-Sandbox
+    _RunWithTasks $d @((_Task "tossmon-dailyhealth" 0 1.0), (_Task "tossmon-logrotate" 0 9.0),
+                       (_Task "tossmon-sentinel" 0 0.1))
+    Assert "TS4" "all-zero results raise nothing" `
+        (@((Get-Alerts $d "ALERT") | Where-Object { $_ -match "task_result" }).Count -eq 0) ""
+}
+
+function Test-TS5-AStaleOneShotFailureIsRecordedNotAlerted {
+    # CONTROL GROUP. tossmon-collector-oneshot has held 0xC000013A since 08-04 with no
+    # next run. Without the recency bound this alerts every hour, forever.
+    $d = New-Sandbox
+    _RunWithTasks $d @((_Task "tossmon-collector-oneshot" 3221225786 120.0))
+    Assert "TS5" "a 5-day-old one-shot failure raises nothing" `
+        (@((Get-Alerts $d "ALERT") | Where-Object { $_ -match "task_result" }).Count -eq 0) ""
+    Assert "TS5" "but watchdog.log records it" `
+        ((Get-WatchdogLog $d) -match "TASK-RESULT-AGED task=tossmon-collector-oneshot") (Get-WatchdogLog $d)
+}
+
+function Test-TS6-ARunningTaskIsNotAFailure {
+    # 267009 = 0x41301 SCHED_S_TASK_RUNNING. Reading it as an exit code says 'failed'.
+    $d = New-Sandbox
+    _RunWithTasks $d @((_Task "tossmon-dailyhealth" 267009 0.2),
+                       (_Task "tossmon-logrotate" 267011 0.2))
+    Assert "TS6" "running / never-ran codes raise nothing" `
+        (@((Get-Alerts $d "ALERT") | Where-Object { $_ -match "task_result" }).Count -eq 0) ""
+}
+
+function Test-TS7-AnUnregisteredTaskIsItsOwnEvent {
+    # A task that is not registered at all is a different fault from one that ran and died.
+    $d = New-Sandbox
+    Write-StateFile $d "day" 20 30
+    Write-CollectorLog $d "day" 25 30
+    Write-SettledOpenState $d
+    $p = Join-Path $d "taskinfo.json"
+    [IO.File]::WriteAllText($p, (ConvertTo-Json @(@{ TaskName = "tossmon-logrotate"
+        LastRunTime = $null; LastTaskResult = $null; Missing = $true }) -Depth 4),
+        [Text.UTF8Encoding]::new($false))
+    Invoke-Watchdog $d @{ TaskInfoJson = $p } | Out-Null
+    $body = Get-AlertBody $d (Get-Alerts $d "ALERT") "task_result_tossmon_logrotate"
+    Assert "TS7" "an unregistered task alerts with its own wording" `
+        ($body -match "not registered") $body
+}
+
+function Test-TS8-ATimeoutKillIsDecodedToo {
+    $d = New-Sandbox
+    _RunWithTasks $d @((_Task "tossmon-dailyhealth" 267014 0.5))
+    $body = Get-AlertBody $d (Get-Alerts $d "ALERT") "task_result_tossmon_dailyhealth"
+    Assert "TS8" "0x41306 is decoded as a scheduler termination" `
+        ($body -match "SCHED_S_TASK_TERMINATED") $body
+}
+
 function Test-R1-HealthySessionIsQuiet {
     # The baseline: a normal open session with everything fresh writes no ALERT at all.
     # Without this, "no alert" in the cases above could just mean the watchdog crashed.
@@ -652,7 +905,22 @@ try {
         "Test-TR5-ZeroTier2MembersIsANoteNotAnAlert",
         "Test-TC1-RealStallIsStillAnAlert",
         "Test-TC2-DisabledPollingIsStillAnAlert",
-        "Test-TC3-YieldTurningIntoAStallIsNotDedupedAway")
+        "Test-TC3-YieldTurningIntoAStallIsNotDedupedAway",
+        "Test-LP1-A25HourOldEventMustNotKeepAlerting",
+        "Test-LP2-ARecentEventIsStillCaught",
+        "Test-LP3-TheBodyCarriesTheMatchedLineTimestamp",
+        "Test-LP4-AnAgedOutMatchIsRecordedNotSilent",
+        "Test-LP5-ACriticalPatternKeepsTheSameBound",
+        "Test-LP6-ACountingPatternIsNotTrimmedByTheBound",
+        "Test-LP7-AnUndatableMatchIsKeptNotDropped",
+        "Test-TS1-ATaskThatRanAndDiedRaisesAnAlert",
+        "Test-TS2-TheWatchdogsOwnExitOneIsNormal",
+        "Test-TS3-TheWatchdogsRestartExitIsAlsoNormal",
+        "Test-TS4-AllCleanTasksAreQuiet",
+        "Test-TS5-AStaleOneShotFailureIsRecordedNotAlerted",
+        "Test-TS6-ARunningTaskIsNotAFailure",
+        "Test-TS7-AnUnregisteredTaskIsItsOwnEvent",
+        "Test-TS8-ATimeoutKillIsDecodedToo")
     foreach ($c in $cases) {
         try { & $c } catch { Assert $c "case ran to completion" $false $_.Exception.Message }
     }

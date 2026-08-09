@@ -132,9 +132,13 @@ def build_summary(cfg, date_str: str | None, catchup: bool = False) -> str:
         # `max_gap` 이라는 이름을 없앴다. 값이 "관측 사이 최대 간격"인데 이름은 "최대
         # 공백"으로 읽혀서, 창 끝 48.2분을 3.4분이라고 보고했다. 이제 `max_hole`(가장자리
         # 포함)이 먼저 나오고, 그것이 무엇으로 이루어졌는지가 아래에 펼쳐진다.
+        # 휴장 구간을 같이 넘긴다. 안 넘기면 주말·휴장일 창(관측 0개)이 창 전체를
+        # `ALERT_` 로 찍는다 — 08-02·08-09(일)·08-03(월)이 실제로 그랬고, 그러면
+        # `max_hole` 줄이 매주 늑대를 외쳐 읽는 사람이 그 줄을 건너뛰게 된다.
+        closed_now = GA.closed_spans(cfg.log_dir, start_ms, end_ms)
         if edge is not None:
             lines += ["  " + ln for ln in GA.edge_hole_lines(
-                "랭킹 폴", edge, GA.planned_windows(cfg.log_dir, cfg.state_dir))]
+                "랭킹 폴", edge, GA.planned_windows(cfg.log_dir, cfg.state_dir), closed_now)]
         lines += [
             f"candles_1m rows    : {n_1m}",
             f"trades_snap rows   : {n_tr}",
@@ -156,10 +160,20 @@ def build_summary(cfg, date_str: str | None, catchup: bool = False) -> str:
                 "data/watchdog.log 로 대조할 것.",
                 "   **이 파일의 존재는 '봤다'는 뜻이지 '수집됐다'는 뜻이 아니다.**",
             ]
+        # 이 `!!` 줄은 등급과 **따로** 도는 문턱이라, 등급만 고치면 배너는 주말마다 그대로
+        # 늑대를 외친다. 그래서 여기서도 같은 근거를 쓴다: 최대 공백이 통째로 휴장 구간
+        # 안이면 배너를 내리지 않는다. 근거가 없으면(= 못 봤으면) 그대로 외친다.
         if edge is not None and edge["max_hole_s"] > 30 * 60:
-            lines.append(f"!! 랭킹 폴링 최대 공백 {edge['max_hole_s'] / 60.0:.1f}분 "
-                         f"({edge['max_hole_kind']}) — 세션 전환(정상) 또는 장애 구간인지 "
-                         "collector.log/ALERT 파일과 대조할 것")
+            worst = max(edge["holes"], key=lambda h: h.seconds)
+            explained = closed_now and GA.uncovered_span_ms(
+                worst.start_ms, worst.end_ms, closed_now) <= 0
+            if not explained:
+                lines.append(f"!! 랭킹 폴링 최대 공백 {edge['max_hole_s'] / 60.0:.1f}분 "
+                             f"({edge['max_hole_kind']}) — 세션 전환(정상) 또는 장애 구간인지 "
+                             "collector.log/ALERT 파일과 대조할 것")
+            else:
+                lines.append(f"   (최대 공백 {edge['max_hole_s'] / 60.0:.1f}분은 전부 휴장 "
+                             "구간이다 — telemetry session=closed 로 확인됨)")
     finally:
         conn.close()
 
@@ -311,6 +325,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default=None)
     ap.add_argument("--date", default=None, help="YYYYMMDD (수집일이 끝나는 날, 기본 오늘)")
+    ap.add_argument("--force", action="store_true",
+                    help="--date 가 가리키는 리포트가 이미 있어도 덮어쓴다 (기본은 거부)")
     args = ap.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):  # Windows 콘솔 cp949 대응
         try:
@@ -322,11 +338,27 @@ def main(argv: list[str] | None = None) -> int:
     # 지난 날을 명시해서 부르는 것은 정의상 사후 재구성이다 — 사람이 손으로 만든
     # 08-06 리포트가 정시 생성분과 똑같이 생겨서는 안 된다.
     _, _, today_label = window_for(None)
-    text = build_summary(cfg, args.date, catchup=(label != today_label))
     out = cfg.log_dir / f"daily_health_{label}.txt"
+    # **`--date` 는 기존 리포트를 덮지 않는다.** 따라잡기 경로는 `write_if_absent` 로
+    # 이미 보호돼 있었는데(bf81c3b) 사람이 과거 날을 재구성하는 이 경로만 무방비였다.
+    # 아침 리포트는 기록이고, 08-06 정전을 잡아낸 근거가 바로 그 기록이었다 — 다시 만든
+    # 것이 원본을 지우면 그 근거가 사라진다. 존재 확인을 **재구성보다 먼저** 하는 이유:
+    # 어차피 거부할 파일 하나 때문에 몇 분짜리 사후 재구성을 치를 이유가 없다.
+    # 정시 경로(`--date` 없음)는 일부러 보호하지 않는다 — 그날 것을 늘 최신으로 갱신하는
+    # 것이 그 경로의 일이고, 거기서 거부하면 재실행이 깨진다.
+    if args.date is not None and out.exists() and not args.force:
+        print(f"거부: {out} 가 이미 있다 — 덮지 않았다(아무것도 쓰지 않음).\n"
+              f"      그 날의 리포트는 기록이다. 정말 다시 만들려면 `--force` 를 주거나 "
+              f"기존 파일을 먼저 옮겨라.")
+        return 4
+    text = build_summary(cfg, args.date, catchup=(label != today_label))
+    replaced = args.date is not None and out.exists()
     out.write_text(text, encoding="utf-8")
     print(text)
-    print(f"written: {out}")
+    if replaced:
+        print(f"덮어썼다(--force): {out} — 이전 내용은 사라졌다")
+    else:
+        print(f"written: {out}")
     # 따라잡기는 **예약 실행 경로에서만** 돈다. `--date` 는 사람이 특정 날을 다시
     # 만들려고 주는 인자이고, 그때 옆 날들까지 만들어내면 그건 요청 안 한 동작이다.
     # 오늘 것을 먼저 쓰고 나서 도는 이유: 정시 리포트가 따라잡기 비용에 밀리면 안 된다.
