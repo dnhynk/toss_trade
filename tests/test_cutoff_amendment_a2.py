@@ -139,7 +139,11 @@ def test_ranking_cutoff_is_identical_across_both_candle_modes() -> None:
 
 
 def test_poisoning_the_t0_snapshot_moves_nothing() -> None:
-    """`snap_ms >= t0` 를 변조해도 쏠림도 피처가 흔들리지 않아야 한다 (A1 §1 3항 의무)."""
+    """`snap_ms >= t0` 를 변조해도 쏠림도 피처가 흔들리지 않아야 한다 (**A2 §3** 의무).
+
+    옛 A1 §1 3항이 아니라 A2 §3 이다 — A1 §1 은 2026-08-09 에 A2 로 대체됐고,
+    "미래 데이터를 넣어도 결과가 동일함을 증명하는 테스트" 의무는 A2 §3 이 이어받았다.
+    """
     clean = _rankings()
     dirty = clean.copy()
     fut = dirty["snap_ms"] >= T0_MS

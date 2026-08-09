@@ -313,6 +313,13 @@ class RankingBuffer:
 
     영구 기록은 `rankings_snap` 테이블이 한다. 여기는 `extract_precursor_features` 가
     토스 쏠림도를 계산할 최근 구간만 남긴다.
+
+    ⚠️ `snap_ms` 는 **우리 관측 시각**(`clock.now_ms()`)이고, 검출은 **직전 완성봉**을
+    t0 로 잡는다. 그래서 이 버퍼의 **최신 행들은 항상 `snap_ms > t0_ms`** 이고
+    C-7 개정 A2 §2 의 엄격 컷(`snap_ms < t0_ms`)이 그것을 **버린다**. 낭비처럼 보이지만
+    고치지 마라 — 랭킹은 순간값이고 도착 시 중앙 16.1초 늙어 있어(`docs/35`) 그 행들은
+    t0 에 손에 없던 정보다. 실측(mock HTTP 전 구간, `docs/50`): 검출 1회당 평균 7행,
+    10분 워밍된 버퍼의 5.5% 가 이 컷에 걸린다.
     """
 
     def __init__(self, keep_ms: int = RANKING_KEEP_MS,
