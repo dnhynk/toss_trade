@@ -190,6 +190,12 @@ def confirm_score(feats: dict[str, float]) -> float:
 
     전조가 없는 즉발형(`instant`)을 잡는 유일한 경로다. 리드타임을 주지 않는 대신
     "시작 후 수 분 내 확인" 을 가능하게 한다.
+
+    **C-7 개정 A2 이후 `include_t0=True` 가 기본값이자 정상 컷오프다** — 종료 라벨이라
+    T0 봉은 t0 에 완결이고, 이 경로는 그 봉을 읽는 것이 존재 이유다(룩어헤드가 아니다).
+    `include_t0=False` 는 이제 "연구용 엄격"이 아니라 **1봉 과보수 모드 표기**이며,
+    그 모드에서는 `rvol_at_cutoff`·`ret_5` 가 T0 봉을 못 봐 이 경로가 통째로 무의미해진다.
+    **랭킹 컷(`snap_ms < t0_ms`)은 이 플래그와 무관하게 항상 엄격이다** (A2 §2).
     """
     f = feats.get
     coil_flip = _ramp(-float(f("coil_score")) if _ok(f("coil_score")) else _NAN, 0.5, 2.5)
@@ -684,8 +690,31 @@ class EventDetector:
     """새 1분봉이 들어올 때마다 스코어와 이벤트를 갱신한다.
 
     피처·이벤트 계산은 전부 `tossmon.analysis` 재사용이다 (중복 구현 금지).
-    실시간 판정이므로 `include_t0=True` — T0 봉 종료 시점에 보는 것은 룩어헤드가 아니다
-    (계약 A1 §1).
+
+    **컷오프는 계약 `docs/04` C-7 개정 A2 (2026-08-09)** 다. 이 파일의 다른 `A2 §n` 은
+    전부 C-6/C-8 개정 A2(호가·테이프·`/prices`)를 가리키므로 반드시 구분해서 읽어라.
+
+    A2 는 **봉과 스냅을 갈라놓았다.** 하나의 플래그로 같이 밀면 안 된다:
+
+        캔들 `ts_ms  <= t0_ms`   — 봉은 **구간**이고 `ts_ms` 는 **종료 라벨**이라
+                                   `ts_ms = T` 인 봉은 `[T−60초, T)` 를 담아 **T 에 이미
+                                   완결**이다. 그래서 아래 `include_t0=True` 다.
+        랭킹 `snap_ms <  t0_ms`  — 랭킹은 구간이 아니라 **순간**이고, 도착 시 **중앙
+                                   16.1초 늙어 있다**(W1 실측, `docs/35`). `snap_ms = t0`
+                                   인 스냅은 t0 에 손에 없다. **넓히면 진짜 룩어헤드다.**
+
+    **A1 §1 에서 무엇이 바뀌었나** (이 자리에 있던 옛 주석이 인용하던 조항이다):
+    A1 은 `include_t0=True` 의 근거를 *"W4 실시간 검출기는 T0 봉 종료 시점에 판정하므로"*
+    라고 적었다. 그 문장은 **봉 라벨이 시작 시각이라는 전제**에서 나왔고 그 전제가 틀렸다 —
+    종료 라벨이면 T0 봉은 실시간 검출기만이 아니라 **누구에게나** t0 에 관측 가능하다.
+    즉 이 플래그는 더 이상 "실시간이라 봐준다"가 아니라 **컷오프 모드 표기**다.
+    그리고 랭킹은 그 반대편으로 **조용히 엄격해졌다** — 옛 코드는 플래그 하나로 봉과 스냅을
+    같이 밀었고 그것이 A2 §2 위반이었다(W3 실측: `ranking_snaps_pre` 4.0 대 6.0).
+    아래 `evaluate()` 는 랭킹 컷을 **넘기지 않는다**; `features.extract_precursor_features`
+    안에서 `include_t0=False` 가 박혀 나간다. 자물쇠는 `tests/test_a2_collector_alignment.py`.
+
+    **A2 는 자기유리 개정이다**(이벤트당 캔들 1봉 증가). 인용할 때 이 문장을 함께 인용하라 —
+    `docs/04` C-7 개정 A2 의 "방향 고지" 문단이 그렇게 요구한다.
     """
 
     def __init__(self, params: EventParams, *, notifier=None, max_per_day: int = 1,
@@ -733,6 +762,10 @@ class EventDetector:
             return None
         t0_ms = int(df_1m["ts_ms"].to_numpy()[-1])
         rk = rankings if rankings is not None else _empty_rankings()
+        # `include_t0` 는 **캔들 전용 모드 표기**다 (C-7 개정 A2 §1). 랭킹은 이 값과 무관하게
+        # 항상 `snap_ms < t0_ms` 엄격이다 (A2 §2) — 그 컷은 features 안에 박혀 있고 여기서
+        # 넘기지 않는다. 실시간 버퍼는 직전 봉 종료 이후 받은 스냅을 계속 들고 있으므로
+        # (실측: 검출 1회당 평균 7행, 버퍼의 5.5%) 이 컷이 비어 있는 방어가 아니다.
         feats = extract_precursor_features(
             df_1m, rk, t0_ms, include_t0=True, symbol=symbol, curve=curve,
             calendar=calendar, baseline=baseline,

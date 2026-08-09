@@ -1,6 +1,11 @@
 """전조 피처 검증 — 소유: W3.
 
-이 파일의 최우선 목적은 **룩어헤드 부재의 증명**이다 (계약 A1 §1).
+이 파일의 최우선 목적은 **룩어헤드 부재의 증명**이다 (계약 C-7 개정 **A2 §3** 의무).
+
+컷오프 자체는 A1 §1 이 아니라 **A2** 다 (2026-08-09 대체) — 캔들 `ts_ms <= t0_ms`(§1),
+랭킹 `snap_ms < t0_ms`(§2). 두 규칙이 갈라졌다는 것을 고정하는 파일은
+`tests/test_cutoff_amendment_a2.py`(분석 레이어)와
+`tests/test_a2_collector_alignment.py`(실시간 검출기)다.
 """
 from __future__ import annotations
 
