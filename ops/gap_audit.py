@@ -80,6 +80,17 @@ _GAP_RX = re.compile(
 _START_RX = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+\s+INFO\s+collector start")
 _SIG_RX = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+\s+INFO\s+"
                      r"COLLECTION-CONFIG \S+ sig=(\S+)")
+_TELEMETRY_RX = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+\s+\S+\s+"
+                           r"telemetry session=(\S+)")
+
+#: 인접한 두 `closed` 관측을 하나의 휴장 구간으로 이을 수 있는 최대 간격(ms).
+#: 근거: 텔레메트리 케이던스 실측(2026-08-09, 2,024줄) p50=301s / p90=304s / p99=311s.
+#: 900s 는 3주기라 **연속 2회 미발신**까지는 참아주고, 그보다 긴 침묵은 잇지 않는다.
+#: 로그에 남은 600s 초과 침묵 4건과 대조하면: 2,196분(08-01~08-02 수집기 정지)·348분
+#: (08-06 정전)·60분(08-05)은 전부 이 값보다 훨씬 커서 **안 이어진다** — 즉 진짜 정전을
+#: 휴장으로 둔갑시키지 않는다. 유일하게 이 값 아래인 10.1분은 `pre` 세션이라 애초에
+#: 휴장 구간이 아니다.
+CLOSED_JOIN_MAX_MS = 900_000
 
 
 @dataclass(frozen=True)
@@ -418,6 +429,74 @@ def planned_windows(log_dir: Path, state_dir: Path) -> list[tuple[int, int, str]
     return [(a, b, " / ".join(w)) for a, b, w in merged]
 
 
+def closed_spans(log_dir: Path, start_ms: int, end_ms: int) -> list[tuple[int, int, str]]:
+    """**장이 열리지 않았다고 증명되는** 구간들. 증거는 수집기가 남긴 텔레메트리다.
+
+    ## 왜 `tossmon/analysis/session.py` 가 아닌가
+
+    그것은 **시각(time-of-day)만 본다** — 요일도 휴장일도 모른다. 실측:
+    `session_of(2026-08-09 03:00 KST) == 'regular'` (일요일인데 정규장이라고 답한다).
+    그걸로 이 버그를 고칠 수 없다. 반대로 수집기는 `/market-calendar/US` 로 세션을 켜고
+    끄고(`tossmon/collector/__init__.py`), 그 판정을 5분마다 `telemetry session=` 으로
+    로그에 적는다. **재계산이 아니라 그때 실제로 있었던 일의 기록**이다.
+
+    ## 없는 것을 근거로 삼지 않는다 — 08-06 이 계속 잡히는 이유
+
+    "텔레메트리가 없다"는 "장이 닫혔다"가 **아니다**. 인접한 두 `closed` 관측 사이가
+    `CLOSED_JOIN_MAX_MS` 이내일 때만 그 구간을 닫힘으로 인정한다. 수집기가 죽어 있으면
+    줄 자체가 없으니 이을 것이 없고, 그 구멍은 설명되지 않은 채로 남아 `ALERT_` 가 된다.
+    08-06 의 295.5분 정전이 정확히 그 경우다(회귀 테스트로 고정해 뒀다).
+
+    ## 경계 주의
+
+    창 자체(`daily_health.window_for`)는 KST 09:00 ~ 다음날 08:50 이다. **애프터 종료
+    경계 08:50 -> 09:00 변경이 사용자 결정으로 대기 중**(`COORDINATOR-STATE` §4.11)이며,
+    그것이 반영되면 창이 10분 넓어져 여기 숫자도 함께 움직인다.
+    """
+    obs: list[tuple[int, str]] = []
+    for line in read_log_lines(Path(log_dir)):
+        m = _TELEMETRY_RX.match(line)
+        if not m:
+            continue
+        try:
+            ms = int(dt.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
+        except ValueError:
+            continue
+        if start_ms <= ms <= end_ms:
+            obs.append((ms, m.group(2)))
+    obs.sort()
+    # 관측 하나는 **그 순간**만이 아니라 한 케이던스만큼의 상태를 말한다. 창을 자른 위치와
+    # 텔레메트리 위상이 어긋나면 양 끝에 최대 한 주기의 잔여가 남는데, 그건 결손이 아니라
+    # **자른 위치가 만든 것**이다(같은 논리를 폴 간격에 대해 `grade_hole` 이 이미 쓴다).
+    # 08-09 창에서 실측된 잔여가 앞 0.18분 / 뒤 1.70분이었고, 그 2분 때문에 1,428분이
+    # 설명된 창이 통째로 ALERT_ 로 남았다. 그래서 각 구간을 바깥으로 한 주기 늘린다.
+    # 그 한 주기는 **상수가 아니라 이 창에서 실제로 관측된 중앙 간격**이다 — 케이던스가
+    # 바뀌면 같이 움직인다. 상한은 이음 한계와 같게 둬서 잔여 보정이 정전을 덮지 못하게 한다.
+    gaps = sorted(b - a for (a, _sa), (b, _sb) in zip(obs, obs[1:]))
+    pad = min(gaps[len(gaps) // 2], CLOSED_JOIN_MAX_MS) if gaps else 0
+    why = "장이 열리지 않았다 (telemetry session=closed)"
+    spans: list[tuple[int, int, str]] = []
+    i = 0
+    while i < len(obs) - 1:
+        if obs[i][1] != "closed" or obs[i + 1][1] != "closed" \
+                or obs[i + 1][0] - obs[i][0] > CLOSED_JOIN_MAX_MS:
+            i += 1            # 그 사이는 **못 본** 것이다. 닫혔다고 주장하지 않는다.
+            continue
+        j = i + 1             # 이을 수 있는 데까지 이은 하나의 연속 구간
+        while (j < len(obs) - 1 and obs[j + 1][1] == "closed"
+               and obs[j + 1][0] - obs[j][0] <= CLOSED_JOIN_MAX_MS):
+            j += 1
+        # 잔여 보정은 **창 가장자리에서만** 한다. 양옆에 관측이 있으면 그 시각의 상태를
+        # 우리가 이미 알고 있으므로(닫힘이 아니거나, 너무 멀어서 못 이은 것이거나)
+        # 그쪽으로 늘리는 것은 아는 사실을 덮는 것이다 — 실제로 그렇게 늘렸다가
+        # `regular` 관측 하나를 건너뛰고 두 구간이 하나로 붙는 버그를 냈다.
+        lo = max(start_ms, obs[i][0] - pad) if i == 0 else obs[i][0]
+        hi = min(end_ms, obs[j][0] + pad) if j == len(obs) - 1 else obs[j][0]
+        spans.append((lo, hi, why))
+        i = j + 1
+    return spans
+
+
 def uncovered_span_ms(a_ms: int, b_ms: int, windows: list[tuple[int, int, str]]) -> int:
     """`[a,b]` 중 계획 창에 **안 덮인** 길이(ms). 창들은 겹치지 않는다고 본다(합쳐서 온다)."""
     covered = sum(max(0, min(b_ms, wb) - max(a_ms, wa)) for wa, wb, _ in windows)
@@ -425,7 +504,8 @@ def uncovered_span_ms(a_ms: int, b_ms: int, windows: list[tuple[int, int, str]])
 
 
 def grade_hole(hole: Hole, windows: list[tuple[int, int, str]],
-               normal_gap_s: float | None) -> tuple[str, str]:
+               normal_gap_s: float | None,
+               closed: list[tuple[int, int, str]] | None = None) -> tuple[str, str]:
     """(등급, 사유). `docs/34` 의 4등급 체계 그대로 — 새 등급을 만들지 않는다.
 
     **왜 `normal_gap_s` 로 먼저 거르는가**: 창을 어디서 자르든 가장자리에는 최대 한 폴
@@ -440,19 +520,38 @@ def grade_hole(hole: Hole, windows: list[tuple[int, int, str]],
     if normal_gap_s is not None and hole.seconds <= normal_gap_s:
         return ("NOTE_", f"이 창의 정상 폴 간격 상단(p99={normal_gap_s}s) 이내 — "
                          "창을 자른 위치가 만든 것이지 결손이 아니다")
-    if not windows:
-        return ("ALERT_", "계획 정비 창 기록이 없다 — 설명되지 않은 공백")
+    # 휴장 구간은 계획 정비 창과 **따로** 센다. 등급이 다르기 때문이다:
+    # `PLANNED_` 는 "사람이 일부러 한 것"인데 미국장 휴장은 아무도 하지 않았다.
+    # `NOTE_` 를 고른 근거는 `docs/34` §3 에 이미 있는 판정이다 —
+    # "스냅 정지 + tier2 인원 = 0 -> NOTE_ (볼 대상이 없다 — 포기한 것도 없다)".
+    # 휴장은 정확히 같은 모양이다: 수집할 것이 없었고, 포기한 것도 고장난 것도 없다.
+    # 새 등급을 만들지 않는다.
+    closed = list(closed or [])
+    all_cover = list(windows) + closed
+    left = uncovered_span_ms(hole.start_ms, hole.end_ms, all_cover)
     hit = [w for w in windows if min(hole.end_ms, w[1]) > max(hole.start_ms, w[0])]
-    left = uncovered_span_ms(hole.start_ms, hole.end_ms, windows)
-    if left <= 0:
-        return ("PLANNED_", "계획 정비 창 안 — " + "; ".join(w[2] for w in hit))
-    why = f"{round(left / 60000.0, 1)}분이 계획 창 **밖** — 설명되지 않은 공백"
+    hit_closed = [c for c in closed if min(hole.end_ms, c[1]) > max(hole.start_ms, c[0])]
+    if left <= 0 and all_cover:
+        if hit:      # 사람이 한 부분이 섞여 있으면 그쪽이 이긴다 — 아침에 무시해도 되는 것이다
+            why = "계획 정비 창 안 — " + "; ".join(w[2] for w in hit)
+            if hit_closed:
+                why += " (+ 일부는 휴장 구간)"
+            return ("PLANNED_", why)
+        return ("NOTE_", "장이 열리지 않은 구간 — 수집할 것이 없었다 "
+                         "(근거: collector.log 의 telemetry session=closed)")
+    if not all_cover:
+        return ("ALERT_", f"{round(hole.minutes, 1)}분 전부가 설명되지 않았다 — "
+                          "계획 정비 창 기록도 휴장 근거도 없다")
+    why = f"{round(left / 60000.0, 1)}분이 계획 창·휴장 구간 **밖** — 설명되지 않은 공백"
     if hit:
         why += " (일부만 덮임: " + "; ".join(w[2] for w in hit) + ")"
+    if hit_closed:
+        why += " (휴장으로 설명된 부분은 이미 뺐다)"
     return ("ALERT_", why)
 
 
-def edge_hole_lines(label: str, eh: dict, windows: list[tuple[int, int, str]]) -> list[str]:
+def edge_hole_lines(label: str, eh: dict, windows: list[tuple[int, int, str]],
+                    closed: list[tuple[int, int, str]] | None = None) -> list[str]:
     """가장자리 구멍 절. `max_hole` 을 먼저 찍고, 그 아래에 무엇으로 이루어졌는지 편다."""
     inter = eh["inter_poll"]
     normal = inter["p99"]
@@ -462,7 +561,8 @@ def edge_hole_lines(label: str, eh: dict, windows: list[tuple[int, int, str]]) -
         f"  max_hole        : {_dur(eh['max_hole_s'])}  "
         f"[{eh['max_hole_kind']}]   <= 이 창의 진짜 최대 공백",
     ]
-    graded = [(h, grade_hole(h, windows, normal)) for h in eh["holes"]]
+    closed = list(closed or [])
+    graded = [(h, grade_hole(h, windows, normal, closed)) for h in eh["holes"]]
     for h, (grade, why) in graded:
         lines.append(f"  {h.name:16s}: {_dur(h.seconds):>8s}  "
                      f"({_ts(h.start_ms)} -> {_ts(h.end_ms)})")
@@ -476,6 +576,11 @@ def edge_hole_lines(label: str, eh: dict, windows: list[tuple[int, int, str]]) -
     lines.append(f"  관측 {eh['n_obs']}개 / 대조한 계획 정비 창 {len(windows)}개"
                  + ("  (기록 없음 — 가장자리 공백은 전부 ALERT_)" if not windows else "")
                  + f"  [until 없는 마커는 {PLANNED_DEFAULT_MIN}분으로 가정]")
+    closed_min = sum(b - a for a, b, _ in closed) / 60000.0
+    lines.append(f"  휴장 구간 {len(closed)}개 / 합계 {closed_min:.0f}분"
+                 + ("  (근거 없음 — 텔레메트리의 부재는 휴장이 아니다)" if not closed else
+                    "  (근거: telemetry session=closed, 인접 관측 간격 "
+                    f"{CLOSED_JOIN_MAX_MS // 1000}s 이내만 이음)"))
     if any(g == "ALERT_" for _h, (g, _w) in graded):
         lines.append("  !! 설명되지 않은 가장자리 공백이 있다 — 기계가 잤거나 수집이 창 "
                      "끝에서 죽었다. collector.log 와 ALERT 파일을 대조할 것.")
@@ -804,7 +909,8 @@ def audit(cfg, start_ms: int, end_ms: int, label: str) -> str:
         # 상대가 창 밖이라 애초에 목록에 안 들어온다. 그래서 따로 잰다.
         eh = edge_holes(ranking_poll_times(conn, start_ms, end_ms), start_ms, end_ms)
         pw = planned_windows(cfg.log_dir, cfg.state_dir)
-        lines += edge_hole_lines("랭킹 폴", eh, pw)
+        lines += edge_hole_lines("랭킹 폴", eh, pw,
+                                 closed_spans(cfg.log_dir, start_ms, end_ms))
         lines += [
             "  ** 호가·분봉에도 같은 구조적 사각이 있다(전부 연속 관측의 차이로 잰다). "
             "다만 그쪽 가장자리 공백은 **티어 소속 없이는 읽을 수 없다** — 창 시작 시점에 "

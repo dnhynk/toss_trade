@@ -746,3 +746,172 @@ def test_daily_health_main_actually_reaches_the_gap_audit():
                         used.add(sub.attr)
     assert used, ("ops/daily_health.py main() 에서 gap_audit 을 부르지 않는다 — "
                   "결손 감사가 아침 리포트에 찍히지 않는다는 뜻이다.")
+
+
+# --------------------------------------------------------------------------- #
+# 10. 장이 안 열린 창을 사고로 부르지 않는다 (2026-08-09 발견)
+#
+# 일요일 리포트(창 = 토 09:00 ~ 일 08:50)에는 미국장이 아예 없다. 그런데 관측 0개 ->
+# `whole_window` 1430.0분 -> `ALERT_` 가 났다. 실측으로 08-02(일)·08-09(일)·**08-03(월)**
+# 셋 다 같은 증상이다(월요일은 미확인이었으므로 다시 쟀다 — 창 = 일 09:00 ~ 월 08:50).
+# 기계는 깨어 있었고 수집기도 살아 있었다(`col_up=90,301s`, 재기동 0회). 볼 것이 없었다.
+#
+# `max_hole` 은 이 리포트에서 가장 중요한 한 줄이다 — 08-06 정전을 옛 지표 대비 227배
+# 차이로 잡아낸 지표다. 그게 주말마다 늑대를 외치면 읽는 사람이 그 줄을 건너뛰게 된다.
+#
+# ## 근거를 어디서 가져오는가 — `collector.log` 의 `telemetry session=` 줄
+#
+# `tossmon/analysis/session.py` 는 **쓸 수 없다**: 시각(time-of-day)만 보고 요일·휴장일
+# 개념이 없다. 실측으로 `session_of(일요일 03:00 KST) == 'regular'` 다. 그것으로 고치면
+# 이 버그는 그대로 남는다. 반면 수집기는 `/market-calendar/US` 로 세션을 켜고 끄며 그
+# 판정을 5분마다 로그에 적는다 — **재계산이 아니라 그때 실제로 있었던 일의 기록**이고,
+# gap_audit 이 이미 읽는 파일 안에 있다.
+#
+# ## 그리고 이 설계가 08-06 을 계속 잡는 이유
+#
+# **텔레메트리의 부재는 "장이 닫혔다"가 아니다.** 두 개의 인접한 `closed` 관측 사이가
+# 충분히 짧을 때만 그 구간을 닫힘으로 인정한다. 08-06 처럼 수집기가 죽어 있었으면 줄
+# 자체가 없으므로 닫힘 근거도 없고, 구멍은 `ALERT_` 로 남는다.
+# --------------------------------------------------------------------------- #
+def _tel(when: dt.datetime, session: str) -> str:
+    return (f"{when:%Y-%m-%d %H:%M:%S},000 INFO    telemetry session={session} "
+            "watch=1500 api_errors=0\n")
+
+
+def _closed_log(dirp: pathlib.Path, a_ms: int, b_ms: int, session: str = "closed",
+                step_s: int = 300) -> None:
+    """[a,b] 를 5분 간격 telemetry 로 채운다 — 실측 케이던스가 p50=301s 다."""
+    out = []
+    t = a_ms
+    while t <= b_ms:
+        out.append(_tel(dt.datetime.fromtimestamp(t / 1000.0), session))
+        t += step_s * 1000
+    (dirp / "collector.log").write_text("".join(out), encoding="utf-8")
+
+
+def test_the_sunday_window_is_a_note_not_an_alert(tmp_path):
+    """고치기 전 실패 — 08-02·08-09 일요일 창이 그대로 ALERT_ 였다."""
+    _closed_log(tmp_path, _W_START, _W_END)
+    spans = GA.closed_spans(tmp_path, _W_START, _W_END)
+    eh = GA.edge_holes([], _W_START, _W_END)
+    hole = eh["holes"][0]
+    assert hole.name == "whole_window"
+    grade, why = GA.grade_hole(hole, [], None, spans)
+    assert grade == "NOTE_", f"장이 안 열린 창이 아직 {grade} 다: {why}"
+    assert "장이 열리지 않" in why
+
+
+def test_the_monday_window_gets_the_same_treatment(tmp_path):
+    """미확인이었던 월요일 창(일 09:00 ~ 월 08:50) — 실측 결과 같은 증상이었다."""
+    mon_a = int(dt.datetime(2026, 8, 2, 9, 0, 0).timestamp() * 1000)
+    mon_b = int(dt.datetime(2026, 8, 3, 8, 50, 0).timestamp() * 1000)
+    _closed_log(tmp_path, mon_a, mon_b)
+    grade, _ = GA.grade_hole(GA.Hole("whole_window", mon_a, mon_b), [], None,
+                             GA.closed_spans(tmp_path, mon_a, mon_b))
+    assert grade == "NOTE_"
+
+
+# ---- ★ 대조군: 진짜 공백은 계속 잡혀야 한다. 여기가 무너지면 이 작업은 실패다 ---- #
+def test_the_20260806_outage_is_still_an_alert(tmp_path):
+    """08-06 의 295.5분 trailing_hole — 기계가 꺼져 있어서 텔레메트리가 **없다**.
+
+    주말 예외가 이것까지 삼키면 이 프로젝트 최대 공백을 못 보게 된다.
+    """
+    dies_at = _W_END - 295 * 60_000
+    _closed_log(tmp_path, _W_START, dies_at, session="regular")   # 죽기 전까지만 로그가 있다
+    hole = GA.Hole("trailing_hole", dies_at, _W_END)
+    grade, why = GA.grade_hole(hole, [], 12.0, GA.closed_spans(tmp_path, _W_START, _W_END))
+    assert grade == "ALERT_", f"08-06 정전이 {grade} 로 삼켜졌다: {why}"
+    assert "295" in why
+
+
+def test_a_hole_during_an_open_session_is_still_an_alert(tmp_path):
+    """텔레메트리가 있는데 `closed` 가 아니면 장은 열려 있었다 — 구멍은 진짜다."""
+    dies_at = _W_END - 60 * 60_000
+    _closed_log(tmp_path, _W_START, _W_END, session="regular")
+    hole = GA.Hole("trailing_hole", dies_at, _W_END)
+    grade, _ = GA.grade_hole(hole, [], 12.0, GA.closed_spans(tmp_path, _W_START, _W_END))
+    assert grade == "ALERT_"
+
+
+def test_absent_telemetry_is_never_read_as_market_closed(tmp_path):
+    """로그가 통째로 없으면 '닫혔다'가 아니라 '못 봤다'다."""
+    assert GA.closed_spans(tmp_path, _W_START, _W_END) == []
+    assert GA.grade_hole(GA.Hole("whole_window", _W_START, _W_END), [], None, [])[0] == "ALERT_"
+
+
+def test_a_long_telemetry_gap_between_two_closed_lines_is_not_bridged(tmp_path):
+    """실측 08-01 09:15 -> 08-02 21:50 (2,196분). 양끝이 `closed` 라도 그 사이는 못 봤다.
+
+    이 다리를 놓아버리면 주말에 수집기가 죽어도 전부 NOTE_ 가 된다.
+    """
+    mid = (_W_START + _W_END) // 2
+    (tmp_path / "collector.log").write_text(
+        _tel(dt.datetime.fromtimestamp(_W_START / 1000.0), "closed")
+        + _tel(dt.datetime.fromtimestamp(_W_END / 1000.0), "closed"), encoding="utf-8")
+    spans = GA.closed_spans(tmp_path, _W_START, _W_END)
+    assert GA.uncovered_span_ms(_W_START, mid, spans) > 0, "관측이 없는 구간을 닫힘으로 덮었다"
+    assert GA.grade_hole(GA.Hole("whole_window", _W_START, _W_END), [], None, spans)[0] == "ALERT_"
+
+
+def test_a_partly_closed_hole_reports_only_the_unexplained_remainder(tmp_path):
+    """절반은 휴장, 절반은 설명 없음 — NOTE_ 로 삼키지 않고 남은 만큼만 ALERT_."""
+    mid = _W_START + 12 * 3_600_000
+    _closed_log(tmp_path, _W_START, mid)
+    grade, why = GA.grade_hole(GA.Hole("whole_window", _W_START, _W_END), [], None,
+                               GA.closed_spans(tmp_path, _W_START, _W_END))
+    assert grade == "ALERT_"
+    # 720분이 관측됐고 마지막 관측 뒤로 한 케이던스(5분)만큼 가장자리 보정이 붙는다.
+    assert "705" in why, why
+
+
+def test_planned_and_closed_can_both_contribute(tmp_path):
+    """계획 정비 + 휴장이 합쳐서 전부 덮으면 사람이 한 쪽이 이긴다(PLANNED_ = 무시)."""
+    mid = _W_START + 12 * 3_600_000
+    _closed_log(tmp_path, _W_START, mid)
+    planned = [(mid, _W_END, "lid closed")]
+    grade, why = GA.grade_hole(GA.Hole("whole_window", _W_START, _W_END), planned, None,
+                               GA.closed_spans(tmp_path, _W_START, _W_END))
+    assert grade == "PLANNED_", why
+
+
+# ---- 파서 ---- #
+def test_closed_spans_only_joins_adjacent_closed_observations(tmp_path):
+    a = dt.datetime(2026, 8, 8, 12, 0, 0)
+    lines = "".join([
+        _tel(a, "closed"),
+        _tel(a + dt.timedelta(minutes=5), "closed"),
+        _tel(a + dt.timedelta(minutes=10), "regular"),   # 장이 열린다 — 다리가 끊긴다
+        _tel(a + dt.timedelta(minutes=15), "closed"),
+        _tel(a + dt.timedelta(minutes=20), "closed"),
+    ])
+    (tmp_path / "collector.log").write_text(lines, encoding="utf-8")
+    w0 = int(a.timestamp() * 1000)
+    spans = GA.closed_spans(tmp_path, w0 - 3_600_000, w0 + 3_600_000)
+    assert len(spans) == 2, spans
+    # 가장자리 보정이 **열린 세션 관측을 건너뛰면 안 된다.** 실제로 낸 버그다: 양쪽으로
+    # 한 케이던스씩 늘렸더니 minute 10 의 `regular` 를 뛰어넘어 두 구간이 하나로 붙었다.
+    open_at = w0 + 10 * 60_000
+    for lo, hi, _w in spans:
+        assert not (lo < open_at < hi), f"장이 열려 있던 시각을 휴장으로 덮었다: {spans}"
+    assert spans[0][1] == w0 + 5 * 60_000, "오른쪽에 관측이 있는데 늘렸다"
+    assert spans[1][0] == w0 + 15 * 60_000, "왼쪽에 관측이 있는데 늘렸다"
+
+
+def test_closed_spans_ignores_lines_outside_the_window(tmp_path):
+    a = dt.datetime(2026, 8, 8, 12, 0, 0)
+    (tmp_path / "collector.log").write_text(
+        _tel(a, "closed") + _tel(a + dt.timedelta(minutes=5), "closed"), encoding="utf-8")
+    far = int(dt.datetime(2026, 8, 1, 0, 0, 0).timestamp() * 1000)
+    assert GA.closed_spans(tmp_path, far, far + 3_600_000) == []
+
+
+def test_closed_spans_reads_rotated_logs_too(tmp_path):
+    """회전본을 안 읽으면 주말 아침에 막 회전된 날이 통째로 ALERT_ 로 돌아온다."""
+    a = dt.datetime(2026, 8, 8, 12, 0, 0)
+    import gzip as _gz
+    with _gz.open(tmp_path / "collector.log.20260808.gz", "wt", encoding="utf-8") as fh:
+        fh.write(_tel(a, "closed") + _tel(a + dt.timedelta(minutes=5), "closed"))
+    (tmp_path / "collector.log").write_text("", encoding="utf-8")
+    w0 = int(a.timestamp() * 1000)
+    assert len(GA.closed_spans(tmp_path, w0 - 60_000, w0 + 3_600_000)) == 1
