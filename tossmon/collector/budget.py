@@ -185,6 +185,8 @@ class BudgetGuard:
         self.counters: dict[str, int] = {}
         self.rate_limited: dict[str, int] = {}
         self._events: dict[str, deque[float]] = {}
+        #: 리미터의 자기 관측 표본 (시각, window_used). 예산 첨두와 **독립**이다.
+        self._limiter_window: dict[str, deque[tuple[float, float]]] = {}
         self._last_shrink_s: dict[str, float] = {}
         self._last_429_s: dict[str, float] = {}
         self._last_grow_s: dict[str, float] = {}
@@ -313,6 +315,11 @@ class BudgetGuard:
     def on_requests(self, group: str, n: int) -> None:
         """`n` 건을 **직전 계상 시각과 지금 사이에 고르게 펴서** 계상한다.
 
+        ⚠️ **폴백 경로다.** 송신 시각을 알 수 있으면 `on_sends()` 를 쓴다 — 아래 균등
+        분포의 전제("직전 계상 이후 구간에 일어났다")는 참이지만 그 구간이 **계상 간격**
+        이지 송신 간격이 아니어서, 완료가 몰리면 송신이 압축되어 첨두가 부푼다 (docs/52).
+        송신 시각을 못 주는 client(구버전·테스트 더블)에서만 이쪽으로 내려온다.
+
         재시도는 지수 백오프로 **떨어져서** 나가는데, 한 시각에 몰아 계상하면 초당 첨두가
         가짜로 치솟는다. 2026-08-04 13:10:06 실측: 첨두 13회로 "리미터가 1초 창을 못
         지킨다" 경보가 났는데 같은 구간 `http_429=0` 이었다 — 서버는 13회를 본 적이 없다.
@@ -336,6 +343,70 @@ class BudgetGuard:
         cutoff = now - self.window_s
         while q and q[0] < cutoff:
             q.popleft()
+
+    def on_sends(self, group: str, ages_s) -> None:
+        """`n` 건을 **각자의 송신 시각**으로 계상한다 (완료 시각이 아니라).
+
+        `ages_s`: 각 송신이 **지금으로부터 몇 초 전**이었나, 오래된 것부터.
+        시각이 아니라 나이로 받는 이유는 송신 시각의 시계(`time.monotonic`)와 이 가드의
+        시계(서버 보정 벽시계)가 다르기 때문이다 — 나이는 두 기준에서 같은 뜻이다.
+
+        이것이 `on_requests` 의 균등 분포를 대체한다. 균등 분포는 "직전 계상 이후 구간에
+        일어났다" 는 것만 알 때의 최선이었지만, 그 구간 자체가 **계상 간격**이지 송신
+        간격이 아니었다: 완료가 몰리면(이벤트루프가 막혔다 풀리는 모양) 넓게 퍼져 나간
+        송신들이 좁은 구간에 압축되어 찍힌다. 실측(테스트): 리미터가 진짜 첨두 9 로
+        내보낸 20건이 완료 시각 계상에서 **첨두 20** 으로 잡혔다.
+
+        큐는 **오름차순**을 유지해야 한다 (`peak_1s` 의 두 포인터와 왼쪽 pruning 이 그
+        전제 위에 있다). 송신은 그룹 락 때문에 순서대로 나가지만, 벽시계는 서버 오프셋
+        보정으로 뒤로 점프할 수 있으므로 어긋나면 정렬한다.
+        """
+        ages = [float(a) for a in ages_s]
+        if not ages:
+            return
+        now = self._now_s()
+        q = self._events.setdefault(group, deque())
+        was = q[-1] if q else None
+        stamped = sorted(now - max(a, 0.0) for a in ages)
+        q.extend(stamped)
+        if was is not None and stamped[0] < was:
+            # 시계가 뒤로 갔다 — 정렬을 복구하지 않으면 첨두 계산이 조용히 틀린다.
+            self.counters["events_out_of_order"] = (
+                self.counters.get("events_out_of_order", 0) + 1)
+            self._events[group] = q = deque(sorted(q))
+        self.counters[group] = self.counters.get(group, 0) + len(ages)
+        cutoff = now - self.window_s
+        while q and q[0] < cutoff:
+            q.popleft()
+
+    # ---- 리미터의 자기 관측 (독립 대조) ---------------------------------
+
+    def on_limiter_window(self, group: str, used: float) -> None:
+        """리미터가 **자기 창**(`snapshot()["window_used"]`)에서 세고 있는 송신 수 1표본.
+
+        예산 첨두와 **독립인 관측**이다: 예산은 client 가 소켓 직전에 찍은 시각으로 세고,
+        이쪽은 리미터가 `_Bucket.sent` 에 직접 쌓은 것을 센다. 둘이 어긋나면 계상이
+        틀렸다는 뜻이고, 어긋나지 않으면 "첨두가 한도 아래" 가 계측 착시가 아니라는 뜻이다.
+
+        ⚠️ 창 길이가 다르다: 리미터는 `WINDOW_HORIZON_S`(1.15초), 예산은 1.0초다.
+        그래서 정상 상태의 기대 관계는 **`peak_1s <= limiter_peak`** 이지 같음이 아니다.
+        """
+        now = self._now_s()
+        q = self._limiter_window.setdefault(group, deque())
+        q.append((now, float(used)))
+        cutoff = now - self.window_s
+        while q and q[0][0] < cutoff:
+            q.popleft()
+
+    def limiter_peak(self, group: str) -> float:
+        """관측 지평 안에서 리미터 창 점유의 최댓값. 표본이 없으면 -1 (모름)."""
+        q = self._limiter_window.get(group)
+        if not q:
+            return -1.0
+        cutoff = self._now_s() - self.window_s
+        while q and q[0][0] < cutoff:
+            q.popleft()
+        return max((v for _, v in q), default=-1.0)
 
     def on_429(self, group: str) -> None:
         """429 는 사고다 — 다음 `should_shrink()` 에서 강제로 줄인다."""

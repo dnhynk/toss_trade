@@ -205,6 +205,36 @@ IDLE_SLEEP_S = 5.0
 STATE_SAVE_S = 60.0
 #: 주기 텔레메트리 출력 간격 (초). 무인 실행이라 로그가 유일한 관측 창이다.
 TELEMETRY_EVERY_S = 300.0
+
+#: 텔레메트리의 누적 카운터 중 **프로세스 수명**인 것들 (재시작마다 0으로 돌아간다).
+#:
+#: 나머지 누적 카운터는 전부 **설치 수명**이다 — `ctx.counters` 는 상태파일
+#: (`collector_state.json`)에 저장되고 `load_state()` 가 되살리므로 재시작을 넘어
+#: 누적된다. 한 줄에 두 수명이 섞여 있고 그것을 표시하지 않았던 것이 실제로 운영
+#: 판단을 오염시켰다 (docs/52 §7):
+#:
+#:   * §4.12 는 "`http_429` 가 0 을 유지하면 급하지 않다" 를 규칙으로 삼았는데,
+#:     그때 본 0 은 **재시작 15분 뒤** 값이었다. 재시작 직전 값은 3 이었다.
+#:   * 같은 줄에 `http_429_under_own_limit=430 > http_429=177` 이 찍힌다.
+#:     `under_own_limit` 는 설치 수명(`ctx.counters`), `http_429` 는 프로세스 수명
+#:     (`client.counters`)이라 **분모가 다른 두 값**이다. 불가능해 보이지만 모순이 아니다.
+#:
+#: 이름을 바꾸지 않고 **표시**를 택했다 (docs/52 §7.2): `http_429`·`over_limit_1s` 는
+#: 이미 옛 로그와 `tools/replay_gating.py`·`tools/live_probe.py` 가 읽는 이름이라
+#: 바꾸면 과거 로그와의 비교가 끊긴다. 전부 프로세스 수명으로 통일하면 재시작을 넘어
+#: 누적되던 기록(`events`·`promotions`·`budget_shrinks`)이 사라지고, 반대로 client·budget
+#: 카운터를 상태파일에 저장하면 남의 객체 내부값과 텔레메트리가 갈라진다.
+#: 표시는 한 필드 값이고 잃는 것이 없다 — 그리고 §4.12 가 걸린 실패("0 이니 안전")는
+#: 같이 찍는 `proc_uptime_s` 하나로 직접 막힌다. **에포크 없는 0 은 아무 뜻도 없다.**
+#:
+#: `tests/test_send_time_accounting.py` 가 **재시작을 실제로 흉내내서** 이 목록이
+#: 사실과 맞는지 확인한다 — 목록이 드리프트하면 그 테스트가 먼저 죽는다.
+PROC_SCOPED_COUNTERS: tuple[str, ...] = (
+    "http_429", "over_limit_1s", "precision_parsed", "precision_rounded",
+)
+PROC_SCOPE_FIELD = "proc:" + ",".join(PROC_SCOPED_COUNTERS) + ";rest:install"
+
+
 #: 이벤트 alert 를 낼 최대 검출 지연(분). 이보다 오래된 이벤트는 지금 행동할 대상이 아니라
 #: 기록 대상이므로 info 로 내린다 — 재기동 직후 알림 폭주도 이 조건이 막는다.
 EVENT_ALERT_MAX_LAG_MIN = 15
@@ -422,6 +452,9 @@ class CollectorContext:
     stop: asyncio.Event = field(default_factory=asyncio.Event)
     _last_saved_ms: int = 0
     _last_telemetry_ms: int = 0
+    #: 이 **프로세스**가 시작한 시각. 텔레메트리의 `proc_uptime_s` 가 이것을 쓴다 —
+    #: 프로세스 수명 카운터(`http_429` 등)의 분모를 사람이 볼 수 있게 하려고.
+    _started_ms: int = 0
     _max_digits_seen: int = 0
     _http429: int = 0
     #: client.sent_by_group 의 **그룹별** 고수위 — 재시도·실패까지 포함한 실제 HTTP
@@ -486,6 +519,7 @@ class CollectorContext:
                   else _default_state_path(cfg))
         # 재시도·실패 계상 기준점 — ctx 생성 이전의 호출(캘린더 등)은 귀속하지 않는다.
         ctx._sent_seen = dict(getattr(client, "sent_by_group", None) or {})
+        ctx._started_ms = ctx.clock.now_ms()      # 프로세스 수명 카운터의 분모
         if resume:
             ctx.load_state()
             # 재기동 직후 억제 집합이 비면 오늘 이벤트가 전부 "신규" 로 재기록된다 (감사 F-3).
@@ -575,6 +609,63 @@ class CollectorContext:
         self._sent_seen[group] = seen
         return delta
 
+    def _book_sends(self, group: str, n: int) -> None:
+        """이 그룹의 미계상 송신 `n` 건을 **송신 시각**으로 예산에 계상한다.
+
+        `after_call`/`sync_rate_limits` 는 응답이 돌아온 **뒤**에 불린다. 그래서 예전에는
+        예산에 찍히는 시각이 송신 시각이 아니라 **완료 시각**이었다 (docs/45 §3.1).
+        리미터가 지키는 것은 송신이고 우리가 센 것은 완료라, 둘은 같은 양이 아니다:
+        완료가 몰리면 넓게 퍼져 나간 송신이 좁은 구간으로 압축되어 첨두가 부푼다.
+        docs/46 이 고친 것은 **누구의 몇 건인가**(귀속·총량)였고, **언제**는 남아 있었다.
+
+        client 는 소켓 직전에 그룹별 송신 수와 시각을 같은 자리에서 남긴다. 시각을 못 주는
+        client(구버전·테스트 더블)면 옛 균등분포 경로로 폴백한다 — 계상이 죽지는 않는다.
+        """
+        if n <= 0:
+            return
+        ages = self._send_ages(group, n)
+        if ages is None:
+            self.budget.on_requests(group, n)
+            return
+        # 관측 창(60초) 밖의 나이 = 시각을 잃어버린 송신. **건수는 그대로 계상**하되
+        # 조용히 넘어가지 않는다 — 총량이 줄면 실사용이 과소평가된다.
+        lost = sum(1 for a in ages if a >= self.budget.window_s)
+        if lost:
+            self.bump("budget_sends_without_time", lost)
+        self.budget.on_sends(group, ages)
+        self._sample_limiter_window(group)
+
+    def _send_ages(self, group: str, n: int) -> list[float] | None:
+        """가장 최근 `n` 건의 송신 나이(초). 송신 시각을 못 주는 client 면 `None`."""
+        fn = getattr(self.client, "recent_send_ages", None)
+        if not callable(fn):
+            return None
+        try:
+            ages = list(fn(group, n))
+        except Exception:                      # 관측 실패가 계상을 죽이면 안 된다
+            return None
+        if len(ages) != n:
+            return None
+        return [float(a) for a in ages]
+
+    def _sample_limiter_window(self, group: str) -> None:
+        """리미터의 `snapshot()["window_used"]` 를 1표본 남긴다 (docs/45 §7-3).
+
+        예산 첨두와 **독립인 관측**이다 — 예산은 client 의 송신 시각을 세고, 이쪽은
+        리미터가 `_Bucket.sent` 에 직접 쌓은 것을 센다. 계상이 다시 어긋나면 두 값이
+        갈라지므로, 이것이 "첨두가 조용한 것" 이 사실인지 계측 착시인지 가른다.
+        `limiter.py` 는 W1 소유라 **읽기만 한다**.
+        """
+        limiter = getattr(self.client, "limiter", None)
+        snapshot = getattr(limiter, "snapshot", None)
+        if snapshot is None:
+            return
+        try:
+            used = float(snapshot(group).get("window_used", 0.0))
+        except Exception:
+            return
+        self.budget.on_limiter_window(group, used)
+
     def after_call(self, group: str, calls: int = 1) -> None:
         """호출 1건(또는 배치 n건) 관측 — 예산 카운터 + 서버 시각 보정 + 429 감지.
 
@@ -591,8 +682,7 @@ class CollectorContext:
         booked = self._own_sends(group)
         if booked is None:
             booked = max(1, calls)     # 그룹별 송신을 못 세는 client — 논리 호출 수로
-        if booked > 0:
-            self.budget.on_requests(group, booked)
+        self._book_sends(group, booked)
         self.bump(f"req_{group}", max(1, calls))
         self.clock.observe_headers(getattr(self.client, "last_headers", None))
         self.sync_rate_limits(group)
@@ -610,7 +700,7 @@ class CollectorContext:
         """
         pending = self._own_sends(group)
         if pending:
-            self.budget.on_requests(group, pending)
+            self._book_sends(group, pending)
         seen429 = int(getattr(self.client, "counters", {}).get("http_429", 0))
         if seen429 > self._http429:
             since = seen429 - self._http429
@@ -893,6 +983,13 @@ class CollectorContext:
             # 서버는 1초 창으로 재므로 이 값이 한도를 넘는 순간이 진짜 위반이다.
             "md_peak_1s": int(self.budget.peak_1s(GROUP_MARKET_DATA)),
             "md_p95_1s": round(self.budget.p95_1s(GROUP_MARKET_DATA), 1),
+            # 리미터가 **자기 창**(1.15초)에서 센 점유의 60초 최댓값. `md_peak_1s` 와
+            # **독립인 관측**이다 — 저쪽은 client 가 소켓 직전에 찍은 시각을 세고,
+            # 이쪽은 리미터가 `_Bucket.sent` 에 직접 쌓은 것을 센다 (docs/45 §7-3).
+            # 창이 더 길므로 정상 관계는 `md_peak_1s <= md_limiter_peak` 다. 이 부등호가
+            # 깨지면 계상이 다시 시각을 압축하고 있다는 뜻이고, 둘 다 조용하면 "첨두가
+            # 한도 아래" 가 계측 착시가 아니라는 뜻이다. -1 은 표본 없음.
+            "md_limiter_peak": int(self.budget.limiter_peak(GROUP_MARKET_DATA)),
             "chart_peak_1s": int(self.budget.peak_1s(GROUP_CHART)),
             "rank_peak_1s": int(self.budget.peak_1s(GROUP_RANKING)),
             # 0 이 아니면 리미터가 1초 창을 못 지킨 것이다 (정원 문제가 아니다).
@@ -967,6 +1064,16 @@ class CollectorContext:
             "precision_parsed": parsed,
             "precision_rounded_pct": round(100.0 * rounded / parsed, 3) if parsed else 0.0,
             "precision_max_digits": int(stats.get("max_digits", 0) or 0),
+            # ↓ **카운터 수명** (docs/52 §7). 이 줄에는 수명이 다른 누적 카운터가 섞여
+            # 있다. 아래 세 필드가 없으면 그 차이를 읽을 방법이 없고, 실제로 없어서
+            # 운영 판단이 오염됐다: §4.12 는 "`http_429` 가 0 을 유지하면 급하지 않다"
+            # 를 규칙으로 삼았는데 그때 본 0 은 **재시작 15분 뒤** 값이었다.
+            # 같은 줄의 `http_429_under_own_limit` 는 상태파일로 살아남는 값이라
+            # `under_own_limit(430) > http_429(177)` 이라는 불가능해 보이는 조합이 찍힌다 —
+            # 실제로는 분모가 다른 두 값이다.
+            "counter_scope": PROC_SCOPE_FIELD,
+            "resumes": int(self.counters.get("resumes", 0)),
+            "proc_uptime_s": int(max(now - self._started_ms, 0) // 1000),
         }
 
     def report_telemetry(self, *, force: bool = False) -> dict[str, object] | None:
