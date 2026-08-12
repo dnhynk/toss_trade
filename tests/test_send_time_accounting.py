@@ -61,6 +61,9 @@ class _TimedClient:
         self.last_headers: dict[str, str] = {}
         self.last_status: int | None = None
         self.last_429: dict | None = None
+        #: 서버가 그 초에 **우리 말고 또 누가** 깎았다고 말할 건수 (기본 0 = 우리가 유일).
+        self.foreign_per_second = 0
+        self._drained: dict[str, set[int]] = {}
 
     # --- 송신 (소켓 직전) ---
     def send(self, group: str, at: float, n: int = 1) -> None:
@@ -75,6 +78,29 @@ class _TimedClient:
         take = times[-n:] if n < len(times) else list(times)
         ages = [max(self.mono - t, 0.0) for t in take]
         return [3600.0] * (n - len(ages)) + ages
+
+    # --- 서버 초 감사 (진짜 client 의 `drain_server_seconds` 자리) ---
+    def drain_server_seconds(self) -> list[dict]:
+        """서버가 `date` 초로 라벨하는 것을 흉내낸다 — **닫힌 초만** 내놓는다.
+
+        기본값은 `consumed == own`, 즉 **우리가 유일한 발신자**다. 그것이 정상이고,
+        정상에서 경보가 안 나는 것이 이 스위트의 대조군이다. 남의 소비를 만들려면
+        `foreign_per_second` 를 올린다.
+        """
+        out: list[dict] = []
+        for group, times in self.sent_at.items():
+            bins: dict[int, int] = {}
+            for t in times:
+                bins[int(t)] = bins.get(int(t), 0) + 1
+            done = self._drained.setdefault(group, set())
+            for sec in sorted(bins):
+                if sec in done or sec >= int(self.mono):
+                    continue                          # 아직 안 닫힌 초는 정산하지 않는다
+                done.add(sec)
+                out.append({"group": group, "date": str(sec), "own": bins[sec],
+                            "consumed": bins[sec] + self.foreign_per_second,
+                            "limit_header": None})
+        return out
 
     async def get_us_calendar(self, date=None):
         return calendar_dict([simple_day("2026-07-30", DAY0)], 0)
@@ -355,10 +381,13 @@ def test_peak_can_never_exceed_the_limit_once_accounting_is_send_time(tmp_path):
 # D. 대조군 — 리미터 밖 송신은 여전히 드러난다
 # --------------------------------------------------------------------------- #
 def test_a_send_that_bypassed_the_limiter_still_shows_up_as_a_burst(tmp_path):
-    """리미터를 안 거친 송신(다중 프로세스·리미터 밖 경로)은 첨두로 드러나야 한다.
+    """리미터를 안 거친 송신(리미터 밖 경로)은 **두 관측 모두**에서 드러나야 한다.
 
-    이것이 초록이어야 위 동어반복이 "계측을 껐다" 가 아니라 "이 경로로는 못 넘는다"
-    라는 뜻이 된다.
+    이것이 초록이어야 docs/52 §6 의 동어반복이 "계측을 껐다" 가 아니라 "이 경로로는
+    못 넘는다" 라는 뜻이 된다.
+
+    2026-08-12 (docs/52 §12): 경보 자리가 `peak_1s > limit` 에서 **서버 초 감사**로
+    옮겼으므로 여기서도 둘 다 본다 — 계상 첨두(우리 시계)와 서버가 라벨한 초.
     """
     client = _TimedClient()
     ctx = _build_ctx(tmp_path, client)
@@ -367,11 +396,15 @@ def test_a_send_that_bypassed_the_limiter_still_shows_up_as_a_burst(tmp_path):
     # 한도 10 인데 같은 0.5초 안에 14건이 소켓으로 나갔다 (리미터를 안 지났다).
     for i in range(14):
         client.send(GROUP_MARKET_DATA, i * 0.035)
-    _observe(ctx, client, 0.60, base_ms)
+    _observe(ctx, client, 1.60, base_ms)          # 그 서버 초가 닫힐 때까지 간다
 
     assert ctx.budget.peak_1s(GROUP_MARKET_DATA) == 14
-    assert ctx.budget.over_limit_1s(GROUP_MARKET_DATA), (
-        "리미터 밖 송신 14건을 첨두가 못 봤다 — 계측이 꺼진 것과 같다")
+    assert ctx.budget.over_limit_1s(GROUP_MARKET_DATA)
+    assert ctx.budget.server_over_limit_seconds(GROUP_MARKET_DATA) == 1, (
+        "리미터 밖 송신 14건을 **서버 초 감사**가 못 봤다 — 경보 술어가 그쪽이므로 "
+        "여기가 조용하면 계측이 꺼진 것과 같다")
+    assert ctx.budget.server_window_violated(GROUP_MARKET_DATA), (
+        "경보·게이트 술어가 리미터 밖 송신에 반응하지 않는다")
 
 
 def test_the_real_client_records_a_send_time_for_every_send(tmp_path, mock_server):

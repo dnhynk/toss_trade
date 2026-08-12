@@ -73,9 +73,20 @@ MAX_TRANSIENT_RETRIES = 3
 # 그 첫 발이 밀려난다.
 RECENT_429_KEEP = 8
 
-# `date` 헤더 기준 초별 요청 수를 몇 초치나 들고 있을지. 429 원인 판별(우리 초과인가 아닌가)에만
-# 쓰므로 몇 초면 충분하다.
+# `date` 헤더 기준 초별 요청 수를 몇 초치나 들고 있을지. 429 원인 판별(우리 초과인가 아닌가)과
+# **서버 초 감사**(아래 `_ServerSecond`)가 같이 쓴다. 몇 초면 충분하다.
 SEC_COUNT_KEEP = 16
+
+# 서버 초 하나를 **정산**하기까지 기다리는 시간 (초).
+#
+# 왜 기다리나: 같은 서버 초의 응답들이 우리 쪽에 **도착하는 순서**는 서버가 처리한 순서와
+# 다르다. 도중에 판정하면 "그 초에 우리가 몇 건 보냈나" 가 아직 덜 찬 상태에서 서버의
+# 소진량(`limit - remaining`)과 비교되어 **없는 외부 소비가 보인다.**
+# 초가 닫히고 이 시간이 지난 뒤에만 판정한다.
+SERVER_SECOND_SETTLE_S = 3.0
+
+# 외부 소비가 관측된 서버 초 기록을 몇 개나 들고 있을지 (진단용, `recent_429s` 와 같은 역할).
+SERVER_SECOND_KEEP = 8
 
 # 그룹별 **송신 시각**을 몇 초치나 들고 있을지 (monotonic 초).
 # 예산 가드의 관측 지평(`budget.WINDOW_S` = 60초)보다 넉넉해야 한다 — 계상이 잠깐 밀려도
@@ -98,6 +109,62 @@ MAX_RETRY_AFTER_S = 60.0
 _CAL_KEYS = (("previous", "previousBusinessDay"), ("today", "today"), ("next", "nextBusinessDay"))
 _SESSIONS = (("day", "dayMarket"), ("pre", "preMarket"),
              ("regular", "regularMarket"), ("after", "afterMarket"))
+
+
+class _ServerSecond:
+    """**서버가 이름 붙인 한 초**의 감사 기록 — 우리 몫과 전체 소진량을 나란히 둔다.
+
+    이 자리가 특별한 이유 (docs/52 §6 이 지목한 자리다):
+
+    * 창의 이름을 **서버가** 준다 (`date` 헤더의 초). 우리 시계도, 우리 계상도 개입하지
+      않는다. 예산의 `peak_1s` 는 우리가 우리 송신을 우리 시계로 센 값이라, 리미터가
+      1.15초 하드캡을 지키는 한 **구조적으로** 한도를 넘을 수 없다 (docs/52 §6 증명).
+      그 동어반복이 여기에는 없다.
+    * 그리고 서버는 매 응답에 **자기가 센 잔량**을 실어 보낸다
+      (`x-ratelimit-remaining`, docs/06 §9-1. 톱니 20/20 실측: 그 초의 k 번째 호출이
+      정확히 `remaining = limit - k`). 그러니
+
+          그 초의 총 소진량 = limit - remaining        (서버가 센 것, 전원 합계)
+          그 초의 우리 몫   = 이 기록의 `own`          (우리가 소켓에서 센 것)
+          차이              = **우리가 보내지 않은 요청**
+
+      `sent_by_group` 만으로는 이것을 볼 수 없다 — 우리 client 의 송신만 세기 때문이다
+      (docs/52 §6). 이 차이는 docs/06 §9-6 이 "판별되지 않았다" 고 남긴 두 후보
+      (같은 자격증명의 다른 발신자 / 그룹 밖의 다른 한도)를 **429 없이** 가리킨다.
+      기존 판별 수단(`under_own_limit`)은 429 를 맞아야만 값이 생겼다.
+
+    ⚠️ **`consumed` 를 최댓값으로 잡는다.** 같은 초의 응답들이 우리에게 도착하는 순서는
+    서버 처리 순서와 다르므로, 마지막에 도착한 응답의 잔량이 그 초의 최종 상태라는
+    보장이 없다. 최댓값은 도착 순서와 무관하다.
+
+    ⚠️ **429 응답의 잔량은 안 믿는다** (docs/06 §9-3: 거절당한 창이 아니라 다음 창의
+    상태로 보인 실측이 있다). `limiter.update_from_headers` 와 같은 규칙이다.
+    """
+    __slots__ = ("at", "own", "consumed", "limit")
+
+    def __init__(self, at: float) -> None:
+        self.at = at            # 이 초를 처음 본 시각 (monotonic, 정산 타이머용)
+        self.own = 0            # 우리가 이 초에 보낸 요청 수
+        self.consumed = -1      # 서버가 말한 소진량의 최댓값. -1 = 모름
+        self.limit: int | None = None
+
+    def note_quota(self, headers: Mapping[str, str], status: int | None) -> None:
+        if status == 429:
+            return                                  # docs/06 §9-3 — 믿지 않는다
+        limit = _int_or_none(headers.get("x-ratelimit-limit"))
+        remaining = _int_or_none(headers.get("x-ratelimit-remaining"))
+        if limit is None or remaining is None:
+            return
+        if limit <= 0 or remaining < 0 or remaining > limit:
+            return                                  # 앞뒤가 안 맞는 헤더는 안 쓴다
+        self.limit = limit
+        self.consumed = max(self.consumed, limit - remaining)
+
+    def foreign(self) -> int:
+        """우리 것이 아닌 소비 건수. 소진량을 모르면 0 (모름은 사고가 아니다)."""
+        if self.consumed < 0:
+            return 0
+        return max(0, self.consumed - self.own)
 
 
 class GuardedTransport(httpx.AsyncHTTPTransport):
@@ -138,6 +205,13 @@ class TossClient:
             # 429 를 받았는데 **그 서버 초에 우리가 보낸 요청이 한도 미만**이었던 건수.
             # 0 이 아니면 429 의 원인이 이 클라이언트 밖에 있다 (다른 프로세스 / 계정 전체 한도).
             "http_429_under_own_limit": 0,
+            # 정산이 끝난 서버 초의 수 — 아래 두 값의 **분모**다.
+            # 분모 없는 0 은 아무 뜻도 없다 (docs/52 §7.2 에서 이미 한 번 걸린 실패다).
+            "server_seconds": 0,
+            # 그 중 서버가 센 소진량이 **우리 송신보다 많았던** 초의 수 (= 남의 소비가 있었다).
+            "server_second_foreign": 0,
+            # 서버가 소진량을 알려주지 않아 판정할 수 없었던 초의 수 (헤더 없음/모순).
+            "server_second_unknown": 0,
         }
         # 진단 전용: 마지막 응답의 상태/헤더. 동시 요청 중에는 어느 요청의 것인지 보장하지 않는다
         # (tools/live_probe.py 처럼 순차 실행하는 경우에만 의미가 있다).
@@ -169,8 +243,13 @@ class TossClient:
         # 마지막 429 응답의 완전한 기록(상태·헤더·본문 error code). 200 이 덮어쓰지 않는다.
         self.last_429: dict[str, Any] | None = None
         self.recent_429s: deque[dict[str, Any]] = deque(maxlen=RECENT_429_KEEP)
-        # (group, 서버 date 초) → 우리가 그 초에 보낸 요청 수. 429 가 우리 탓인지 판별용.
-        self._sec_counts: OrderedDict[tuple[str, str], int] = OrderedDict()
+        # (group, 서버 date 초) → 그 서버 초의 감사 기록. 429 가 우리 탓인지 판별용이자
+        # **외부 소비 감시**의 원장이다 (`_ServerSecond` docstring 참조).
+        self._sec_counts: OrderedDict[tuple[str, str], _ServerSecond] = OrderedDict()
+        # 정산이 끝났지만 아직 예산 가드가 안 가져간 서버 초들 (`drain_server_seconds`).
+        self._settled_seconds: deque[dict[str, Any]] = deque()
+        # 외부 소비가 보인 서버 초의 원본 기록 (사람이 볼 진단용).
+        self.recent_server_seconds: deque[dict[str, Any]] = deque(maxlen=SERVER_SECOND_KEEP)
 
     # ---- 단일 전송 관문 --------------------------------------------------
 
@@ -231,7 +310,8 @@ class TossClient:
         except httpx.HTTPError as exc:
             raise TransientHTTP(0, f"transport error: {type(exc).__name__}") from exc
 
-        own_in_second = self._count_in_server_second(group, resp.headers)
+        own_in_second = self._count_in_server_second(group, resp.headers,
+                                                     resp.status_code)
         self.limiter.update_from_headers(group, resp.headers,
                                          status=resp.status_code)
         self.last_status = resp.status_code
@@ -282,23 +362,84 @@ class TossClient:
 
     # ---- 429 진단 --------------------------------------------------------
 
-    def _count_in_server_second(self, group: str, headers: Mapping[str, str]) -> int:
+    def _count_in_server_second(self, group: str, headers: Mapping[str, str],
+                                status: int | None = None) -> int:
         """이 응답이 속한 **서버 초**에 우리가 보낸 요청 수 (이 요청 포함).
 
         서버 창이 벽시계 1초 고정이므로(docs/06 §9-4), `date` 헤더의 초가 곧 창 이름이다.
         이 수가 그룹 한도보다 작은데도 429 가 났다면 원인은 이 클라이언트 밖에 있다 —
         같은 자격증명을 쓰는 다른 프로세스이거나, 그룹별이 아닌 다른 한도다.
         (경계에서 렌더된 응답은 `date` 와 카운터가 한 초 어긋날 수 있으므로 ±1 의 오차가 있다.)
+
+        같은 자리에서 **서버가 센 소진량**도 접는다 — `_ServerSecond` docstring 참조.
         """
+        now = time.monotonic()
+        self._settle_server_seconds(now)
         date = headers.get("date") or headers.get("Date")
         if not date:
             return 0
         key = (group, str(date))
-        self._sec_counts[key] = self._sec_counts.get(key, 0) + 1
+        rec = self._sec_counts.get(key)
+        if rec is None:
+            rec = self._sec_counts[key] = _ServerSecond(at=now)
+        rec.own += 1
+        rec.note_quota(headers, status)
         self._sec_counts.move_to_end(key)
         while len(self._sec_counts) > SEC_COUNT_KEEP:
-            self._sec_counts.popitem(last=False)
-        return self._sec_counts[key]
+            self._retire_server_second(*self._sec_counts.popitem(last=False))
+        return rec.own
+
+    # ---- 서버 초 감사 (남의 소비를 429 없이 본다) --------------------------
+
+    def _settle_server_seconds(self, now: float) -> None:
+        """`SERVER_SECOND_SETTLE_S` 가 지난 서버 초를 정산한다.
+
+        앞에서부터 자르지 않고 **전수 검사**한다: 이 OrderedDict 의 순서는 마지막 접근
+        순서(`move_to_end`)이지 생성 순서가 아니라, 앞 하나만 보고 멈추면 뒤에 남은
+        오래된 초가 영영 정산되지 않을 수 있다. 길이가 `SEC_COUNT_KEEP`(16)로 묶여 있어
+        전수 검사가 싸다.
+        """
+        cutoff = now - SERVER_SECOND_SETTLE_S
+        stale = [k for k, rec in self._sec_counts.items() if rec.at <= cutoff]
+        for key in stale:
+            self._retire_server_second(key, self._sec_counts.pop(key))
+
+    def _retire_server_second(self, key: tuple[str, str], rec: "_ServerSecond") -> None:
+        """정산된 서버 초 하나를 **사실 그대로** 내놓는다 (판정은 예산 가드가 한다).
+
+        여기서 한도와 비교하지 않는 이유: 한도 모델(`limit_of`)은 예산 가드의 것이고,
+        client 가 자기 나름의 한도를 또 들면 두 곳이 조용히 갈라진다. 이 함수는
+        **관측**만 낸다 — 우리가 몇 건 보냈나, 서버는 몇 건이 나갔다고 했나.
+        """
+        group, date = key
+        self.counters["server_seconds"] += 1
+        out = {
+            "group": group,
+            "date": date,
+            "own": rec.own,
+            # 서버가 그 초에 소진했다고 말한 최댓값. 모르면 -1.
+            "consumed": rec.consumed,
+            "limit_header": rec.limit,
+            # 우리 것이 아닌 소비. `consumed` 를 모르면 0 (모름은 사고가 아니다).
+            "foreign": rec.foreign(),
+        }
+        if rec.consumed < 0:
+            self.counters["server_second_unknown"] += 1
+        if out["foreign"] > 0:
+            self.counters["server_second_foreign"] += 1
+            self.recent_server_seconds.append(dict(out, at_ms=int(time.time() * 1000)))
+        self._settled_seconds.append(out)
+
+    def drain_server_seconds(self) -> list[dict[str, Any]]:
+        """정산이 끝난 서버 초들을 **한 번만** 내준다 (호출자가 가져가면 비워진다).
+
+        고수위 재조회가 아니라 드레인인 이유: 같은 초를 두 번 세면 "남의 소비" 가 두 배로
+        보인다. 계상 이중화로 이미 한 번 데었다 (D1·D2, docs/46).
+        """
+        self._settle_server_seconds(time.monotonic())
+        out = list(self._settled_seconds)
+        self._settled_seconds.clear()
+        return out
 
     def _record_429(self, method: str, path: str, group: str,
                     resp: httpx.Response, own_in_second: int) -> None:

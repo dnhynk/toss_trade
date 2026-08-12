@@ -110,6 +110,22 @@ SHRINK_MAX_STEP_FRAC = 0.25
 #: 회복은 실사용이 목표의 이 비율 아래일 때만 — 빡빡한데 되돌리면 429 를 다시 부른다.
 RECOVER_USAGE_MAX = 0.70
 
+#: **"우리 것이 아닌 소비" 로 판정하기까지 필요한 서버 초의 수** (관측 지평 안에서).
+#:
+#: 한 초짜리 증거로는 판정하지 않는다. 오탐 경로가 실측으로 둘 알려져 있기 때문이다:
+#:
+#: 1. **경계 렌더** (docs/06 §9-5 부수 관측) — 서버 초 경계에서 렌더된 응답은 `date` 의
+#:    초와 레이트리밋 카운터가 한 초 어긋날 수 있다 (`date=02:58:00` 인데 `remaining=0`
+#:    이 앞 초의 3번째 호출로 계산된 값이었다). 그러면 앞 초의 소진량이 이 초의 기록에
+#:    얹혀 없는 외부 소비처럼 보인다.
+#: 2. **응답 없이 끝난 송신** — 타임아웃·연결 끊김으로 응답을 못 받은 요청은 서버는
+#:    처리했는데 우리 `own` 에는 안 들어간다 (`date` 헤더가 없으니 초를 모른다).
+#:
+#: 둘 다 **산발적**이다. 반면 같은 자격증명을 쓰는 다른 발신자는 자기가 도는 동안 거의
+#: 매 초를 깎는다 — 지속성이 이 둘을 가른다. 오탐 하나의 대가가 "정원 축소"라서 이 방향의
+#: 보수성이 옳다 (2026-08-04 개장 붕괴: 없는 첨두를 보고 리미터를 조여 수집량이 줄었다).
+FOREIGN_SECONDS_MIN = 3
+
 
 @dataclass(frozen=True)
 class TierPlan:
@@ -190,12 +206,15 @@ class BudgetGuard:
         self._events: dict[str, deque[float]] = {}
         #: 리미터의 자기 관측 표본 (시각, window_used). 예산 첨두와 **독립**이다.
         self._limiter_window: dict[str, deque[tuple[float, float]]] = {}
+        #: **서버가 이름 붙인 초**의 감사 (시각, 우리 몫, 남의 몫). 우리 시계·계상과 독립이다.
+        self._server_seconds: dict[str, deque[tuple[float, int, int]]] = {}
         self._last_shrink_s: dict[str, float] = {}
         self._last_429_s: dict[str, float] = {}
         self._last_grow_s: dict[str, float] = {}
         self._measured_over_since: dict[str, float] = {}
         self._warmup_until_s: float = 0.0
         self._over_limit_active: dict[str, bool] = {}
+        self._foreign_active: dict[str, bool] = {}
         self._forced: dict[str, float] = {}      # 429 로 강제 축소해야 할 비율
 
     # ---- 시간 ----------------------------------------------------------
@@ -449,6 +468,96 @@ class BudgetGuard:
             q.popleft()
         return max((v for _, v in q), default=-1.0)
 
+    # ---- 서버 초 감사 (우리 시계·계상과 독립인 관측) ----------------------
+    #
+    # **왜 이것이 따로 필요한가.** 예산의 `peak_1s` 는 우리 송신을 우리 시계로 센 값이고,
+    # 리미터가 1.15초 하드캡을 지키는 한 그것이 한도를 넘는 일은 **구조적으로 없다**
+    # (docs/52 §6 증명 + `test_peak_can_never_exceed_the_limit_once_accounting_is_send_time`).
+    # 그래서 `peak_1s > limit` 에 매달린 감시는 전부 조용해질 수밖에 없었다.
+    # **"조용하다" 는 "안전하다" 가 아니다** — 그 감시들이 원래 겨누던 것(다중 프로세스,
+    # 리미터 밖 송신)은 애초에 우리 송신 카운터로 볼 수 있는 것이 아니었다.
+    #
+    # 여기서 보는 두 양은 창의 이름도 총량도 **서버가** 준다 (`client._ServerSecond`):
+    #
+    #   own      — 그 서버 초에 우리가 소켓으로 내보낸 수
+    #   foreign  — (limit - remaining) - own, 즉 **우리가 보내지 않은 소비**
+    #
+    # `own > limit` 은 우리 리미터가 서버 창 하나를 실제로 넘겼다는 뜻이고(하드캡을 안 지난
+    # 송신 경로가 있다는 뜻이다), `foreign > 0` 은 같은 자격증명으로 도는 다른 발신자나
+    # 그룹 밖 한도의 존재를 뜻한다 — docs/06 §9-6 이 "판별되지 않았다" 고 남긴 그 둘이다.
+
+    def on_server_second(self, group: str, own: int, consumed: int,
+                         limit_header: int | None = None) -> None:
+        """정산이 끝난 서버 초 하나를 받는다 (`client.drain_server_seconds()` 의 한 건).
+
+        `consumed` 가 음수면 그 초의 소진량을 모른다는 뜻이고, 그때 `foreign` 은 0 이다 —
+        **모름을 사고로 세지 않는다.** 반대로 `own` 은 헤더와 무관하게 항상 참값이므로
+        `own > limit` 판정은 그 경우에도 유효하다.
+        """
+        limit = float(limit_header) if limit_header else self.limit_of(group)
+        own = int(own)
+        foreign = 0 if consumed is None or consumed < 0 else max(0, int(consumed) - own)
+        over = 1 if limit > 0 and own > limit else 0
+        now = self._mono_s()
+        q = self._server_seconds.setdefault(group, deque())
+        q.append((now, over, foreign))
+        cutoff = now - self.window_s
+        while q and q[0][0] < cutoff:
+            q.popleft()
+        self.counters["server_seconds"] = self.counters.get("server_seconds", 0) + 1
+        if over:
+            self.counters["server_seconds_over_limit"] = (
+                self.counters.get("server_seconds_over_limit", 0) + 1)
+        if foreign:
+            self.counters["server_seconds_foreign"] = (
+                self.counters.get("server_seconds_foreign", 0) + 1)
+
+    def _server_window(self, group: str) -> list[tuple[float, int, int]]:
+        q = self._server_seconds.get(group)
+        if not q:
+            return []
+        cutoff = self._mono_s() - self.window_s
+        while q and q[0][0] < cutoff:
+            q.popleft()
+        return list(q)
+
+    def server_seconds_seen(self, group: str) -> int:
+        """관측 지평 안에서 정산된 서버 초의 수 — 아래 두 값의 **분모**다.
+
+        분모를 같이 내는 이유: 에포크 없는 0 은 아무 뜻도 없다. 0/0 (아직 아무 초도 안
+        닫혔다)과 0/58 (58초를 봤는데 깨끗하다)은 전혀 다른 진술이다 (docs/52 §7.2).
+        """
+        return len(self._server_window(group))
+
+    def server_over_limit_seconds(self, group: str) -> int:
+        """서버가 이름 붙인 초 중 **우리 송신만으로** 한도를 넘긴 초의 수."""
+        return sum(o for _, o, _ in self._server_window(group))
+
+    def foreign_seconds(self, group: str) -> int:
+        """우리 것이 아닌 소비가 보인 서버 초의 수."""
+        return sum(1 for _, _, f in self._server_window(group) if f > 0)
+
+    def foreign_sends(self, group: str) -> int:
+        """그 중 최대 몇 건이 우리 것이 아니었나 (한 초 기준)."""
+        return max((f for _, _, f in self._server_window(group)), default=0)
+
+    def quota_not_ours(self, group: str) -> bool:
+        """**이 그룹의 초당 한도를 우리 혼자 쓰고 있지 않다**는 판정.
+
+        산발적 오탐(경계 렌더·응답 없이 끝난 송신)과 가르려고 `FOREIGN_SECONDS_MIN` 초
+        이상에서 보일 때만 참이다 — 그 상수 주석에 근거가 있다.
+        """
+        return self.foreign_seconds(group) >= FOREIGN_SECONDS_MIN
+
+    def server_window_violated(self, group: str) -> bool:
+        """정원을 되돌리거나 마지막 여유를 쓰면 **안 되는** 상태인가.
+
+        둘 중 하나면 참이다: 우리가 서버 창을 실제로 넘겼거나(리미터 밖 송신),
+        그 창을 우리 혼자 쓰고 있지 않거나(다른 발신자). 어느 쪽이든 "지금 우리 몫이
+        한도만큼 있다" 는 전제가 깨진 것이라 되돌릴 때가 아니다.
+        """
+        return self.server_over_limit_seconds(group) > 0 or self.quota_not_ours(group)
+
     def on_429(self, group: str) -> None:
         """429 는 사고다 — 다음 `should_shrink()` 에서 강제로 줄인다."""
         self._last_429_s[group] = self._wall_s()      # 회복 대기(5분) — 분 단위 판정
@@ -528,38 +637,68 @@ class BudgetGuard:
         idx = min(len(counts) - 1, int(math.ceil(0.95 * len(counts)) - 1))
         return float(counts[max(0, idx)])
 
-    def _note_over_limit(self, group: str, peak: float) -> None:
-        """한도 초과 **에피소드**를 1회만 계상·경보한다.
+    def _note_over_limit(self, group: str) -> None:
+        """한도 사고 **에피소드**를 1회만 계상·경보한다. 근거는 **서버 초 감사**다.
 
-        `peak_1s` 는 관측 지평(60s) 동안 값이 남으므로, 매 평가마다 세면 버스트 한 번이
-        수십 건으로 부풀어 보인다. 첨두가 한도 아래로 내려갔다가 다시 올라올 때만
-        새 에피소드로 친다.
+        2026-08-12 재조준 (docs/52 §12). 예전 조건은 `peak_1s > limit` 이었고, 그것은
+        송신 시각 계상 + 단조 시계로 옮긴 뒤 **발화할 수 없는 조건**이 됐다 — 리미터
+        하드캡이 어떤 1초에도 한도 초과를 못 내기 때문이다 (docs/52 §6 증명).
+        운영 로그에서 실제로 그렇게 됐다: 옛 배선의 마지막 프로세스는 `over_limit_1s=435`
+        였고, 08-12 19:11 재기동 이후 `md_peak_1s=10` 에 `over_limit_1s=0` 이다.
+        **그 0 은 안전해졌다는 뜻이 아니라 이 자리가 눈을 감았다는 뜻이었다.**
+
+        지금 세는 것은 우리 시계가 아니라 **서버가 이름 붙인 초**이고, 사고는 둘이다:
+
+        * `own > limit` — 리미터를 안 지난 송신 경로가 있다 (하드캡이 못 막은 것).
+        * `foreign > 0` — 그 초의 소진량이 우리 송신보다 많다. 같은 자격증명의 다른
+          발신자이거나 그룹 밖의 한도다 (docs/06 §9-6 의 미판별 두 후보).
+
+        둘은 **원인도 조치도 다르므로 에피소드를 따로 센다.** 관측 지평(60s) 동안 값이
+        남는 것은 예전과 같으므로, 조건이 내려갔다 다시 올라올 때만 새 에피소드로 친다.
         """
-        over = peak > self.limit_of(group)
+        limit = self.limit_of(group)
+        over = self.server_over_limit_seconds(group) > 0
         was_over = self._over_limit_active.get(group, False)
         self._over_limit_active[group] = over
-        if not over or was_over:
-            return
-        self.counters["over_limit_1s"] = self.counters.get("over_limit_1s", 0) + 1
-        if self.notifier is not None:
-            # 2026-08-08 정정 (docs/45 → docs/46). 예전 문구는 "리미터가 1초 창을 못
-            # 지키고 있다" 였고 그것이 운영에서 580건 났다. **전부 허위였다** — 리미터는
-            # 1.15초 하드캡으로 어떤 1초 창도 못 넘고(docs/45 §2 구조적 증명 + 한도
-            # 1/3/5/10 포화 테스트), 그 580건은 같은 호출을 두 번 센 결과였다.
-            # 계상을 고친 지금 이 경보가 다시 오르면 원인은 리미터가 **아니라** 리미터
-            # 밖의 송신이다. 문구가 엉뚱한 곳을 가리키면 엉뚱한 곳을 고친다.
-            self.notifier.alert(
-                f"budget: {group} 1초에 {int(peak)}회 — 공시 한도 "
-                f"{self.limit_of(group):.0f} 초과. 리미터 하드캡은 이 값을 낼 수 없다 "
-                "(docs/45 §2) — 수집기 다중 기동이나 리미터를 안 거치는 송신 경로를 "
-                "의심하라. 티어를 깎아도 고쳐지지 않는다")
+        if over and not was_over:
+            self.counters["over_limit_1s"] = self.counters.get("over_limit_1s", 0) + 1
+            if self.notifier is not None:
+                # 2026-08-08 정정 (docs/45 → docs/46). 예전 문구는 "리미터가 1초 창을 못
+                # 지키고 있다" 였고 그것이 운영에서 580건 났다. **전부 허위였다** — 그 580건은
+                # 같은 호출을 두 번 센 결과였다. 지금 이 경보가 오르면 근거가 다르다:
+                # 우리 계상이 아니라 **서버가 라벨한 초**에서 우리 송신을 센 값이다.
+                self.notifier.alert(
+                    f"budget: {group} 서버가 라벨한 1초에 우리 송신이 공시 한도 "
+                    f"{limit:.0f} 를 넘었다 (최근 60초 중 "
+                    f"{self.server_over_limit_seconds(group)}초). 리미터 하드캡은 이 값을 "
+                    "낼 수 없다 (docs/45 §2) — 리미터를 안 거치는 송신 경로를 의심하라. "
+                    "티어를 깎아도 고쳐지지 않는다")
+
+        foreign = self.quota_not_ours(group)
+        was_foreign = self._foreign_active.get(group, False)
+        self._foreign_active[group] = foreign
+        if foreign and not was_foreign:
+            self.counters["quota_not_ours"] = self.counters.get("quota_not_ours", 0) + 1
+            if self.notifier is not None:
+                self.notifier.alert(
+                    f"budget: {group} 초당 한도를 우리 혼자 쓰고 있지 않다 — 최근 60초 중 "
+                    f"{self.foreign_seconds(group)}초에서 서버가 센 소진량이 우리 송신보다 "
+                    f"많았다 (최대 {self.foreign_sends(group)}건/초, 관측 "
+                    f"{self.server_seconds_seen(group)}초). 같은 자격증명으로 도는 다른 "
+                    "발신자(수집기 다중 기동·백필·프로브)이거나 그룹 밖 한도다 "
+                    "(docs/06 §9-6). 리미터는 프로세스 간 조율을 못 하므로 티어를 깎아도 "
+                    "고쳐지지 않는다 — 발신자를 하나로 만들어야 한다")
 
     def over_limit_1s(self, group: str) -> bool:
-        """**서버 한도 자체를 넘긴 1초가 있었나.**
+        """**계상 첨두가 한도를 넘겼나** — 즉 우리 계상이 한도 초과를 주장하는가.
 
-        리미터가 제 일을 하면 이것은 절대 True 가 되면 안 된다 — True 면 429 를 안
-        맞은 것이 운이었다는 뜻이고, 원인은 예산이 아니라 리미터에 있다. 그래서 이
-        신호는 축소가 아니라 **경보**로 이어진다 (정원을 깎아도 고쳐지지 않는다).
+        ⚠️ **경보의 술어가 아니다** (2026-08-12, docs/52 §12). 송신 시각 계상 + 단조
+        시계 이후 이 값은 하드캡을 지난 송신으로는 참이 될 수 없고, 참이 되는 경우는
+        둘뿐이다: 리미터를 안 지난 송신이거나 **계상이 틀렸거나**. 후자를 잡는 데
+        쓰인다 (`test_limiter_vs_counter.py`, W1: 오귀속 1건이 첨두를 11 로 만든다).
+
+        경보·게이트·복원 거부는 전부 `server_over_limit_seconds()` /
+        `quota_not_ours()` 로 옮겼다 — 그쪽은 창의 이름과 총량을 **서버가** 준다.
         """
         return self.peak_1s(group) > self.limit_of(group)
 
@@ -645,7 +784,6 @@ class BudgetGuard:
         for group in (GROUP_MARKET_DATA, GROUP_CHART, GROUP_RANKING):
             target = self.target(group)
             planned = self.planned_rate(group)
-            peak = float(self.peak_1s(group))         # 관측·경보용 (1초 창 위반)
             # **정원은 지속 속도 손잡이다.** 그래서 축소의 근거는 지속률이고, 첨두가 아니다.
             #
             # 2026-08-04 22:33 개장 사고가 이 구분을 안 해서 났다: CHART 가 1초에 7회로
@@ -672,7 +810,7 @@ class BudgetGuard:
             # **에피소드 단위로** 센다: 첨두는 관측 지평(60s) 동안 남아 있으므로 매 평가마다
             # 세면 한 번의 버스트가 수십 건으로 부풀고, 그런 가짜 반복이 경보 무시 습관을
             # 만든다 (랭킹 forced 경보에서 이미 겪은 실패다).
-            self._note_over_limit(group, peak)
+            self._note_over_limit(group)
             over = over_plan or (sustained and not self.in_warmup())
             if not over and not forced:
                 continue
@@ -747,12 +885,22 @@ class BudgetGuard:
             # 불만족이었고, 정원을 1 까지 깎아도 중앙 첨두가 문턱 위였다.
             if self.measured_rate(group) > target * RECOVER_USAGE_MAX:
                 continue                                  # 지속 사용률이 아직 빡빡하다
-            # 첨두를 여기서 버리지는 않는다 — **단위가 맞는 곳에** 쓴다. 1초 최댓값은
-            # 1초 **한도**에 대고 잰다. 하드캡이 있는 한 이 조건은 구조적으로 성립하지
-            # 않지만(docs/45 §2), 성립한다면 그것은 다중 프로세스처럼 리미터 밖에서
-            # 송신이 나갔다는 뜻이고 그때는 정원을 되돌릴 때가 아니다.
-            if self.peak_1s(group) > self.limit_of(group):
-                continue                                  # 진짜 1초 창 위반이 관측됐다
+            # **거부가 일어나야 하는 상황** (2026-08-12 재조준, docs/52 §12):
+            #
+            #   "정원이 깎여 있고 회복 조건(429 조용·지속률 여유·계획 이내)은 다 만족했는데,
+            #    이 그룹의 초당 한도가 **우리 것만이 아니다**."
+            #
+            # 정원 복원은 "지금 한도에 여유가 있다" 를 전제로 한다. 같은 자격증명으로 도는
+            # 다른 발신자가 그 초를 같이 깎고 있으면 그 전제가 거짓이고, 되돌리는 순간
+            # 429 를 다시 부른다 — 그리고 리미터는 프로세스 간 조율을 못 하므로 우리 쪽
+            # 관측만으로는 영영 안 보인다 (docs/06 §9-6, §9-7 요건 2).
+            #
+            # 예전 조건은 `peak_1s > limit_of` 였고 의도는 같았지만 **실행되지 않았다**:
+            # 리미터 하드캡이 있는 한 우리 송신을 우리 시계로 센 첨두는 한도를 넘을 수
+            # 없다 (docs/52 §6). 즉 이 자리는 "거부를 안 하는" 것이 아니라 "거부를 못 하는"
+            # 상태였다. 이제 서버가 이름 붙인 초에서 잰다.
+            if self.server_window_violated(group):
+                continue                                  # 우리 몫이 한도만큼 있지 않다
             if self.planned_rate(group) > target:
                 continue                                  # 계획 자체가 초과 상태
             have = self.plan.symbols_of(group)
@@ -792,6 +940,12 @@ class BudgetGuard:
                 "measured": self.measured_rate(group),
                 "requests": float(self.counters.get(group, 0)),
                 "http_429": float(self.rate_limited.get(group, 0)),
+                # 서버 초 감사 — **분모(`server_seconds`)를 같이 낸다.** 0/0 과 0/58 은
+                # 다른 진술이고, 분모 없는 0 을 안전으로 읽은 실패가 이미 있었다 (docs/52 §7.2).
+                "server_seconds": float(self.server_seconds_seen(group)),
+                "server_over_1s": float(self.server_over_limit_seconds(group)),
+                "foreign_seconds": float(self.foreign_seconds(group)),
+                "foreign_max": float(self.foreign_sends(group)),
             }
             for group in sorted(groups)
         }

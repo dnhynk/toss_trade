@@ -637,20 +637,22 @@ def test_open_warmup_still_suppresses_peak_based_shrink():
 
 
 def test_exceeding_the_declared_limit_alerts_once_per_episode():
-    """한도 초과는 정원이 아니라 리미터 문제다 — 경보하되 에피소드당 1회만."""
-    clock = FrozenClock(0)
+    """한도 초과는 정원이 아니라 리미터 문제다 — 경보하되 에피소드당 1회만.
+
+    2026-08-12 (docs/52 §12): 근거가 우리 계상 첨두에서 **서버가 라벨한 초**로 옮겼다.
+    옛 근거(`peak_1s > limit`)는 리미터 하드캡 때문에 참이 될 수 없어 침묵했다.
+    """
     rec = Rec()
-    g = guard(clock=clock, notifier=rec)
-    for _ in range(14):                                          # 한도 10 을 넘긴다
-        g.on_request(GROUP_MARKET_DATA)
-        clock.advance(0.002)
+    g = guard(clock=FrozenClock(0), notifier=rec)
+    # 서버가 이름 붙인 한 초에 우리 송신이 14건이었다 (한도 10). 남의 소비는 없다.
+    g.on_server_second(GROUP_MARKET_DATA, own=14, consumed=14)
     g.should_shrink()
     g.should_shrink()
     g.should_shrink()
     over = [a for a in rec.alerts if "리미터" in a]
     assert len(over) == 1                                        # 반복 경보 없음
     assert g.counters["over_limit_1s"] == 1
-    assert "1초에 14회" in over[0]
+    assert "공시 한도 10" in over[0]
 
 
 def test_grow_is_blocked_by_a_one_second_violation_but_not_by_a_mere_burst():
@@ -680,16 +682,16 @@ def test_grow_is_blocked_by_a_one_second_violation_but_not_by_a_mere_burst():
     assert g.peak_1s(GROUP_MARKET_DATA) == 6
     assert g.should_grow(), "한도 아래 버스트로 복원이 막혔다"
 
-    # (2) 한도 자체를 넘긴 1초가 관측되면 여전히 막는다 — 단위가 맞는 유일한 용법.
+    # (2) **서버가 라벨한 초**에서 한도를 넘긴 것이 관측되면 여전히 막는다.
+    #     2026-08-12 (docs/52 §12): 근거가 `peak_1s` 에서 서버 초 감사로 옮겼다 —
+    #     우리 시계로 센 첨두는 하드캡 때문에 한도를 넘을 수 없어 이 거부가 죽어 있었다.
     clock2 = FrozenClock(0)
     g2 = guard(clock=clock2)
     g2._last_shrink_s[GROUP_MARKET_DATA] = 0.0
     clock2.advance(RECOVER_AFTER_S + 10)
-    for _ in range(11):                                          # 첨두 11 > 한도 10
-        g2.on_request(GROUP_MARKET_DATA)
-        clock2.advance(0.01)
+    g2.on_server_second(GROUP_MARKET_DATA, own=11, consumed=11)   # 우리 송신 11 > 한도 10
     assert g2.measured_rate(GROUP_MARKET_DATA) < 1.0             # 지속률은 여전히 낮다
-    assert g2.peak_1s(GROUP_MARKET_DATA) > g2.limit_of(GROUP_MARKET_DATA)
+    assert g2.server_over_limit_seconds(GROUP_MARKET_DATA) == 1
     assert g2.should_grow() is None, "1초 한도를 넘긴 것이 관측됐는데 되돌렸다"
 
 

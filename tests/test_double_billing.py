@@ -382,21 +382,24 @@ def test_control_a_genuine_overload_still_blocks_recovery():
 def test_control_a_real_one_second_violation_still_blocks_recovery():
     """**진짜** 1초 창 위반(한도 10 초과)이 관측되면 복원을 보류한다.
 
-    이것이 `peak_1s` 의 **단위가 맞는** 유일한 용법이다: 1초 최댓값을 **1초 한도**에
-    대고 잰다. 지속 속도 목표(8.5)에 대고 재는 것과 다르다.
+    2026-08-12 재조준 (docs/52 §12). 근거가 `peak_1s > limit_of` 에서 **서버가 이름
+    붙인 초**로 바뀌었다. 왜냐면 옛 근거는 송신 시각 계상 + 단조 시계 이후 **참이 될
+    수 없었고**, 그래서 이 거부가 죽어 있었기 때문이다 (docs/52 §6). 대조군의 뜻은
+    그대로다: 진짜 위반에는 **여전히** 복원이 막혀야 한다.
     """
     clock = _Clock()
     guard = _guard_at_plan(clock)
     guard._last_shrink_s[GROUP_MARKET_DATA] = clock.t
     clock.advance(budget_mod.RECOVER_AFTER_S + 1.0)
-    # 지속률은 낮은데(0.2 req/s) 한 초에 12건이 몰린 상태 — 다중 프로세스 같은 진짜 위반.
+    # 지속률은 낮은데(0.2 req/s) 서버가 라벨한 한 초에 12건이 나간 상태 — 진짜 위반.
     for _ in range(12):
         guard.on_request(GROUP_MARKET_DATA)
         clock.advance(0.05)
     clock.advance(50.0)
+    guard.on_server_second(GROUP_MARKET_DATA, own=12, consumed=12)
     assert guard.measured_rate(GROUP_MARKET_DATA) < \
         guard.target(GROUP_MARKET_DATA) * budget_mod.RECOVER_USAGE_MAX
-    assert guard.peak_1s(GROUP_MARKET_DATA) > guard.limit_of(GROUP_MARKET_DATA)
+    assert guard.server_over_limit_seconds(GROUP_MARKET_DATA) == 1
     assert guard.should_grow() is None, (
         "1초 한도를 실제로 넘긴 것이 관측됐는데 정원을 되돌렸다")
 
