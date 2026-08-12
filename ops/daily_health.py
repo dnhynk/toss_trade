@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta
@@ -28,6 +29,49 @@ from .opsconfig import load_ops_config
 
 # 수집 하루의 경계(KST): 주간장 개시 09:00 ~ 다음날 폐장 08:50
 DAY_START_H = 9
+
+# --------------------------------------------------------------------------- #
+# 계획 창이 **덮어도 되는 키**. 정본은 `ops/watchdog.ps1`(파일을 쓰는 쪽)이고,
+# 이 사본은 **이미 디스크에 있는 파일을 뒤늦게 다시 판정**하는 데만 쓴다.
+#
+# 왜 다시 판정하는가: 2026-08-12 에 옛 워치독이 주기 전체를 계획 표식으로 덮어
+# 2시간짜리 워치독 정지를 `PLANNED_20260812_104717_watchdog_silent.txt` 로 찍었다.
+# 접두사가 `PLANNED_` 면 아침 독자는 "사람이 일부러 한 것"으로 읽고 지나간다.
+# 파일은 **고치지도 지우지도 않는다** — 아침 리포트는 기록이고 과거를 다시 쓰지
+# 않는다(docs/34 §9.2). 대신 **읽는 쪽에서 등급을 다시 매겨** 한 줄로 드러낸다.
+#
+# 이 파일은 `ALERT_*.txt` 를 만들지 않는다 — 파일을 만드는 권한은 워치독에만 있다
+# (docs/34 §6). 여기서 하는 것은 세기와 표시뿐이다.
+#
+# PLANNED-SCOPE-LIST-BEGIN (ops/watchdog.ps1 과 같아야 한다 — 셀프테스트 P10 이 강제)
+_PLANNED_MASKABLE_RESTART_REASONS = (
+    "process_dead", "supervisor_dead", "collector_dead",
+    "log_stale", "counters_frozen", "ranking_snap_never", "ranking_snap_stalled")
+_PLANNED_MASKABLE_BASE = (
+    "stop_observed", "no_telemetry", "ranking_snap_stalled", "ranking_stall_suppressed")
+# PLANNED-SCOPE-LIST-END
+PLANNED_MASKABLE_KEYS = frozenset(
+    _PLANNED_MASKABLE_BASE
+    + tuple(f"watch_{r}" for r in _PLANNED_MASKABLE_RESTART_REASONS)
+    + tuple(f"restarted_{r}" for r in _PLANNED_MASKABLE_RESTART_REASONS))
+
+# 워치독의 파일명 규칙: <prefix>_<yyyyMMdd>_<HHmmss>_<key>.txt (키에도 `_` 가 들어간다)
+_PLANNED_FILE_RX = re.compile(r"^PLANNED_\d{8}_\d{6}_(?P<key>.+)\.txt$")
+
+
+def misgraded_planned(names) -> list[tuple[str, str]]:
+    """계획 창이 덮을 수 없는 키인데 `PLANNED_` 로 찍힌 파일들 → [(파일명, 키)].
+
+    이름을 못 읽는 파일은 **버리지 않고 통과시킨다** — 여기서 조용히 떨어뜨리면
+    바로 그 파일이 아침에 안 보이게 되고, 그게 애초의 사고다.
+    """
+    out: list[tuple[str, str]] = []
+    for n in sorted(names):
+        m = _PLANNED_FILE_RX.match(n)
+        key = m.group("key") if m else "(파일명을 해석하지 못함)"
+        if key not in PLANNED_MASKABLE_KEYS:
+            out.append((n, key))
+    return out
 
 
 def window_for(date_str: str | None, now: float | None = None) -> tuple[int, int, str]:
@@ -223,6 +267,18 @@ def build_summary(cfg, date_str: str | None, catchup: bool = False) -> str:
                          "오래 지속돼도 ALERT_ 로 올라가지 않는다(설계) — 크기를 보고 판단할 것.")
         lines.append(f"PLANNED files (창 안, 계획된 정비 — 무시): {len(planned)}")
         lines += [f"  {p}" for p in planned]
+        # 계획 표식은 **키 단위**로만 덮는다(docs/53). 옛 워치독은 주기 전체를 덮었고,
+        # 2026-08-12 에 2시간짜리 워치독 정지가 `PLANNED_` 로 찍혀 이 목록 안에 조용히
+        # 섞였다. `PLANNED_` 는 "무시"라고 적혀 있으니 그대로 지나간다. 그래서 여기서
+        # 다시 판정한다 — 옛 파일에도 소급 적용되고, 파일 자체는 건드리지 않는다.
+        mis = misgraded_planned(planned)
+        if mis:
+            lines.append(f"!! 위 {len(planned)}건 중 {len(mis)}건은 계획 창이 덮을 수 없는 "
+                         "키다 — 계획 정비가 아니라 **진짜 문제**로 읽어라 "
+                         "(워치독·센티널 생존 / 태스크 실행 실패 / 디스크 / 스키마):")
+            lines += [f"     {n}  [key={k}]" for n, k in mis]
+            lines.append("     ↑ 이 파일들은 접두사만 PLANNED_ 다. 등급 계약은 "
+                         "docs/34, 창의 범위는 docs/53_planned_scope.md.")
         lines.append(f"NOTE files (창 안, 설계대로 동작한 기록 — 사고 아님): {len(notes)}")
         lines += [f"  {n}" for n in notes]
     except OSError:

@@ -73,6 +73,22 @@
     progress-stall wording, which on 2026-08-06 told a morning reader that a
     correct sup=0 col=0 restart was "probably wrong". docs/34 section 9.
 
+    PLANNED SCOPE - a planned window masks KEYS, not cycles. (2026-08-12, docs/53.)
+    A marker was up for a deliberate collection stop when the machine entered Modern
+    Standby at 08:47:07 and the watchdog stopped running for 2h01m. The sentinel caught it
+    and filed it as PLANNED_20260812_104717_watchdog_silent.txt - "a human did this on
+    purpose, ignore it". Nobody stopped the watchdog on purpose, and the watchdog is what
+    has to bring collection back at 20:00: masking its death makes the RETURN fail
+    silently. The old line graded the whole cycle from the marker and never looked at the
+    key.
+
+    The rule now: a planned window masks only what the planned action can itself
+    produce - COLLECTION NOT HAPPENING. It never masks the WATCHING failing (watchdog /
+    sentinel heartbeats, restart budget), a scheduled task that ran and died, disk, power,
+    schema, or any counter the collector actively raised while running. The list is an
+    ALLOWLIST: a key nobody classified stays loud. That default costs one noisy file when
+    it is wrong; the opposite default cost two silent hours.
+
     ADDING A NEW CHECK? Decide its grade FIRST, and write down which observation
     separates a fault from a designed behaviour. If your check fires on the
     ABSENCE of something (a counter not advancing, an age exceeding a bound),
@@ -246,6 +262,41 @@ function Get-PlannedWindow {
     return @{ active = $true; reason = $reason; until = $until }
 }
 
+# Which keys a planned window is ALLOWED to mask. See PLANNED SCOPE in the header and
+# docs/53_planned_scope.md for the full census and the reason for every line.
+#
+# Everything here is an observation of COLLECTION NOT HAPPENING - the direct, expected
+# consequence of an operator stopping or restarting the collector. Nothing here is an
+# observation of the WATCHING failing, of a fault the collector actively reported, or of
+# the machine underneath (disk, power, tasks, schema). Those stay loud during a planned
+# window because a planned collection stop does not produce them.
+#
+# This is an ALLOWLIST on purpose: a key that nobody has classified is NOT masked. A new
+# check that gets this wrong therefore costs one noisy PLANNED-window file, never a
+# hidden outage. When in doubt, leave it off.
+#
+# PLANNED-SCOPE-LIST-BEGIN (must match ops/daily_health.py - self-test P10 enforces it)
+$script:PLANNED_MASKABLE_RESTART_REASONS = @(
+    "process_dead", "supervisor_dead", "collector_dead",
+    "log_stale", "counters_frozen", "ranking_snap_never", "ranking_snap_stalled")
+$script:PLANNED_MASKABLE_BASE = @(
+    "stop_observed", "no_telemetry", "ranking_snap_stalled", "ranking_stall_suppressed")
+# PLANNED-SCOPE-LIST-END
+#
+# A restart alert (watch_<reason>) and the record that the restart happened
+# (restarted_<reason>) are ONE event in two files. Grading them differently would be the
+# docs/34 section 1 self-contradiction all over again, so both follow the reason. Reasons
+# deliberately NOT on the list: auth_failures and token_dead - a stopped collector makes
+# no failing auth calls, so those are faults a RUNNING collector reported.
+$script:PLANNED_MASKABLE_KEYS =
+    $script:PLANNED_MASKABLE_BASE +
+    ($script:PLANNED_MASKABLE_RESTART_REASONS | ForEach-Object { "watch_$_" }) +
+    ($script:PLANNED_MASKABLE_RESTART_REASONS | ForEach-Object { "restarted_$_" })
+
+function Test-PlannedMaskable([string]$key) {
+    return ($script:PLANNED_MASKABLE_KEYS -contains $key)
+}
+
 # Alert with per-key dedup: fires once per state transition, re-fires after $repeatS.
 # During a planned window (or for inherently-operator-driven keys) the file is written
 # as PLANNED_*.txt with a marker header, so an unattended morning glance can keep using
@@ -266,7 +317,14 @@ function Raise-Alert($state, [string]$key, [string]$level, [string]$body,
     #   ALERT_ = fault, PLANNED_ = a human did it, NOTE_ = worked as designed,
     #   TRADEOFF_ = the system gave something up and the user must judge it.
     # Filing a designed behaviour as ALERT_ re-breaks "any ALERT_ file is trouble".
-    $planned = $alwaysPlanned -or $script:PlannedNow.active
+    #
+    # A planned window is scoped BY KEY. This line used to read
+    #     $planned = $alwaysPlanned -or $script:PlannedNow.active
+    # which graded the whole cycle from the marker, so on 2026-08-12 a marker that meant
+    # "collection is stopped on purpose" also covered a 2h01m watchdog outage that had
+    # nothing to do with collection. It broke the promise in the header from the other
+    # side: a PLANNED_ file with real trouble inside it.
+    $planned = $alwaysPlanned -or ($script:PlannedNow.active -and (Test-PlannedMaskable $key))
     $prefix = "ALERT"
     if ($level -eq "INFO") { $prefix = "NOTE" }
     if ($level -eq "TRADEOFF") { $prefix = "TRADEOFF" }
@@ -283,6 +341,21 @@ function Raise-Alert($state, [string]$key, [string]$level, [string]$body,
         $header = "PLANNED MAINTENANCE - this was expected, not an outage.$hdrUntil`r`n" +
                   "reason: $why`r`n" +
                   "(Written as PLANNED_ instead of ALERT_ so that any ALERT_ file still means trouble.)`r`n`r`n"
+    } elseif ($script:PlannedNow.active) {
+        # A marker IS up and this key is outside its scope. Say so in the file. A morning
+        # reader who knows a maintenance window was open would otherwise have to guess
+        # whether the marker failed, and "the marker failed" is the comfortable guess.
+        $why = $script:PlannedNow.reason
+        if ($why -eq "") { $why = "(no reason recorded)" }
+        $header = "NOT MASKED BY THE PLANNED MARKER - this is a real problem.`r`n" +
+                  "A planned maintenance marker is active (reason: $why), but key=$key is " +
+                  "outside its scope: a planned collection stop cannot produce this " +
+                  "observation, so grading it 'planned' would hide it. That is what " +
+                  "happened on 2026-08-12, when a 2h01m watchdog outage was filed as " +
+                  "PLANNED_. The scope list is in ops/watchdog.ps1 (PLANNED SCOPE) and " +
+                  "docs/53_planned_scope.md.`r`n`r`n"
+        Write-Log ("PLANNED-SCOPE-REFUSED key=$key - a planned window is active but this " +
+                   "key is not maskable by it; written as $prefix")
     }
     $fname = "{0}_{1}_{2}.txt" -f $prefix, (Get-Date -Format "yyyyMMdd_HHmmss"), $key
     $path = Join-Path $DataDir $fname
@@ -821,8 +894,12 @@ function Invoke-Restart($state, [string]$reason) {
 # auto-expiry of a stale marker).
 $script:PlannedNow = Get-PlannedWindow
 if ($script:PlannedNow.active) {
-    Write-Log ("planned window ACTIVE until {0:yyyy-MM-dd HH:mm:ss} - alerts this cycle are " -f $script:PlannedNow.until +
-               "written as PLANNED_ (reason: $($script:PlannedNow.reason))")
+    # Say WHICH alerts, not "alerts". The old wording ("alerts this cycle are written as
+    # PLANNED_") was the bug written out in words - it was true, and it should never have
+    # been. A reader grepping this log after an incident must see the scope.
+    Write-Log ("planned window ACTIVE until {0:yyyy-MM-dd HH:mm:ss} - COLLECTION-ABSENCE " -f $script:PlannedNow.until +
+               "keys this cycle are written as PLANNED_; watchdog/sentinel liveness, task " +
+               "results, disk, power and schema stay ALERT_ (reason: $($script:PlannedNow.reason))")
 }
 
 # ---------------- sentinel role ----------------
