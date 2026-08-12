@@ -150,6 +150,24 @@ def q1_volume_leadtime(events: pd.DataFrame, feats: pd.DataFrame, *,
 
     metrics = ["vol_surge_lead_min"] + [f"rvol_first_cross_{t:g}_lead_min"
                                         for t in RVOL_CROSS_THRESHOLDS]
+    # ★ 아래 detect_rate 는 인용 규약이 걸린 수다 — 보고서에 옮기기 전에 읽을 것.
+    #
+    # 1. thr ∈ {2, 3} 의 detect_rate 는 `obs_le` 컷오프(ts_ms <= t0_ms, 2026-08-09 개정
+    #    이후 기본값)에서 **구조적으로 1.000 이며 측정이 아니다. 인용 금지**
+    #    (docs/48 §11-4, docs/12 §3.1). 게이트가 rv[t0] >= 3.0 을 보장하므로
+    #    (labeling.py) 창 (sess_start, t0] 안에 rv >= 3 인 봉이 반드시 있고,
+    #    thr 2·3 의 첫 교차는 반드시 잡힌다. 실측 60/60 = 1.000 (docs/49 §5).
+    #    `strict_lt`(개정 이전) 값은 금지 대상이 아니다 — docs/15 의 기록이 그 예다.
+    # 2. thr = 5 는 금지 대상이 아니다(비퇴화). cutoff_mode 병기와
+    #    "등록 표본 아님" 단서만 붙인다 (docs/48 §11-4).
+    # 3. vol_surge_lead_min 은 봉 단위 로그거래량 z 라 게이트의 세션 누적 RVOL 과
+    #    **다른 양**이고, 위 동어반복에 오염되지 않는다 (docs/48 §11-4).
+    # 4. 어느 값이든 보고할 때 cutoff_mode(`strict_lt`/`obs_le`)를 병기한다.
+    #    두 모드를 같은 표·분포·CI 에 섞은 집계는 무효다 (docs/48 §6).
+    # 5. 리드 0 분리 병기 의무: 리드 >= 0(주)과 리드 >= 1(병기)을 함께 낸다.
+    #    단 리드 >= 1 을 곧 `strict_lt` 값이라 부르지 않는다 — 그 복원은 두 모드의
+    #    앵커가 일치하는 이벤트에서만 성립하고, rvol_first_cross 에서는 실제로
+    #    깨졌다 (docs/12 §1.8, docs/48 §11-5, docs/51 §3·§5).
     for m in metrics:
         d = _dist(_num(joined, m), "lead_")
         rows.append({"metric": m, "n_events": n_total, "detected": d["lead_n"],

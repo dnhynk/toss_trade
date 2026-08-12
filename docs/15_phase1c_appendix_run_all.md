@@ -8,15 +8,27 @@
 
 > 비용 규약: `cost_roundtrip` 기본 1% 는 **왕복 수수료 0.2%(US 0.1%/체결) + 환전 스프레드 + 저유동성 슬리피지**를 포함한 보수적 총비용이다. 수수료만의 0.2% 와 혼동하지 말 것 (계약 A2 §5).
 
+> ★ **`cutoff_mode` = `strict_lt` (2026-08-11 표기 추가).** 이 부록은 **2026-08-09 컷오프
+> 개정 이전** 산출이므로, 전조 피처에서 파생된 이 문서의 모든 수치는 컷오프 `ts_ms < t0_ms`
+> 인 **`strict_lt` 값**이다. `docs/48` §6-1 의 딱지 의무를 뒤늦게 이행한 것이며 **수치는 한
+> 개도 바꾸지 않았다.** 아래 표에서는 기존 `note` 칸에 딱지를 실었다(`docs/48` §6-2 가
+> `docs/13` 에 정한 것과 같은 방식).
+>
+> **재실행 시 이 칸을 덮어쓰지 말 것.** `obs_le` 로 다시 돌리면 다른 값이 나오고
+> `docs/48` §6-3 이 **두 모드를 같은 표에 섞는 것을 금지**한다 — 새 표를 만들어야 한다.
+> 특히 `rvol_first_cross_{2,3}_lead_min` 의 `detect_rate` 는 `obs_le` 에서 **구조적 1.000**
+> 이라 인용이 금지돼 있고(`docs/48` §11-4), **아래 `strict_lt` 값은 그 금지 대상이 아니다.**
+> (요구 출처: `docs/51_anchor_boundary` §6-3, `docs/48` §11-7 #2.)
+
 ## Q1. 거래량 이상의 선행성
 > 거래량 이상은 가격 급등보다 평균 몇 분 선행하는가? 임계값별 정밀도/재현율은?
 
 | metric | n_events | detected | detect_rate | precision | recall | f1 | tp | fp | fn | lead_n | lead_mean | lead_median | note |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| vol_surge_lead_min | 49 | 44 | 0.898 | - | - | - | - | - | - | 44 | 257.3 | 96 |  |
-| rvol_first_cross_2_lead_min | 49 | 42 | 0.8571 | - | - | - | - | - | - | 42 | 75.55 | 21 |  |
-| rvol_first_cross_3_lead_min | 49 | 41 | 0.8367 | - | - | - | - | - | - | 41 | 74.8 | 20 |  |
-| rvol_first_cross_5_lead_min | 49 | 34 | 0.6939 | - | - | - | - | - | - | 34 | 77.88 | 16.5 |  |
+| vol_surge_lead_min | 49 | 44 | 0.898 | - | - | - | - | - | - | 44 | 257.3 | 96 | `cutoff_mode=strict_lt` |
+| rvol_first_cross_2_lead_min | 49 | 42 | 0.8571 | - | - | - | - | - | - | 42 | 75.55 | 21 | `cutoff_mode=strict_lt` |
+| rvol_first_cross_3_lead_min | 49 | 41 | 0.8367 | - | - | - | - | - | - | 41 | 74.8 | 20 | `cutoff_mode=strict_lt` |
+| rvol_first_cross_5_lead_min | 49 | 34 | 0.6939 | - | - | - | - | - | - | 34 | 77.88 | 16.5 | `cutoff_mode=strict_lt` |
 | precision_recall@rvol_at_cutoff>=2 | 49 | - | - | - | - | - | - | - | - | - | - | - | no_controls |
 | precision_recall@rvol_at_cutoff>=3 | 49 | - | - | - | - | - | - | - | - | - | - | - | no_controls |
 | precision_recall@rvol_at_cutoff>=5 | 49 | - | - | - | - | - | - | - | - | - | - | - | no_controls |
