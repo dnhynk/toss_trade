@@ -14,6 +14,8 @@ D1·D2 는 운영에서 580건의 허위 ERROR 를 냈고 그것이 정원 복�
     D1  `sync_rate_limits` 가 전역 시도 델타를 호출자 그룹에 얹는다      (docs/45 §3.2)
     D2  델타를 빼앗긴 주인이 바닥값으로 또 계상한다                       (docs/45 §3.3)
     D3  계상 시각이 송신 시각이 아니라 **완료 시각**이다                  (docs/45 §3.1)
+    D7  사건 타임라인이 **서버 보정 벽시계** 위에 얹힌다                  (docs/52 §5)
+    D8/D9  반대 방향의 실수 — 세션·쿨다운 판정이 **단조 시계**로 넘어간다 (docs/52 §5.4)
 
 ## 조용한 실패를 막는 장치
 
@@ -50,7 +52,8 @@ BUDGET = ROOT / "tossmon" / "collector" / "budget.py"
 
 #: 변이를 겨눌 테스트들. 계상 방어가 들어 있는 파일만 돌려 게이트를 빠르게 유지한다.
 SUITES = ("tests/test_send_time_accounting.py", "tests/test_double_billing.py",
-          "tests/test_limiter_vs_counter.py", "tests/test_collector_budget.py")
+          "tests/test_limiter_vs_counter.py", "tests/test_collector_budget.py",
+          "tests/test_budget_event_clock.py")
 
 
 @dataclass(frozen=True)
@@ -116,6 +119,25 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        self.counters[group] = self.counters.get(group, 0) + len(ages)",
         "        self.counters[group] = self.counters.get(group, 0) + max(len(ages) - 1, 0)",
         ("test_send_time_accounting_preserves_the_total",)),
+    Mutation(
+        "D7", BUDGET,
+        "사건 타임라인을 **서버 보정 벽시계**로 되돌린다 (2026-08-12 이전 배선)",
+        "        return float(self.mono())",
+        "        return self._wall_s()",
+        ("test_the_production_wiring_puts_the_event_timeline_on_a_monotonic_clock",
+         "test_the_monotonic_event_timeline_recovers_the_true_send_peak")),
+    Mutation(
+        "D8", BUDGET,
+        "**반대 방향의 실수** — 워밍업(세션 판정)을 단조 시계로 넘긴다",
+        "        return self._wall_s() < self._warmup_until_s",
+        "        return self._mono_s() < self._warmup_until_s",
+        ("test_warmup_follows_the_wall_clock_not_the_monotonic_one",)),
+    Mutation(
+        "D9", BUDGET,
+        "**반대 방향의 실수** — 축소 쿨다운(분 단위 판정)을 단조 시계로 넘긴다",
+        "        now = self._wall_s()          # 쿨다운·지속 유지 시간 — 분 단위 판정은 벽시계",
+        "        now = self._mono_s()",
+        ("test_the_shrink_cooldown_follows_the_wall_clock",)),
 )
 
 

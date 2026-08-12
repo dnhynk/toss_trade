@@ -492,15 +492,20 @@ class CollectorContext:
                notifier: Notifier | None = None, clock: Clock | None = None,
                scheduler: SessionScheduler | None = None,
                symbols: Sequence[str] = (), state_path: Path | str | None = None,
-               resume: bool = True) -> "CollectorContext":
+               resume: bool = True, mono=None) -> "CollectorContext":
         det = cfg.require_detector()
         uni = cfg.require_universe()
         polling = cfg.require_polling()
         notifier = notifier or Notifier(_default_log_path(cfg))
         clock = clock or Clock(notifier=notifier)
         scheduler = scheduler or SessionScheduler(client, clock, notifier=notifier)
+        # `mono` 는 예산의 **사건 타임라인** 시계다 (기본 `time.monotonic`). 이것이
+        # `client.recent_send_ages()` 의 시계와 같아야 `on_sends` 의 `now - age` 가
+        # 송신 시각을 그대로 복원한다. 서버 보정 벽시계(`clock`)를 쓰면 `Date` 헤더
+        # 오프셋 지터(±180ms)가 송신 간격(118~157ms)을 눌러 첨두를 부풀린다
+        # (docs/52 §5). 세션·워밍업·쿨다운 판정은 `clock` 그대로다.
         budget = BudgetGuard(dict(cfg.limits), cfg.api.usage_ratio,
-                             clock=clock, notifier=notifier)
+                             clock=clock, notifier=notifier, mono=mono)
         tiers = TierStateMachine(
             det.promote_hysteresis_s, tier2_max=uni.tier2_max, tier3_max=uni.tier3_max,
             stale_demote_s=polling.tier2_candle_s * STALE_DEMOTE_MULT)
