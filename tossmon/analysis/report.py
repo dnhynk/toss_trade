@@ -188,9 +188,15 @@ def expand_meta_json(events: pd.DataFrame) -> pd.DataFrame:
 def generate_report(db_path: Path, out_path: Path, t_from_ms: int, t_to_ms: int) -> Path:
     """DB(read-only) → 평가 → 마크다운 파일. 반환: 기록한 경로.
 
-    `Reader`(W2 소유)만 사용하고 쓰기 연결은 열지 않는다. 이벤트가 없거나 Reader 가 아직
-    미구현이어도 예외를 던지지 않고 "데이터 없음" 리포트를 쓴다 — 무인 실행 파이프라인이
-    리포트 생성 때문에 죽지 않도록.
+    `Reader`(W2 소유)만 사용하고 쓰기 연결은 열지 않는다. 이벤트가 없거나 ~~Reader 가 아직
+    미구현이어도~~ **Reader 호출이 실패해도** 예외를 던지지 않고 "데이터 없음" 리포트를
+    쓴다 — 무인 실행 파이프라인이 리포트 생성 때문에 죽지 않도록.
+
+    ★ **정정 (2026-08-12) — "Reader 가 아직 미구현" 은 이제 참이 아니다.**
+    `tossmon/store/reader.py` 에 `Reader` 가 구현돼 있다(`read_candles_1m`·`read_candles_1d`·
+    `read_rankings`·`read_events`·`symbols`). 방어 자체는 그대로 유효하다 — 아래 `_safe`
+    가 막는 것은 **미구현**이 아니라 **DB 부재·질의 실패**다. 그래서 문언만 고쳤고
+    **동작은 한 줄도 바꾸지 않았다.** (`docs/54` §3)
     """
     from ..store.reader import Reader     # 지연 import (analysis → store 단방향)
 

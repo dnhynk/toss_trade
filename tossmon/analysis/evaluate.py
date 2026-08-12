@@ -167,7 +167,9 @@ def q1_volume_leadtime(events: pd.DataFrame, feats: pd.DataFrame, *,
     # 5. 리드 0 분리 병기 의무: 리드 >= 0(주)과 리드 >= 1(병기)을 함께 낸다.
     #    단 리드 >= 1 을 곧 `strict_lt` 값이라 부르지 않는다 — 그 복원은 두 모드의
     #    앵커가 일치하는 이벤트에서만 성립하고, rvol_first_cross 에서는 실제로
-    #    깨졌다 (docs/12 §1.8, docs/48 §11-5, docs/51 §3·§5).
+    #    깨졌다 (docs/12 §1.8, docs/48 §11-5, docs/51_anchor_boundary §3·§5 — 정정
+    #    2026-08-12: 원래 "docs/51" 로만 적혀 있었으나 51 번 문서가 둘이다
+    #    (`51_anchor_boundary` W3 / `51_detector_windows` W5). 파일명을 박았다).
     for m in metrics:
         d = _dist(_num(joined, m), "lead_")
         rows.append({"metric": m, "n_events": n_total, "detected": d["lead_n"],
@@ -468,11 +470,25 @@ def q6_time_of_day(events: pd.DataFrame, *, gate: str = "exclude",
     버킷 기준은 `t0_min_from_open`(정규장 개장 후 경과분, 음수 = 개장 전).
     `hod_within_15min_share` 는 docs/02 §2.4 의 "HOD 46.6% 가 개장 15분 내" 재검증용.
 
-    **±1분 감도 의무 병기 (사전등록 §7-f)**: 봉 타임스탬프가 봉의 시작인지 끝인지 아직
-    미확정이라 버킷 경계가 1분 흔들릴 수 있다. 그래서 `t0_min_from_open` 을 ±`sensitivity_min`
+    **±1분 감도 의무 병기 (사전등록 §7-f)**: ~~봉 타임스탬프가 봉의 시작인지 끝인지 아직
+    미확정이라~~ 버킷 경계가 1분 흔들릴 수 있다. 그래서 `t0_min_from_open` 을 ±`sensitivity_min`
     만큼 민 경우의 버킷 인원(`n_minus`/`n_plus`)과 소속이 바뀌는 이벤트 수
     (`n_boundary_sensitive`), 그리고 `boundary_sensitive` 플래그를 함께 낸다.
     **경계 이동으로 결론이 뒤집히는 버킷은 판정 불가로 다룬다.**
+
+    ★ **정정 (2026-08-12) — "아직 미확정" 은 이제 참이 아니다.** `candles_1m.ts_ms` 는
+    **종료 시각 라벨**로 확정됐다 — `docs/12` §6.1(2026-08-07 개정, D-12, 개정문 `docs/40`).
+    근거는 `docs/36` §1 의 세 갈래 독립 검증(일봉 거래량 정확 일치 **종료 라벨 87/88** vs
+    시작 라벨 1/88 등)과 W5 가 다른 데이터·다른 방법으로 도달한 같은 결론(`docs/31` §2)이며,
+    `docs/48` §1-1 이 그 사실을 전제로 쓴다.
+
+    ★ **그럼에도 병기 의무를 해제하지 않았다 — 동작은 한 줄도 바꾸지 않았다.** 이유 둘:
+    (1) `docs/12` §7-f 가 적은 해제 조건은 *"**라이브 프로브로** 확정되면"* 인데 위 확정은
+    라이브 프로브가 아니다. **그 조건이 충족됐는지는 사전등록 소관이라 여기서 판정하지 않는다.**
+    (2) 종료 라벨이면 라벨 `t0` 인 봉이 담는 구간은 `[t0−60초, t0)` 이므로, 사건이 실제로
+    일어난 분과 `t0_min_from_open` 이 여전히 최대 1분 어긋날 수 있다.
+    **해제 판단은 W7/코디네이터로 넘긴다** — `docs/12` §7-f 와 §2.5(*"시작/끝 미확정"*)도
+    같은 낡은 사실을 적고 있다(`docs/54` §3·§5).
     """
     ev, n_ex = _gate(events, gate)
     if len(ev) == 0 or "t0_min_from_open" not in ev.columns:
