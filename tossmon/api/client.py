@@ -77,6 +77,13 @@ RECENT_429_KEEP = 8
 # 쓰므로 몇 초면 충분하다.
 SEC_COUNT_KEEP = 16
 
+# 그룹별 **송신 시각**을 몇 초치나 들고 있을지 (monotonic 초).
+# 예산 가드의 관측 지평(`budget.WINDOW_S` = 60초)보다 넉넉해야 한다 — 계상이 잠깐 밀려도
+# 그 사이 송신의 시각을 잃지 않는다. 여기서 밀려난 건은 어차피 60초 창 밖이라 첨두·지속률
+# 어느 쪽에도 들어가지 않지만, **건수에서는 사라지면 안 되므로** 계상 쪽이 따로 센다
+# (`loops.budget_sends_without_time`).
+SEND_TIME_HORIZON_S = 180.0
+
 # 429 진단에 남기는 응답 헤더. 시크릿이 실릴 수 있는 헤더는 애초에 목록에 없다
 # (응답 헤더이지만 set-cookie 류를 통째로 로그에 흘리지 않기 위해 allowlist 로 간다).
 DIAG_HEADER_PREFIXES = ("x-ratelimit", "ratelimit", "retry-after", "x-request-id", "date")
@@ -149,6 +156,16 @@ class TossClient:
         # 이 카운터는 소켓 직전에 `requests` 와 **같은 자리에서** 오른다.
         self.sent_by_group: dict[str, int] = {}
 
+        # 그룹별 **송신 시각** (monotonic 초). `sent_by_group` 과 **같은 자리**에서 남긴다.
+        #
+        # 왜 필요한가 (docs/45 §7-3 → docs/52): 예산 계상은 `after_call`/`sync_rate_limits`
+        # 에서 일어나는데 그 둘은 **응답이 돌아온 뒤**에 불린다. 그래서 예산에 찍히는 시각은
+        # 송신 시각이 아니라 **완료 시각**이었다. 리미터가 지키는 것은 송신이고 우리가 센
+        # 것은 완료라, 완료가 몰리면(이벤트루프가 DB 쓰기로 막혔다 풀리는, tier3 폴에서 늘
+        # 나는 모양) 넓게 퍼진 송신이 좁은 구간으로 압축되어 첨두가 부푼다.
+        # 건수 귀속을 고쳐도(docs/46) 시각은 안 고쳐지므로 잔여가 남았다.
+        self.sent_at_by_group: dict[str, deque[float]] = {}
+
         # 마지막 429 응답의 완전한 기록(상태·헤더·본문 error code). 200 이 덮어쓰지 않는다.
         self.last_429: dict[str, Any] | None = None
         self.recent_429s: deque[dict[str, Any]] = deque(maxlen=RECENT_429_KEEP)
@@ -204,6 +221,7 @@ class TossClient:
         headers.update(kwargs.pop("headers", None) or {})
         self.counters["requests"] += 1
         self.sent_by_group[group] = self.sent_by_group.get(group, 0) + 1
+        self._note_sent_at(group)
         try:
             resp = await self._http.request(method, path, headers=headers, **kwargs)
         except ForbiddenEndpoint:
@@ -222,6 +240,45 @@ class TossClient:
             # **429 응답 그 자리에서** 기록한다. 뒤따르는 200 이 덮어쓸 수 없는 자리에.
             self._record_429(method, path, group, resp, own_in_second)
         return _classify(resp, self.last_429 if resp.status_code == 429 else None)
+
+    # ---- 송신 시각 (예산 계상의 시각 근거) --------------------------------
+
+    def _note_sent_at(self, group: str) -> None:
+        """이 송신의 시각을 남긴다. `_send` 의 소켓 직전에서만 불린다."""
+        now = time.monotonic()
+        q = self.sent_at_by_group.get(group)
+        if q is None:
+            q = self.sent_at_by_group[group] = deque()
+        q.append(now)
+        horizon = now - SEND_TIME_HORIZON_S
+        while q and q[0] < horizon:
+            q.popleft()
+
+    def recent_send_ages(self, group: str, n: int) -> list[float]:
+        """가장 최근 `n` 건의 송신이 **지금으로부터 몇 초 전**이었나 (오래된 것부터).
+
+        시각이 아니라 **나이**를 돌려주는 이유: 이 시계는 `time.monotonic()` 이고 예산
+        가드의 시계는 서버 보정 벽시계(`Clock.now_ms`)다. 원시 시각을 넘기면 시간 기준이
+        섞인다. 나이는 두 기준 어디서나 같은 뜻이다.
+
+        지평 밖으로 밀려나 시각을 잃은 건은 `SEND_TIME_HORIZON_S` 로 채운다 — 그 나이는
+        예산의 관측 창(60초) 밖이라 첨두·지속률에 영향이 없고, 호출자가 "시각을 잃은
+        송신" 으로 셀 수 있다. **건수를 줄이지는 않는다**: 총량이 조용히 줄면 실사용이
+        과소평가되고 그것은 한도 사고를 놓치는 방향의 오류다.
+        """
+        if n <= 0:
+            return []
+        now = time.monotonic()
+        q = self.sent_at_by_group.get(group)
+        ages: list[float] = []
+        for t in reversed(q or ()):        # 뒤에서 n 건만 — 지평 전체를 복사하지 않는다
+            ages.append(max(now - t, 0.0))
+            if len(ages) >= n:
+                break
+        ages.reverse()
+        if len(ages) < n:
+            ages = [SEND_TIME_HORIZON_S] * (n - len(ages)) + ages
+        return ages
 
     # ---- 429 진단 --------------------------------------------------------
 
