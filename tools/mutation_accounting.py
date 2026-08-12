@@ -16,6 +16,11 @@ D1·D2 는 운영에서 580건의 허위 ERROR 를 냈고 그것이 정원 복�
     D3  계상 시각이 송신 시각이 아니라 **완료 시각**이다                  (docs/45 §3.1)
     D7  사건 타임라인이 **서버 보정 벽시계** 위에 얹힌다                  (docs/52 §5)
     D8/D9  반대 방향의 실수 — 세션·쿨다운 판정이 **단조 시계**로 넘어간다 (docs/52 §5.4)
+    S1~S9  서버 초 감시가 **눈을 감거나**(되돌림) **헛것을 본다**(오탐)   (docs/52 §12)
+
+S 계열은 두 방향을 다 심는다. 이 자리는 조용해도 실패하고(다중 발신자를 못 본다)
+시끄러워도 실패한다(없는 사고로 정원을 깎는다 — 2026-08-04 개장 붕괴가 그 경로다).
+한 방향만 지키면 나머지 한쪽으로 조용히 무너진다.
 
 ## 조용한 실패를 막는 장치
 
@@ -53,7 +58,7 @@ BUDGET = ROOT / "tossmon" / "collector" / "budget.py"
 #: 변이를 겨눌 테스트들. 계상 방어가 들어 있는 파일만 돌려 게이트를 빠르게 유지한다.
 SUITES = ("tests/test_send_time_accounting.py", "tests/test_double_billing.py",
           "tests/test_limiter_vs_counter.py", "tests/test_collector_budget.py",
-          "tests/test_budget_event_clock.py")
+          "tests/test_budget_event_clock.py", "tests/test_server_second_watch.py")
 
 
 @dataclass(frozen=True)
@@ -138,6 +143,70 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        now = self._wall_s()          # 쿨다운·지속 유지 시간 — 분 단위 판정은 벽시계",
         "        now = self._mono_s()",
         ("test_the_shrink_cooldown_follows_the_wall_clock",)),
+
+    # --- 서버 초 감시 (docs/52 §12) — 되돌림 넷 + **오탐 방향** 셋 -----------
+    #
+    # 이 자리의 실패 방식은 **양쪽**이다. 눈을 감으면(되돌림) 다중 발신자를 못 보고,
+    # 너무 잘 보면(오탐) 없는 사고로 정원을 깎는다 — 2026-08-04 개장 붕괴가 후자다.
+    # 그래서 두 방향을 다 심는다.
+    Mutation(
+        "S1", CLIENT,
+        "429 응답의 잔량을 **믿는다** (docs/06 §9-3 위반) — 없는 외부 소비를 만든다",
+        "        if status == 429:\n            return                                  # docs/06 §9-3 — 믿지 않는다",
+        "        if status == 429 and False:\n            return",
+        ("test_the_429_remaining_header_is_not_used_as_evidence",)),
+    Mutation(
+        "S2", CLIENT,
+        "소진량을 **마지막 값**으로 잡는다 — 도착 순서가 외부 소비로 둔갑한다",
+        "        self.consumed = max(self.consumed, limit - remaining)",
+        "        self.consumed = limit - remaining",
+        ("test_out_of_order_arrivals_do_not_invent_foreign_consumption",)),
+    Mutation(
+        "S3", CLIENT,
+        "초가 닫히기 **전에** 정산한다 — 한 서버 초가 쪼개져 우리 몫이 과소평가된다",
+        "SERVER_SECOND_SETTLE_S = 3.0",
+        "SERVER_SECOND_SETTLE_S = 0.0",
+        ("test_control_a_lone_sender_shows_no_foreign_consumption",
+         "test_a_shadow_sender_on_the_same_credential_shows_up_as_foreign")),
+    Mutation(
+        "S4", BUDGET,
+        "**오탐 방향** — 산발적 이상 1초로 판정한다 (경계 렌더·응답 없는 송신이 경보가 된다)",
+        "FOREIGN_SECONDS_MIN = 3",
+        "FOREIGN_SECONDS_MIN = 1",
+        ("test_control_an_isolated_artifact_does_not_ring",)),
+    Mutation(
+        "S5", BUDGET,
+        "**오탐 방향** — `own >= limit` 로 판정한다 (정상 포화 10/10 이 매 초 사고가 된다)",
+        "        over = 1 if limit > 0 and own > limit else 0",
+        "        over = 1 if limit > 0 and own >= limit else 0",
+        ("test_control_a_full_but_legal_second_never_raises_either_alarm",
+         "test_control_the_tier2_gate_stays_open_under_a_full_legal_load",
+         "test_control_a_clean_quota_still_restores")),
+    Mutation(
+        "S6", BUDGET,
+        "**오탐 방향** — 관측 지평을 없앤다 (지나간 사고가 세션 내내 게이트를 닫는다)",
+        "        cutoff = self._mono_s() - self.window_s\n        while q and q[0][0] < cutoff:\n            q.popleft()\n        return list(q)",
+        "        return list(q)",
+        ("test_the_observation_window_lets_a_past_incident_expire",)),
+    Mutation(
+        "S7", BUDGET,
+        "복원 거부를 **옛 술어로 되돌린다** (하드캡 때문에 거부가 일어날 수 없는 상태)",
+        "            if self.server_window_violated(group):",
+        "            if self.peak_1s(group) > self.limit_of(group):",
+        ("test_green_the_restore_is_refused_while_the_quota_is_not_ours",
+         "test_green_the_restore_is_refused_after_a_send_outside_the_limiter")),
+    Mutation(
+        "S8", LOOPS,
+        "tier2 게이트를 **옛 술어로 되돌린다** (스킵이 일어날 수 없는 상태)",
+        "    if ctx.budget.server_window_violated(GROUP_MARKET_DATA):",
+        "    if ctx.budget.peak_1s(GROUP_MARKET_DATA) > ctx.budget.limit_of(GROUP_MARKET_DATA):",
+        ("test_green_the_tier2_gate_yields_while_the_quota_is_not_ours",)),
+    Mutation(
+        "S9", LOOPS,
+        "client → budget 배선을 끊는다 (관측은 살아 있는데 아무도 안 가져간다)",
+        "        self._book_server_seconds()",
+        "        pass    # mutation: 서버 초 배선 제거",
+        ("test_the_production_wiring_carries_server_seconds_from_client_to_budget",)),
 )
 
 

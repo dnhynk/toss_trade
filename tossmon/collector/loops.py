@@ -231,6 +231,9 @@ TELEMETRY_EVERY_S = 300.0
 #: 사실과 맞는지 확인한다 — 목록이 드리프트하면 그 테스트가 먼저 죽는다.
 PROC_SCOPED_COUNTERS: tuple[str, ...] = (
     "http_429", "over_limit_1s", "precision_parsed", "precision_rounded",
+    # 서버 초 감사도 프로세스 수명이다 — `client._sec_counts` 와 `budget._server_seconds`
+    # 는 둘 다 상태파일로 복원되지 않는다 (docs/52 §12).
+    "quota_not_ours", "srv_s_unknown",
 )
 PROC_SCOPE_FIELD = "proc:" + ",".join(PROC_SCOPED_COUNTERS) + ";rest:install"
 
@@ -653,6 +656,32 @@ class CollectorContext:
             return None
         return [float(a) for a in ages]
 
+    def _book_server_seconds(self) -> int:
+        """정산된 **서버 초** 기록을 client 에서 가져와 예산 가드에 넘긴다.
+
+        그룹별로 부르지 않는 이유: client 는 모든 그룹의 초를 한 원장에 쌓고, 드레인은
+        한 번만 내준다 (같은 초를 두 번 세면 "남의 소비" 가 두 배로 보인다). 그래서 각
+        기록이 자기 `group` 을 들고 오고 여기서는 그대로 나눠 넣는다.
+
+        client 가 이 관측을 못 주면(구버전·테스트 더블) 조용히 넘어간다 — 예산 계상이
+        여기에 걸려 죽으면 안 된다.
+        """
+        fn = getattr(self.client, "drain_server_seconds", None)
+        if not callable(fn):
+            return 0
+        try:
+            records = list(fn())
+        except Exception:                      # 관측 실패가 계상을 죽이면 안 된다
+            return 0
+        for rec in records:
+            try:
+                self.budget.on_server_second(
+                    str(rec["group"]), int(rec["own"]), int(rec["consumed"]),
+                    rec.get("limit_header"))
+            except Exception:
+                continue
+        return len(records)
+
     def _sample_limiter_window(self, group: str) -> None:
         """리미터의 `snapshot()["window_used"]` 를 1표본 남긴다 (docs/45 §7-3).
 
@@ -706,6 +735,9 @@ class CollectorContext:
         pending = self._own_sends(group)
         if pending:
             self._book_sends(group, pending)
+        # 서버 초 감사도 여기서 걷는다 — 이 함수는 **실패로 끝난 호출에서도** 불리므로
+        # (docstring 참조) 사고 구간에서 관측이 끊기지 않는다.
+        self._book_server_seconds()
         seen429 = int(getattr(self.client, "counters", {}).get("http_429", 0))
         if seen429 > self._http429:
             since = seen429 - self._http429
@@ -998,7 +1030,27 @@ class CollectorContext:
             "chart_peak_1s": int(self.budget.peak_1s(GROUP_CHART)),
             "rank_peak_1s": int(self.budget.peak_1s(GROUP_RANKING)),
             # 0 이 아니면 리미터가 1초 창을 못 지킨 것이다 (정원 문제가 아니다).
+            # 2026-08-12 부터 근거가 **서버 초 감사**다 (docs/52 §12): 우리 시계로 센
+            # `md_peak_1s > limit` 은 하드캡 때문에 구조적으로 참이 될 수 없어 이 카운터가
+            # 조용해졌었다. 이름은 그대로 둔다 — 뜻("한 초에 한도를 넘겼다")이 같고
+            # 옛 로그·도구와의 비교가 끊기지 않는다 (docs/52 §7.2 와 같은 이유).
             "over_limit_1s": int(self.budget.counters.get("over_limit_1s", 0)),
+            # --- 서버 초 감사 (우리 시계·계상과 독립) -----------------------
+            # `md_srv_s` 가 **분모**다. 분모 없는 0 은 아무 뜻도 없다 (docs/52 §7.2).
+            # 0/0 = "아직 아무 초도 안 닫혔다", 0/58 = "58초를 봤는데 깨끗하다".
+            "md_srv_s": int(self.budget.server_seconds_seen(GROUP_MARKET_DATA)),
+            # 서버가 라벨한 초 중 **우리 송신만으로** 한도를 넘긴 초 (리미터 밖 송신).
+            "md_srv_over": int(self.budget.server_over_limit_seconds(GROUP_MARKET_DATA)),
+            # 그 초의 소진량이 우리 송신보다 많았던 초 = **우리 것이 아닌 소비**.
+            # 0 이 아니면 같은 자격증명의 다른 발신자이거나 그룹 밖 한도다 (docs/06 §9-6).
+            "md_foreign_s": int(self.budget.foreign_seconds(GROUP_MARKET_DATA)),
+            "md_foreign_max": int(self.budget.foreign_sends(GROUP_MARKET_DATA)),
+            # 위 상태로 **경보가 오른 횟수** (에피소드 단위). `md_foreign_s` 는 지금 상태,
+            # 이쪽은 누적이다 — 지나간 사고를 창이 지운 뒤에도 남는다.
+            "quota_not_ours": int(self.budget.counters.get("quota_not_ours", 0)),
+            # 서버가 소진량을 안 알려준 초 (헤더 없음/모순) — 위 두 값의 **사각지대** 크기.
+            "srv_s_unknown": int(getattr(self.client, "counters", {}).get(
+                "server_second_unknown", 0)),
             # 자기 한도 안인데 맞은 429 — 0 이 아니면 우리 한도 모델이 틀린 것이다
             # (CHART 0.5/3.5 인데 429 인 미해결 건의 판별 지표).
             "http_429_under_own_limit": int(self.counters.get("http_429_under_own_limit", 0)),
@@ -2278,10 +2330,24 @@ def tier2_orderbook_allowed(ctx: CollectorContext) -> tuple[bool, str]:
     if target > 0 and ctx.budget.measured_rate(GROUP_MARKET_DATA) >= \
             target * TIER2_ORDERBOOK_HEADROOM:
         return False, "rate"
-    # 첨두는 **단위가 맞는 곳에** 남긴다 — 1초 최댓값 vs 1초 한도. 하드캡이 있는 한
-    # 성립하지 않지만(docs/45 §2), 성립하면 리미터 밖 송신이라는 뜻이라 양보가 맞다.
-    if ctx.budget.peak_1s(GROUP_MARKET_DATA) > ctx.budget.limit_of(GROUP_MARKET_DATA):
-        return False, "burst"
+    # **스킵이 일어나야 하는 상황** (2026-08-12 재조준, docs/52 §12):
+    #
+    #   "서버가 이름 붙인 초에서 이 그룹의 한도가 **우리 것만이 아니다.**"
+    #
+    # 이 루프는 예산의 마지막 여유를 쓰는 쪽이고, 그 여유가 실제로 우리 것일 때만
+    # 써도 된다. 같은 자격증명의 다른 발신자가 그 초를 같이 깎고 있으면 우리 리미터의
+    # 창 계산은 이미 틀린 것이고(프로세스 간 조율 불가, docs/06 §9-6·§9-7), 그때 가장
+    # 먼저 양보해야 하는 것이 이 호출이다.
+    #
+    # 예전 조건은 `peak_1s > limit_of` 였고 **성립할 수 없었다** — 리미터 하드캡이
+    # 어떤 1초에도 한도 초과를 못 내기 때문이다 (docs/52 §6). 그 전의 조건(`peak_1s` 를
+    # 지속 예산에 대고 재기)은 반대로 69.3% 의 표본에서 닫혀 55,314건을 양보했다
+    # (docs/46 §5). **양쪽 실패를 다 피해야 한다**: 조건은 실제로 관측 가능해야 하고,
+    # 정상 부하에서는 절대 참이 되면 안 된다. 서버 초 감사가 그 두 성질을 다 가진다 —
+    # 정상 부하에서 `foreign` 은 0 이고(우리가 유일한 발신자면 소진량 = 우리 송신 수),
+    # 다른 발신자가 있으면 그가 도는 동안 거의 매 초에서 보인다.
+    if ctx.budget.server_window_violated(GROUP_MARKET_DATA):
+        return False, "quota"
     return True, ""
 
 
