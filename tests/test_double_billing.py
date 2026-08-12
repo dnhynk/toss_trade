@@ -70,8 +70,11 @@ def _build_ctx(tmp_path):
     day = simple_day("2026-07-30", DAY0)
     clock = FrozenClock(day.regular.start_ms + MIN_MS)
     client = _SendingClient()
+    # 사건 타임라인은 단조 시계를 쓴다 (docs/52 §5). `FrozenClock` 은 `sync=False` 라
+    # 서버 오프셋이 없고 `advance` 로만 움직이므로, 이 테스트의 결정론적 단조 시계다.
     ctx = CollectorContext.create(client, store, cfg, notifier=Notifier(console=False),
-                                  clock=clock, symbols=())
+                                  clock=clock, symbols=(),
+                                  mono=lambda: clock.local_now_ms() / 1000.0)
     ctx.scheduler.calendar = calendar_dict([day], 0)
     ctx.scheduler.fetched_ms = clock.now_ms()
     ctx.session = "regular"
@@ -209,7 +212,10 @@ def _guard_at_plan(clock) -> BudgetGuard:
     들어가므로 `peak_1s` 는 6 이 된다. 그 6 을 지속 속도 목표에 대고 재는 것이
     두 게이트가 하던 일이다.
     """
-    guard = BudgetGuard(dict(LIMITS), usage_ratio=0.85, clock=clock)
+    # `clock` 은 세션·쿨다운용, `mono` 는 사건 타임라인용 — 이 테스트에서는 같은
+    # 드라이버지만 자리가 다르다 (docs/52 §5).
+    guard = BudgetGuard(dict(LIMITS), usage_ratio=0.85, clock=clock,
+                        mono=lambda: clock.now_ms() / 1000.0)
     guard.set_plan(TierPlan(tier1_symbols=1500, tier2_symbols=300, tier3_symbols=10,
                             tier1_sweep_s=45, tier2_candle_s=110, tier3_trades_s=4,
                             tier3_orderbook_s=4, ranking_snap_s=12, ranking_types=3))

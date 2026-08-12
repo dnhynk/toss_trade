@@ -115,9 +115,13 @@ def table_a(rows: list[dict]) -> None:
     h = hist(r["peak"] for r in rows)
     over = sum(c for k, c in h.items() if k > MD_LIMIT)
     print(f"  옛 계상 md_peak_1s 분포: {show_hist(h, n, mark_over=MD_LIMIT)}")
-    print(f"  * = 새 계상에서 **구조적으로 불가능**한 값 (송신은 1.15초에 {MD_LIMIT}건이 상계)")
+    print(f"  * = 송신 시각 계상 **+ 단조 사건 시계**에서 구조적으로 불가능한 값 "
+          f"(송신은 1.15초에 {MD_LIMIT}건이 상계)")
     print(f"  한도 {MD_LIMIT} 초과 표본: {over}/{n} = {100.0 * over / n:.1f}% "
-          "→ 새 계상에서는 전부 10 이하로 내려온다 (이 진술에는 모델이 없다)")
+          "→ 아래 B-2 배선에서는 전부 10 이하로 내려온다 (이 진술에는 모델이 없다)")
+    print("  ⚠️ 2026-08-12 정정: 이 진술은 **두 수정이 다 있을 때만** 참이다. 송신 시각")
+    print("  계상만으로는 예산 시계의 오프셋 지터가 송신을 눌러 첨두가 여전히 10 을")
+    print("  넘는다 — 아래 B-1 이 그 상태다 (docs/52 §5).")
     avg = [r["avg"] for r in rows]
     print(f"  같은 표본의 지속률 avg: 중앙 {sorted(avg)[n // 2]:.2f} / 최대 {max(avg):.2f} req/s "
           f"(목표 8.50) — 지속률은 건수/창 이라 이번 수정과 **무관하게 그대로**다")
@@ -234,15 +238,18 @@ class _SimClient:
 DAY0 = 1753833600000
 
 
-def _ctx(tmp: Path, client):
+def _ctx(tmp: Path, client, *, budget_mono: bool = True):
     from tests.test_collector_helpers import (FrozenClock, calendar_dict,
                                               make_config, simple_day)
     cfg = make_config(tmp)
     day = simple_day("2026-07-30", DAY0)
     clock = FrozenClock(day.regular.start_ms + 60_000)
+    # **이 한 줄이 이 도구가 대조하는 전부다** — 예산의 사건 타임라인이 무엇 위에 얹히나.
+    # 수정 후(기본): client 가 송신 시각을 찍는 단조 시각. 수정 전: 서버 보정 벽시계.
+    mono = (lambda: client.mono) if budget_mono else (lambda: clock.now_ms() / 1000.0)
     ctx = CollectorContext.create(client, Store(cfg.store.db_path), cfg,
                                   notifier=Notifier(console=False), clock=clock,
-                                  symbols=())
+                                  symbols=(), mono=mono)
     ctx.scheduler.calendar = calendar_dict([day], 0)
     ctx.scheduler.fetched_ms = clock.now_ms()
     ctx.session = "regular"
@@ -288,14 +295,21 @@ class _ServerCorrectedClock:
 
 
 def replay(sends: list[float], dones: list[float], *, with_times: bool,
-           sample_every_s: float, clock_jitter: bool = False) -> list[int]:
-    """송신열·완료열을 **프로덕션 계상 코드**에 흘리고 `peak_1s` 를 표본한다."""
+           sample_every_s: float, clock_jitter: bool = False,
+           budget_mono: bool = True) -> list[int]:
+    """송신열·완료열을 **프로덕션 계상 코드**에 흘리고 `peak_1s` 를 표본한다.
+
+    `budget_mono`: 예산의 **사건 타임라인**이 무엇 위에 얹히나.
+      * `False` — 서버 보정 벽시계 (**2026-08-12 수정 전**의 배선).
+      * `True`  — client 가 송신 시각을 찍는 단조 시계 (**수정 후**, 프로덕션 기본값).
+    세션·워밍업·쿨다운 판정은 두 경우 모두 `ctx.clock`(벽시계) 그대로다.
+    """
     # Windows 는 열린 sqlite 핸들이 있는 디렉터리를 못 지운다 — 정리 실패가 결과를
     # 가리지 않게 무시한다 (임시 디렉터리라 남아도 무해하다).
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
         tmp = Path(td)
         client = _SimClient(with_times=with_times)
-        ctx = _ctx(tmp, client)
+        ctx = _ctx(tmp, client, budget_mono=budget_mono)
         base_ms = ctx.clock.now_ms()
         wall = _ServerCorrectedClock(clock_jitter)
         peaks: list[int] = []
@@ -340,6 +354,23 @@ def table_b(args) -> None:
           f"tier2_cap={args.tier2_cap}, tr{args.trades_s:g}s/ob{args.book_s:g}s)")
     print(f"  **진짜 송신 첨두 (1초 슬라이딩) = {true_peak}**  — 리미터가 낸 값이고 "
           "계상과 무관하다\n")
+    for budget_mono in (False, True):
+        _table_b1(args, sends, budget_mono)
+    print("  '시계' 열: **`Date` 헤더 오프셋이 흔들리는가**. 오프셋은 초 해상도 헤더")
+    print("  9표본의 중앙값이라 ±180ms 출렁이고, 그 폭이 송신 간격(118~157ms)보다 크면")
+    print("  나중 송신이 앞선 송신 쪽으로 **눌린다** (scheduler.py:170-184).")
+    print("  읽는 법 1: **B-2 는 '시계' 행 둘이 같아야 한다** — 사건 타임라인이 단조라")
+    print("  오프셋이 어떻게 흔들리든 사건 시각이 안 움직이기 때문이다. B-1 은 갈라진다.")
+    print("  읽는 법 2: **새 계상 열은 stall 에도 불변**이다 — 완료가 언제 오든 송신")
+    print("  시각은 같기 때문이다. 옛 첨두가 재던 것은 '초당 몇 건 보냈나' 가 아니라")
+    print("  '초당 몇 건 **완료됐나**' 였다.")
+
+
+def _table_b1(args, sends: list[float], budget_mono: bool) -> None:
+    if budget_mono:
+        print("### B-2. 예산 사건 타임라인 = **단조 시계** (2026-08-12 수정 후, 프로덕션)")
+    else:
+        print("### B-1. 예산 사건 타임라인 = **서버 보정 벽시계** (수정 전)")
     print(f"{'시계':>10} {'stall':>6} | {'옛 계상 (완료시각)':>30} | "
           f"{'새 계상 (송신시각)':>30}")
     print(f"{'':>10} {'(s)':>6} | {'peak중앙':>5}{'최대':>5}{'>10':>10}"
@@ -351,17 +382,11 @@ def table_b(args) -> None:
             dones = completion_times(sends, stall_s=stall,
                                      stall_every_s=args.stall_every_s, seed=args.seed)
             old = replay(sends, dones, with_times=False, clock_jitter=jitter,
-                         sample_every_s=args.sample_every_s)
+                         sample_every_s=args.sample_every_s, budget_mono=budget_mono)
             new = replay(sends, dones, with_times=True, clock_jitter=jitter,
-                         sample_every_s=args.sample_every_s)
+                         sample_every_s=args.sample_every_s, budget_mono=budget_mono)
             print(f"{label:>10} {stall:>6.2f} | {_stat(old)} | {_stat(new)}")
     print()
-    print("  '시계' 열: **예산이 사건을 찍는 시계**다. `Date` 헤더는 초 해상도라")
-    print("  오프셋(9표본 중앙값)이 앞뒤로 흔들리고, 그 폭이 송신 간격(118ms)보다 크면")
-    print("  나중 송신이 앞선 송신보다 앞에 놓여 **압축**된다 (scheduler.py:170-184).")
-    print("  읽는 법: **새 계상 열은 stall 에 불변**이다 — 완료가 언제 오든 송신 시각은")
-    print("  같기 때문이다. 옛 계상만 stall 을 따라 오른다. 즉 옛 첨두가 재던 것은")
-    print("  '초당 몇 건 보냈나' 가 아니라 '초당 몇 건 **완료됐나**' 였다.")
 
 
 def _peak(times: list[float]) -> int:

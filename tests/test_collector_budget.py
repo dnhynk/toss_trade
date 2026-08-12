@@ -39,7 +39,14 @@ def plan(tier3=None, tier2=None, tier1=None, trades_s=None, book_s=None,
 
 
 def guard(p=None, **kw):
-    g = BudgetGuard(LIMITS, 0.7, clock=kw.pop("clock", None), **kw)
+    clock = kw.pop("clock", None)
+    # 사건 타임라인은 **단조 시계**를 쓴다 (docs/52 §5). `FrozenClock` 은 `sync=False` 라
+    # 서버 오프셋이 없고 `advance` 로만 움직이므로 이 자리의 결정론적 단조 시계로 쓴다.
+    # 두 시계를 갈라 놓은 것 자체는 아래 `test_wall_clock_*` / `test_monotonic_*` 이 본다.
+    mono = kw.pop("mono", None)
+    if mono is None and clock is not None:
+        mono = lambda: clock.now_ms() / 1000.0        # noqa: E731
+    g = BudgetGuard(LIMITS, 0.7, clock=clock, mono=mono, **kw)
     g.set_plan(p if p is not None else plan())
     return g
 

@@ -16,6 +16,7 @@ tier3 폴링 주기가 조용히 무너지므로 둘 다 필요하다.
 from __future__ import annotations
 
 import math
+import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Mapping
@@ -174,12 +175,14 @@ class TierPlan:
 class BudgetGuard:
     def __init__(self, limits: dict[str, float], usage_ratio: float = 0.7, *,
                  window_s: float = WINDOW_S, headroom: float = HEADROOM,
-                 clock=None, notifier=None):
+                 clock=None, notifier=None, mono=None):
         self.limits = dict(limits)
         self.usage_ratio = float(usage_ratio)
         self.window_s = float(window_s)
         self.headroom = float(headroom)
         self.clock = clock
+        #: **사건 타임라인 전용 시계** (단조). `_wall_s` 와 갈라 두는 이유는 아래 참조.
+        self.mono = time.monotonic if mono is None else mono
         self.notifier = notifier
         self.plan: TierPlan | None = None
         self.counters: dict[str, int] = {}
@@ -196,13 +199,48 @@ class BudgetGuard:
         self._forced: dict[str, float] = {}      # 429 로 강제 축소해야 할 비율
 
     # ---- 시간 ----------------------------------------------------------
+    #
+    # **이 가드는 시계를 둘 쓴다. 하나로 합치면 안 된다.**
+    #
+    # `_wall_s()` — 서버 보정 벽시계 (`clock.now_ms()`). **세션과 맞물린 판정**이 본다:
+    #     워밍업(개장 후 180초), 축소 쿨다운, 429 후 회복 대기, 지속 초과 유지 시간.
+    #     "개장 직후인가" 는 서버 시각으로 정의되므로 이쪽은 서버를 따라가는 것이 맞다.
+    #
+    # `_mono_s()` — 단조 시계 (기본 `time.monotonic`). **사건 타임라인**이 본다:
+    #     `_events`·`_limiter_window` 의 스탬프와 그 컷오프(`peak_1s`·`p95_1s`·
+    #     `measured_rate`·`limiter_peak`).
+    #
+    # 왜 갈랐나 (2026-08-12, docs/52 §5). 예산의 사건 시각이 서버 보정 벽시계 위에
+    # 얹혀 있었다. 그 오프셋은 **초 해상도** `Date` 헤더 9표본의 중앙값이고 `after_call`
+    # 마다(초당 ~6회) 갱신되므로 ±180ms 로 출렁인다 (`scheduler.py:170-184`).
+    # 송신 간격이 118~157ms 라, 오프셋이 150ms 내려가는 순간 그 사이의 송신들이 예산
+    # 시계에서 **한 점으로 눌린다.** 눌린 만큼이 그대로 `peak_1s` 가 됐다:
+    # 같은 송신열에 프로덕션 계상 코드를 흘린 오프라인 재계상(`tools/replay_send_time.py`,
+    # 30분·174표본)에서 이상적 시계는 첨두 중앙 10 / >10 표본 0-174 인데
+    # 지터 시계는 첨두 중앙 12 / >10 표본 174-174 다.
+    # 08-12 운영 로그 104표본 중 44건(42.3%)이 한도 10 초과였고 11~13 에 몰려 있었다 —
+    # 진짜 송신 첨두는 리미터 하드캡이 묶는 10 이다.
+    #
+    # 기존 시계 경보로는 못 잡는다: 임계가 5초(`CLOCK_SKEW_ALERT_S`)이고 지터는 0.2초다.
+    #
+    # ⚠️ **`_mono_s()` 는 절대 시각이 아니다.** 원점은 프로세스마다 다르고 재시작마다
+    # 리셋된다. 그래서 이 값은 **차이로만** 쓰고 로그·경보·DB·상태파일 어디에도
+    # 새어나가면 안 된다 (`snapshot()`/`describe()` 는 전부 개수·비율이다).
+    # `test_budget_event_clock.py::test_monotonic_origin_never_leaks_*` 가 고정한다
+    # (같은 사건열을 원점만 바꿔 흘려 출력이 같은지 본다).
+    #
+    # 이 시계는 `client.recent_send_ages()` 의 시계와 **같아야** 한다 — 둘 다
+    # `time.monotonic` 이라 `on_sends` 의 `now - age` 가 송신 시각을 정확히 복원한다.
 
-    def _now_s(self) -> float:
+    def _wall_s(self) -> float:
+        """세션·워밍업·쿨다운이 보는 시각 (서버 보정 벽시계)."""
         if self.clock is not None:
             return self.clock.now_ms() / 1000.0
-        import time
-
         return time.monotonic()
+
+    def _mono_s(self) -> float:
+        """사건 타임라인이 보는 시각 (단조). **절대 시각이 아니다.**"""
+        return float(self.mono())
 
     # ---- 한도 ----------------------------------------------------------
 
@@ -304,7 +342,7 @@ class BudgetGuard:
     # ---- 관측 ----------------------------------------------------------
 
     def on_request(self, group: str) -> None:
-        now = self._now_s()
+        now = self._mono_s()
         self.counters[group] = self.counters.get(group, 0) + 1
         q = self._events.setdefault(group, deque())
         q.append(now)
@@ -333,7 +371,7 @@ class BudgetGuard:
             if n == 1:
                 self.on_request(group)
             return
-        now = self._now_s()
+        now = self._mono_s()
         q = self._events.setdefault(group, deque())
         start = q[-1] if q else now - SERVER_WINDOW_S
         span = max(now - start, 1e-3)
@@ -348,8 +386,10 @@ class BudgetGuard:
         """`n` 건을 **각자의 송신 시각**으로 계상한다 (완료 시각이 아니라).
 
         `ages_s`: 각 송신이 **지금으로부터 몇 초 전**이었나, 오래된 것부터.
-        시각이 아니라 나이로 받는 이유는 송신 시각의 시계(`time.monotonic`)와 이 가드의
-        시계(서버 보정 벽시계)가 다르기 때문이다 — 나이는 두 기준에서 같은 뜻이다.
+        시각이 아니라 나이로 받는 이유는 시계의 **원점**이 다를 수 있기 때문이다 —
+        나이는 어느 기준에서든 같은 뜻이다. (2026-08-12 이후 양쪽 다 `time.monotonic`
+        이므로 `now - age` 는 송신 시각을 그대로 복원한다. 그 전에는 이쪽이 서버 보정
+        벽시계였고, 그 오프셋 지터가 배치 **사이**의 간격을 눌렀다 — docs/52 §5.3.)
 
         이것이 `on_requests` 의 균등 분포를 대체한다. 균등 분포는 "직전 계상 이후 구간에
         일어났다" 는 것만 알 때의 최선이었지만, 그 구간 자체가 **계상 간격**이지 송신
@@ -358,19 +398,20 @@ class BudgetGuard:
         내보낸 20건이 완료 시각 계상에서 **첨두 20** 으로 잡혔다.
 
         큐는 **오름차순**을 유지해야 한다 (`peak_1s` 의 두 포인터와 왼쪽 pruning 이 그
-        전제 위에 있다). 송신은 그룹 락 때문에 순서대로 나가지만, 벽시계는 서버 오프셋
-        보정으로 뒤로 점프할 수 있으므로 어긋나면 정렬한다.
+        전제 위에 있다). 송신은 그룹 락 때문에 순서대로 나가고 이제 시계도 단조라
+        어긋날 이유가 줄었지만, 정렬 복구는 남겨 둔다 — `ages_s` 는 남이 주는 값이고,
+        어긋나면 첨두가 **조용히** 틀리기 때문이다. 어긋난 횟수는 카운터로 드러난다.
         """
         ages = [float(a) for a in ages_s]
         if not ages:
             return
-        now = self._now_s()
+        now = self._mono_s()
         q = self._events.setdefault(group, deque())
         was = q[-1] if q else None
         stamped = sorted(now - max(a, 0.0) for a in ages)
         q.extend(stamped)
         if was is not None and stamped[0] < was:
-            # 시계가 뒤로 갔다 — 정렬을 복구하지 않으면 첨두 계산이 조용히 틀린다.
+            # 순서가 어긋났다 — 정렬을 복구하지 않으면 첨두 계산이 조용히 틀린다.
             self.counters["events_out_of_order"] = (
                 self.counters.get("events_out_of_order", 0) + 1)
             self._events[group] = q = deque(sorted(q))
@@ -391,7 +432,7 @@ class BudgetGuard:
         ⚠️ 창 길이가 다르다: 리미터는 `WINDOW_HORIZON_S`(1.15초), 예산은 1.0초다.
         그래서 정상 상태의 기대 관계는 **`peak_1s <= limiter_peak`** 이지 같음이 아니다.
         """
-        now = self._now_s()
+        now = self._mono_s()
         q = self._limiter_window.setdefault(group, deque())
         q.append((now, float(used)))
         cutoff = now - self.window_s
@@ -403,14 +444,14 @@ class BudgetGuard:
         q = self._limiter_window.get(group)
         if not q:
             return -1.0
-        cutoff = self._now_s() - self.window_s
+        cutoff = self._mono_s() - self.window_s
         while q and q[0][0] < cutoff:
             q.popleft()
         return max((v for _, v in q), default=-1.0)
 
     def on_429(self, group: str) -> None:
         """429 는 사고다 — 다음 `should_shrink()` 에서 강제로 줄인다."""
-        self._last_429_s[group] = self._now_s()
+        self._last_429_s[group] = self._wall_s()      # 회복 대기(5분) — 분 단위 판정
         self.rate_limited[group] = self.rate_limited.get(group, 0) + 1
         self._forced[group] = max(self._forced.get(group, 0.0), RATE_LIMITED_SHRINK_FRAC)
         if self.notifier is not None:
@@ -429,7 +470,7 @@ class BudgetGuard:
         q = self._events.get(group)
         if not q:
             return 0.0
-        cutoff = self._now_s() - self.window_s
+        cutoff = self._mono_s() - self.window_s
         while q and q[0] < cutoff:
             q.popleft()
         return len(q) / self.window_s
@@ -440,7 +481,7 @@ class BudgetGuard:
         q = self._events.get(group)
         if not q:
             return []
-        cutoff = self._now_s() - self.window_s
+        cutoff = self._mono_s() - self.window_s
         while q and q[0] < cutoff:
             q.popleft()
         return list(q)
@@ -548,12 +589,16 @@ class BudgetGuard:
         return self.target(group) * (self.headroom - PLAN_RESERVE_FRAC)
 
     def note_session_change(self) -> None:
-        """세션 전환을 알린다 — 이후 `MEASURED_WARMUP_S` 동안 측정 기반 축소를 멈춘다."""
-        self._warmup_until_s = self._now_s() + MEASURED_WARMUP_S
+        """세션 전환을 알린다 — 이후 `MEASURED_WARMUP_S` 동안 측정 기반 축소를 멈춘다.
+
+        **벽시계다.** 세션 경계는 서버 시각으로 정의되고, 워밍업은 그 경계로부터
+        180초라는 뜻이기 때문이다 (docs/52 §5.4).
+        """
+        self._warmup_until_s = self._wall_s() + MEASURED_WARMUP_S
         self._measured_over_since.clear()
 
     def in_warmup(self) -> bool:
-        return self._now_s() < self._warmup_until_s
+        return self._wall_s() < self._warmup_until_s
 
     def reserve_deficit(self) -> dict[str, float]:
         """계획이 여유(PLAN_RESERVE_FRAC)를 못 남긴 그룹 → 부족분 req/s.
@@ -595,7 +640,7 @@ class BudgetGuard:
         """
         if self.plan is None:
             return None
-        now = self._now_s()
+        now = self._wall_s()          # 쿨다운·지속 유지 시간 — 분 단위 판정은 벽시계
         out: dict[str, int] = {}
         for group in (GROUP_MARKET_DATA, GROUP_CHART, GROUP_RANKING):
             target = self.target(group)
@@ -674,7 +719,7 @@ class BudgetGuard:
         """
         if self.plan is None:
             return None
-        now = self._now_s()
+        now = self._wall_s()          # 429 후 대기·스텝 간격 — 분 단위 판정은 벽시계
         out: dict[str, int] = {}
         for group in (GROUP_MARKET_DATA, GROUP_CHART):
             if group not in self._last_shrink_s:

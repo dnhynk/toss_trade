@@ -80,8 +80,13 @@ def _build(tmp_path):
 
     clock = VirtualClock(start_ms, scale=SPEED)
     client = ReplayClient(clock, frames, truths, calendar, rankings=rankings)
+    # 예산의 **사건 타임라인**은 단조 시계다 (docs/52 §5). 가속 리플레이에서 그 자리는
+    # `VirtualClock.local_now_ms` 다 — `time.monotonic` 을 `scale` 배로 민 값이라
+    # 진짜 단조이고, 서버 보정(`sync=False`)이 안 얹힌다. 실시간 `time.monotonic` 을
+    # 그대로 쓰면 60초 창이 가상시각 `60×scale` 초를 담아 첨두가 통째로 틀린다.
     ctx = CollectorContext.create(client, store, cfg, notifier=Notifier(console=False),
-                                  clock=clock, symbols=(RUNNER, QUIET))
+                                  clock=clock, symbols=(RUNNER, QUIET),
+                                  mono=lambda: clock.local_now_ms() / 1000.0)
     return ctx, truths, md, end_ms, seeded
 
 
@@ -232,7 +237,8 @@ async def test_replay_state_survives_a_mid_session_restart(tmp_path):
                           {RUNNER: truth_run, QUIET: truth_quiet},
                           truth_run["calendar"], rankings=truth_run["rankings"])
     ctx2 = CollectorContext.create(client, store, cfg, notifier=Notifier(console=False),
-                                   clock=clock)
+                                   clock=clock,
+                                   mono=lambda: clock.local_now_ms() / 1000.0)
     try:
         assert ctx2.counters["resumes"] == 1
         assert {s: st.tier for s, st in ctx2.tiers.states.items()

@@ -154,8 +154,13 @@ def build_ctx(tmp_path, client, *, now_ms=None, symbols=(), **cfg_sections):
     store = Store(cfg.store.db_path)
     day = simple_day("2026-07-30", DAY0)
     clock = FrozenClock(now_ms if now_ms is not None else day.regular.start_ms + MIN_MS)
+    # 예산의 **사건 타임라인**은 이제 단조 시계다 (docs/52 §5). `FrozenClock` 은
+    # `sync=False` 라 서버 오프셋이 없고 `advance` 로만 움직이므로, 이 자리의
+    # 결정론적 단조 시계로 쓴다 — 테스트가 `clock.advance` 로 사건을 벌리는 전제를
+    # 그대로 유지한다. 두 시계를 갈라 놓은 것 자체는 `test_budget_event_clock.py` 가 본다.
     ctx = CollectorContext.create(client, store, cfg, notifier=Notifier(console=False),
-                                  clock=clock, symbols=symbols)
+                                  clock=clock, symbols=symbols,
+                                  mono=lambda: clock.local_now_ms() / 1000.0)
     ctx.scheduler.calendar = calendar_dict([day], 0)
     ctx.scheduler.fetched_ms = clock.now_ms()
     ctx.session = "regular"

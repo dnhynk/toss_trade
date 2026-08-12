@@ -91,8 +91,11 @@ def _build_ctx(tmp_path, client):
     store = Store(cfg.store.db_path)
     day = simple_day("2026-07-30", DAY0)
     clock = FrozenClock(day.regular.start_ms + MIN_MS)
+    # 예산의 **사건 타임라인**은 client 가 송신 시각을 찍는 그 단조 시계를 쓴다
+    # (프로덕션에서는 둘 다 `time.monotonic`). 여기서는 그 자리에 시뮬 시각을 꽂는다 —
+    # 벽시계(`clock`)를 꽂으면 예전 배선이 되고, 그것이 docs/52 §5 의 결함이다.
     ctx = CollectorContext.create(client, store, cfg, notifier=Notifier(console=False),
-                                  clock=clock, symbols=())
+                                  clock=clock, symbols=(), mono=lambda: client.mono)
     ctx.scheduler.calendar = calendar_dict([day], 0)
     ctx.scheduler.fetched_ms = clock.now_ms()
     ctx.session = "regular"
