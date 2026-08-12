@@ -137,6 +137,30 @@ function Write-SettledOpenState([string]$dir, [hashtable]$extra = $null) {
     Write-WatchdogState $dir $p
 }
 
+# A live planned-maintenance marker, exactly as an operator drops it before an intentional
+# stop: an optional reason and an 'until' that has not passed yet.
+function Write-PlannedMarker([string]$dir, [string]$reason = "operator planned downtime",
+                             [double]$minutesAhead = 60) {
+    $until = (Get-Date).AddMinutes($minutesAhead).ToString("yyyy-MM-dd HH:mm:ss")
+    [IO.File]::WriteAllText((Join-Path $dir "data\ops_state\PLANNED"),
+        "reason=$reason`r`nuntil=$until`r`n", [Text.UTF8Encoding]::new($false))
+}
+
+function Write-StopFile([string]$dir, [string]$text = "operator stop - self-test fixture") {
+    [IO.File]::WriteAllText((Join-Path $dir "data\ops_state\STOP"), $text,
+        [Text.UTF8Encoding]::new($false))
+}
+
+# A heartbeat file aged by its LastWriteTime, because that is what the watchdog and the
+# sentinel actually measure - not the content.
+function _WriteHeartbeat([string]$dir, [string]$name, [double]$agoS) {
+    $p = Join-Path $dir "data\ops_state\$name"
+    $stamp = (Get-Date).AddSeconds(-$agoS)
+    [IO.File]::WriteAllText($p, ($stamp.ToString("yyyy-MM-dd HH:mm:ss") + " epoch=0"),
+        [Text.UTF8Encoding]::new($false))
+    (Get-Item $p).LastWriteTime = $stamp
+}
+
 # ---------------- runner ----------------
 
 function _EmptyTaskInfo([string]$dir) {
@@ -165,6 +189,14 @@ function Invoke-Watchdog([string]$dir, [hashtable]$override = $null) {
         # ALERT files" fails whenever a real tossmon task happens to be in a failed
         # state. A unit test must not depend on the state of the box it runs on.
         TaskInfoJson      = (_EmptyTaskInfo $dir)
+        # A self-test must never KICK a real scheduled task either. Both roles call
+        # `schtasks /Run` when the other side's heartbeat goes stale, and pointed at the
+        # live names this harness would start the production tasks from inside an agent
+        # session - which is how tossmon-sentinel died with 0xC000013A on 2026-08-12
+        # (STATUS_CONTROL_C_EXIT: a console control event reached it). Names that do not
+        # exist make both calls a harmless no-op inside their own try/catch.
+        WatchdogTaskName  = "tossmon-selftest-absent-watchdog"
+        SentinelTaskName  = "tossmon-selftest-absent-sentinel"
     }
     if ($null -ne $override) { foreach ($k in $override.Keys) { $p[$k] = $override[$k] } }
     $cmdArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $Watchdog, "-DryRunRestart")
@@ -875,6 +907,231 @@ function Test-R1-HealthySessionIsQuiet {
     Assert "R1" "summary exposes the new trust fields" ($log -match "open_for=\d+s col_up=\d+s") $log
 }
 
+# --------------------------------------------------------------------------- #
+# PLANNED WINDOW SCOPE (2026-08-12).
+#
+# The collector was stopped on purpose at 08:39 and a PLANNED marker was dropped
+# (until=20:10). At 08:47:07 the machine entered Modern Standby (System log,
+# Kernel-Power 506) and stayed there until 10:44:20, so the watchdog task simply did not
+# run for 2h01m. The sentinel caught it - and filed it as
+# data/PLANNED_20260812_104717_watchdog_silent.txt, i.e. "a human did this on purpose,
+# ignore it". Nobody stopped the watchdog on purpose, and the watchdog is the process
+# that has to bring collection back at 20:00.
+#
+# The cause was one line: the whole cycle was graded by the marker, not by the key.
+# These cases pin the scope down key by key. The P3/P4/P9 controls are the point of the
+# exercise: they must be green BEFORE and AFTER, or "the false PLANNED is gone" would be
+# indistinguishable from "the planned window stopped working".
+# --------------------------------------------------------------------------- #
+
+function Test-P1-APlannedWindowMustNotMaskAWatchdogDeath {
+    # THE PRE-FIX FAILURE, replayed: marker active, watchdog heartbeat 7263s old.
+    $d = New-Sandbox
+    Write-PlannedMarker $d "operator planned downtime - collection off until 20:00 KST"
+    _WriteHeartbeat $d "watchdog_heartbeat.txt" 7263
+    Invoke-Watchdog $d @{ Role = "sentinel" } | Out-Null
+    $alerts = Get-Alerts $d "ALERT"
+    $planned = Get-Alerts $d "PLANNED"
+    $seen = "ALERT=[" + ($alerts -join ",") + "] PLANNED=[" + ($planned -join ",") + "]"
+    Assert "P1" "a dead watchdog is an ALERT even inside a planned window" `
+        (@($alerts | Where-Object { $_ -match "watchdog_silent" }).Count -eq 1) $seen
+    Assert "P1" "and it is NOT filed as PLANNED" `
+        (@($planned | Where-Object { $_ -match "watchdog_silent" }).Count -eq 0) $seen
+}
+
+function Test-P2-AMissingWatchdogHeartbeatIsAlsoNotPlanned {
+    # Same family, other branch: the heartbeat file does not exist at all.
+    $d = New-Sandbox
+    Write-PlannedMarker $d "operator planned downtime"
+    Invoke-Watchdog $d @{ Role = "sentinel" } | Out-Null
+    $alerts = Get-Alerts $d "ALERT"
+    $planned = Get-Alerts $d "PLANNED"
+    $seen = "ALERT=[" + ($alerts -join ",") + "] PLANNED=[" + ($planned -join ",") + "]"
+    Assert "P2" "a missing watchdog heartbeat is an ALERT inside a planned window" `
+        (@($alerts | Where-Object { $_ -match "watchdog_heartbeat_missing" }).Count -eq 1) $seen
+    Assert "P2" "and it is NOT filed as PLANNED" `
+        (@($planned | Where-Object { $_ -match "watchdog_heartbeat_missing" }).Count -eq 0) $seen
+}
+
+function Test-P3-APlannedWindowStillMasksACollectionStop {
+    # CONTROL GROUP. The whole point of the marker: a collector that is absent because a
+    # human stopped it must stay PLANNED_. If this goes red the fix did not narrow the
+    # scope, it deleted it.
+    $d = New-Sandbox
+    Write-PlannedMarker $d "operator planned downtime - collection off until 20:00 KST"
+    Write-StateFile $d "day" 3000 20
+    Write-CollectorLog $d "day" 3000 20
+    Write-SettledOpenState $d
+    Invoke-Watchdog $d @{ CollectorPattern = "NOTHING_MATCHES_THIS_XYZZY"
+                          SupervisorPattern = "NOTHING_MATCHES_THIS_XYZZY" } | Out-Null
+    $alerts = Get-Alerts $d "ALERT"
+    $planned = Get-Alerts $d "PLANNED"
+    $seen = "ALERT=[" + ($alerts -join ",") + "] PLANNED=[" + ($planned -join ",") + "]"
+    Assert "P3" "an absent collector stays PLANNED during the window" `
+        (@($planned | Where-Object { $_ -match "watch_process_dead" }).Count -eq 1) $seen
+    Assert "P3" "no ALERT file was written for the planned stop" ($alerts.Count -eq 0) $seen
+    # NOTE: restarted_<reason> is on the maskable list by the same-event rule (one restart,
+    # two files, one grade), but -DryRunRestart returns before that alert is written, so no
+    # case here can exercise it. Said out loud rather than left as assumed coverage.
+    # gap_audit.planned_windows() reconstructs past windows from THIS header - docs/34
+    # section 6. Changing its shape makes that function silently find nothing.
+    $body = Get-AlertBody $d $planned "watch_process_dead"
+    Assert "P3" "the PLANNED header still carries 'window until' for gap_audit" `
+        ($body -match "window until \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}") $body
+    Assert "P3" "the PLANNED header still carries the reason line" `
+        ($body -match "(?m)^reason: operator planned downtime") $body
+}
+
+function Test-P4-TheOperatorStopRecordIsStillPlanned {
+    # CONTROL GROUP. The STOP file is the planned action itself (alwaysPlanned), so it must
+    # stay PLANNED_ whether or not a marker is present.
+    $d = New-Sandbox
+    Write-StopFile $d
+    Invoke-Watchdog $d | Out-Null
+    $alerts = Get-Alerts $d "ALERT"
+    $planned = Get-Alerts $d "PLANNED"
+    $seen = "ALERT=[" + ($alerts -join ",") + "] PLANNED=[" + ($planned -join ",") + "]"
+    Assert "P4" "stop_observed is PLANNED even with no marker file" `
+        (@($planned | Where-Object { $_ -match "stop_observed" }).Count -eq 1) $seen
+    Assert "P4" "and it raises no ALERT" ($alerts.Count -eq 0) $seen
+}
+
+function Test-P5-ADeadSiblingTaskIsNotPlanned {
+    # A scheduled task that ran and died is task execution failing, not collection
+    # stopping. tossmon-sentinel died exactly this way at 08:32:53 on 2026-08-12.
+    $d = New-Sandbox
+    Write-PlannedMarker $d "operator planned downtime"
+    Write-StateFile $d "day" 20 30
+    Write-CollectorLog $d "day" 25 30
+    Write-SettledOpenState $d
+    Invoke-Watchdog $d @{ TaskInfoJson = (_TaskInfo $d @((_Task "tossmon-dailyhealth" 3221225786 1.0))) } | Out-Null
+    $alerts = Get-Alerts $d "ALERT"
+    $planned = Get-Alerts $d "PLANNED"
+    $seen = "ALERT=[" + ($alerts -join ",") + "] PLANNED=[" + ($planned -join ",") + "]"
+    Assert "P5" "a failed sibling task is an ALERT inside a planned window" `
+        (@($alerts | Where-Object { $_ -match "task_result_tossmon_dailyhealth" }).Count -eq 1) $seen
+    Assert "P5" "and it is NOT filed as PLANNED" `
+        (@($planned | Where-Object { $_ -match "task_result" }).Count -eq 0) $seen
+}
+
+function Test-P6-DiskIsNotPlanned {
+    # Disk does not stop filling because a human stopped the collector.
+    $d = New-Sandbox
+    Write-PlannedMarker $d "operator planned downtime"
+    Write-StateFile $d "day" 20 30
+    Write-CollectorLog $d "day" 25 30
+    Write-SettledOpenState $d
+    # Only the WARN threshold is raised: survey/reclaim/critical stay at 0 so the
+    # expensive whole-machine consumer walk never runs inside a unit test.
+    Invoke-Watchdog $d @{ DiskWarnGB = 100000 } | Out-Null
+    $alerts = Get-Alerts $d "ALERT"
+    $planned = Get-Alerts $d "PLANNED"
+    $seen = "ALERT=[" + ($alerts -join ",") + "] PLANNED=[" + ($planned -join ",") + "]"
+    Assert "P6" "a disk warning is an ALERT inside a planned window" `
+        (@($alerts | Where-Object { $_ -match "disk_warn" }).Count -eq 1) $seen
+    Assert "P6" "and it is NOT filed as PLANNED" `
+        (@($planned | Where-Object { $_ -match "disk_warn" }).Count -eq 0) $seen
+}
+
+function Test-P7-ADeadSentinelIsNotPlanned {
+    # The other half of the mutual watch. If the sentinel is dead nobody revives the
+    # watchdog, and the watchdog is what revives collection.
+    $d = New-Sandbox
+    Write-PlannedMarker $d "operator planned downtime"
+    Write-StateFile $d "day" 20 30
+    Write-CollectorLog $d "day" 25 30
+    Write-SettledOpenState $d
+    _WriteHeartbeat $d "sentinel_heartbeat.txt" 9000
+    Invoke-Watchdog $d | Out-Null
+    $alerts = Get-Alerts $d "ALERT"
+    $planned = Get-Alerts $d "PLANNED"
+    $seen = "ALERT=[" + ($alerts -join ",") + "] PLANNED=[" + ($planned -join ",") + "]"
+    Assert "P7" "a silent sentinel is an ALERT inside a planned window" `
+        (@($alerts | Where-Object { $_ -match "sentinel_silent" }).Count -eq 1) $seen
+    Assert "P7" "and it is NOT filed as PLANNED" `
+        (@($planned | Where-Object { $_ -match "sentinel_silent" }).Count -eq 0) $seen
+}
+
+function Test-P8-TheRefusalToMaskIsVisible {
+    # A refusal nobody can see is a different blind spot: a morning reader who knows a
+    # maintenance window was open needs the file itself to say why it is still an ALERT.
+    $d = New-Sandbox
+    Write-PlannedMarker $d "operator planned downtime - collection off until 20:00 KST"
+    _WriteHeartbeat $d "watchdog_heartbeat.txt" 7263
+    Invoke-Watchdog $d @{ Role = "sentinel" } | Out-Null
+    $body = Get-AlertBody $d (Get-Alerts $d "ALERT") "watchdog_silent"
+    Assert "P8" "the alert says it refused the planned marker" `
+        ($body -match "NOT MASKED BY THE PLANNED MARKER") $body
+    Assert "P8" "it quotes the marker reason so the reader can check it" `
+        ($body -match "collection off until 20:00 KST") $body
+    Assert "P8" "it names the key that was out of scope" ($body -match "key=watchdog_silent") $body
+    Assert "P8" "watchdog.log records the refusal" `
+        ((Get-WatchdogLog $d) -match "PLANNED-SCOPE-REFUSED key=watchdog_silent") (Get-WatchdogLog $d)
+}
+
+function Test-P9-WithoutAMarkerAWatchdogDeathIsStillAnAlert {
+    # CONTROL GROUP. Green before and after - it proves P1 measures the scope rule and not
+    # some accident of marker parsing.
+    $d = New-Sandbox
+    _WriteHeartbeat $d "watchdog_heartbeat.txt" 7263
+    Invoke-Watchdog $d @{ Role = "sentinel" } | Out-Null
+    $alerts = Get-Alerts $d "ALERT"
+    Assert "P9" "no marker, dead watchdog, still an ALERT" `
+        (@($alerts | Where-Object { $_ -match "watchdog_silent" }).Count -eq 1) ($alerts -join ",")
+}
+
+function Test-P11-TwoGradesInOneCycle {
+    # The sharpest statement of "scoped by key": ONE cycle, TWO gradings. The collector is
+    # absent because a human stopped it (PLANNED_), and in the very same cycle the restart
+    # budget is exhausted (ALERT_) - because an exhausted budget means the watchdog has
+    # given up on ever bringing collection back, and no marker makes that expected.
+    $d = New-Sandbox
+    Write-PlannedMarker $d "operator planned downtime"
+    Write-StateFile $d "day" 3000 20
+    Write-CollectorLog $d "day" 3000 20
+    # One assignment per element: in PowerShell the comma operator binds TIGHTER than
+    # arithmetic, so @($now - 60, $now - 120) does not mean what it looks like.
+    $now = [int][DateTimeOffset]::Now.ToUnixTimeSeconds()
+    $r1 = $now - 60; $r2 = $now - 120; $r3 = $now - 180
+    Write-SettledOpenState $d @{ restarts = @($r1, $r2, $r3) }
+    Invoke-Watchdog $d @{ CollectorPattern = "NOTHING_MATCHES_THIS_XYZZY"
+                          SupervisorPattern = "NOTHING_MATCHES_THIS_XYZZY" } | Out-Null
+    $alerts = Get-Alerts $d "ALERT"
+    $planned = Get-Alerts $d "PLANNED"
+    $seen = "ALERT=[" + ($alerts -join ",") + "] PLANNED=[" + ($planned -join ",") + "]"
+    Assert "P11" "the planned collection stop is still PLANNED" `
+        (@($planned | Where-Object { $_ -match "watch_process_dead" }).Count -eq 1) $seen
+    Assert "P11" "an exhausted restart budget in the SAME cycle is an ALERT" `
+        (@($alerts | Where-Object { $_ -match "restart_budget_exhausted" }).Count -eq 1) $seen
+}
+
+function Test-P10-TheScopeListIsTheSameInBothLanguages {
+    # The list lives in two places: ops/watchdog.ps1 decides what to WRITE, and
+    # ops/daily_health.py re-judges what is ALREADY on disk (it may not write ALERT_ files
+    # itself - docs/34 section 6). Two copies that disagree is the docs/34 section 1
+    # disease exactly: the same event graded two ways depending on which one you read.
+    # Both files fence their copy; this compares the fenced tokens.
+    $ps = Join-Path $PSScriptRoot "watchdog.ps1"
+    $py = Join-Path $PSScriptRoot "daily_health.py"
+    function _Fenced([string]$path) {
+        if (-not (Test-Path $path)) { return @("(file missing: $path)") }
+        $txt = Get-Content $path -Raw
+        if ($txt -notmatch "(?s)PLANNED-SCOPE-LIST-BEGIN(.*?)PLANNED-SCOPE-LIST-END") {
+            return @("(no PLANNED-SCOPE-LIST fence in $path)")
+        }
+        return @([regex]::Matches($Matches[1], '"([a-z0-9_]+)"') |
+                 ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+    }
+    $a = _Fenced $ps
+    $b = _Fenced $py
+    Assert "P10" "watchdog.ps1 declares a fenced scope list" `
+        ($a.Count -gt 0 -and $a[0] -notmatch "^\(") ($a -join ",")
+    Assert "P10" "daily_health.py declares a fenced scope list" `
+        ($b.Count -gt 0 -and $b[0] -notmatch "^\(") ($b -join ",")
+    Assert "P10" "the two lists are identical" (($a -join ",") -eq ($b -join ",")) `
+        ("ps=[" + ($a -join ",") + "] py=[" + ($b -join ",") + "]")
+}
+
 # ================= main =================
 
 Write-Host "watchdog self-test - sandbox root: $Root"
@@ -920,7 +1177,18 @@ try {
         "Test-TS5-AStaleOneShotFailureIsRecordedNotAlerted",
         "Test-TS6-ARunningTaskIsNotAFailure",
         "Test-TS7-AnUnregisteredTaskIsItsOwnEvent",
-        "Test-TS8-ATimeoutKillIsDecodedToo")
+        "Test-TS8-ATimeoutKillIsDecodedToo",
+        "Test-P1-APlannedWindowMustNotMaskAWatchdogDeath",
+        "Test-P2-AMissingWatchdogHeartbeatIsAlsoNotPlanned",
+        "Test-P3-APlannedWindowStillMasksACollectionStop",
+        "Test-P4-TheOperatorStopRecordIsStillPlanned",
+        "Test-P5-ADeadSiblingTaskIsNotPlanned",
+        "Test-P6-DiskIsNotPlanned",
+        "Test-P7-ADeadSentinelIsNotPlanned",
+        "Test-P8-TheRefusalToMaskIsVisible",
+        "Test-P9-WithoutAMarkerAWatchdogDeathIsStillAnAlert",
+        "Test-P10-TheScopeListIsTheSameInBothLanguages",
+        "Test-P11-TwoGradesInOneCycle")
     foreach ($c in $cases) {
         try { & $c } catch { Assert $c "case ran to completion" $false $_.Exception.Message }
     }
