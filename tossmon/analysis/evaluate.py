@@ -169,7 +169,9 @@ def q1_volume_leadtime(events: pd.DataFrame, feats: pd.DataFrame, *,
     #    앵커가 일치하는 이벤트에서만 성립하고, rvol_first_cross 에서는 실제로
     #    깨졌다 (docs/12 §1.8, docs/48 §11-5, docs/51_anchor_boundary §3·§5 — 정정
     #    2026-08-12: 원래 "docs/51" 로만 적혀 있었으나 51 번 문서가 둘이다
-    #    (`51_anchor_boundary` W3 / `51_detector_windows` W5). 파일명을 박았다).
+    #    (`51_anchor_boundary` W3 / `51_detector_windows` W5). 파일명을 박았다.
+    #    2026-08-13: 충돌 해소 — W5 쪽이 `57_detector_windows.md` 로 옮겨졌고
+    #    `docs/51` 은 이제 `51_anchor_boundary` 단독을 뜻한다. 파일명 표기는 유지).
     for m in metrics:
         d = _dist(_num(joined, m), "lead_")
         rows.append({"metric": m, "n_events": n_total, "detected": d["lead_n"],
