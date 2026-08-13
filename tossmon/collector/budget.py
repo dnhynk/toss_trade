@@ -213,8 +213,10 @@ class BudgetGuard:
         self._events: dict[str, deque[float]] = {}
         #: 리미터의 자기 관측 표본 (시각, window_used). 예산 첨두와 **독립**이다.
         self._limiter_window: dict[str, deque[tuple[float, float]]] = {}
-        #: **서버가 이름 붙인 초**의 감사 (시각, 우리 몫, 남의 몫). 우리 시계·계상과 독립이다.
-        self._server_seconds: dict[str, deque[tuple[float, int, int]]] = {}
+        #: **서버가 이름 붙인 초**의 감사 (시각, 초과, 남의 몫, 모름). 우리 시계·계상과 독립이다.
+        #: `모름` 은 그 초의 소진량을 못 읽었다는 뜻이다 — 그때 `남의 몫` 은 구조적으로 0 이라,
+        #: 같이 세지 않으면 사각지대가 **깨끗한 초로 읽힌다** (docs/52 §13).
+        self._server_seconds: dict[str, deque[tuple[float, int, int, int]]] = {}
         self._last_shrink_s: dict[str, float] = {}
         self._last_429_s: dict[str, float] = {}
         self._last_grow_s: dict[str, float] = {}
@@ -503,11 +505,12 @@ class BudgetGuard:
         """
         limit = float(limit_header) if limit_header else self.limit_of(group)
         own = int(own)
-        foreign = 0 if consumed is None or consumed < 0 else max(0, int(consumed) - own)
+        unknown = 1 if consumed is None or consumed < 0 else 0
+        foreign = 0 if unknown else max(0, int(consumed) - own)
         over = 1 if limit > 0 and own > limit else 0
         now = self._mono_s()
         q = self._server_seconds.setdefault(group, deque())
-        q.append((now, over, foreign))
+        q.append((now, over, foreign, unknown))
         cutoff = now - self.window_s
         while q and q[0][0] < cutoff:
             q.popleft()
@@ -519,7 +522,7 @@ class BudgetGuard:
             self.counters["server_seconds_foreign"] = (
                 self.counters.get("server_seconds_foreign", 0) + 1)
 
-    def _server_window(self, group: str) -> list[tuple[float, int, int]]:
+    def _server_window(self, group: str) -> list[tuple[float, int, int, int]]:
         q = self._server_seconds.get(group)
         if not q:
             return []
@@ -538,15 +541,24 @@ class BudgetGuard:
 
     def server_over_limit_seconds(self, group: str) -> int:
         """서버가 이름 붙인 초 중 **우리 송신만으로** 한도를 넘긴 초의 수."""
-        return sum(o for _, o, _ in self._server_window(group))
+        return sum(o for _, o, _, _ in self._server_window(group))
 
     def foreign_seconds(self, group: str) -> int:
         """우리 것이 아닌 소비가 보인 서버 초의 수."""
-        return sum(1 for _, _, f in self._server_window(group) if f > 0)
+        return sum(1 for _, _, f, _ in self._server_window(group) if f > 0)
 
     def foreign_sends(self, group: str) -> int:
         """그 중 최대 몇 건이 우리 것이 아니었나 (한 초 기준)."""
-        return max((f for _, _, f in self._server_window(group)), default=0)
+        return max((f for _, _, f, _ in self._server_window(group)), default=0)
+
+    def server_seconds_unknown(self, group: str) -> int:
+        """분모 중 **소진량을 못 읽은** 초 = 이 관측의 사각지대 (docs/52 §13).
+
+        그 초의 `foreign` 은 구조적으로 0 이므로, 이 수를 같이 내지 않으면 사각지대가
+        `server_seconds_seen` 안에서 **깨끗한 초와 구별되지 않는다.** 위 두 술어는
+        `(분모 - 이 값)` 위에서 읽어야 한다.
+        """
+        return sum(u for _, _, _, u in self._server_window(group))
 
     def quota_not_ours(self, group: str) -> bool:
         """**이 그룹의 초당 한도를 우리 혼자 쓰고 있지 않다**는 판정.
@@ -973,6 +985,9 @@ class BudgetGuard:
                 # 서버 초 감사 — **분모(`server_seconds`)를 같이 낸다.** 0/0 과 0/58 은
                 # 다른 진술이고, 분모 없는 0 을 안전으로 읽은 실패가 이미 있었다 (docs/52 §7.2).
                 "server_seconds": float(self.server_seconds_seen(group)),
+                # 그 분모 중 **안 보이는** 몫. 빼고 읽지 않으면 사각지대가 깨끗한 초로
+                # 읽힌다 (docs/52 §13).
+                "server_seconds_unknown": float(self.server_seconds_unknown(group)),
                 "server_over_1s": float(self.server_over_limit_seconds(group)),
                 "foreign_seconds": float(self.foreign_seconds(group)),
                 "foreign_max": float(self.foreign_sends(group)),
@@ -995,12 +1010,15 @@ class BudgetGuard:
           * **창 어긋남(경계 렌더·늦은 도착)** — 크기가 **그 그룹 자기 송신의 변동폭**에
             갇힌다. 3건 버스트를 내는 RANKING 은 최대 2 를 넘을 수 없다 (docs/55 §4).
 
-        `srv` 가 분모다 — 분모 없는 0 은 아무 뜻도 없다 (docs/52 §7.2).
+        `srv` 가 분모다 — 분모 없는 0 은 아무 뜻도 없다 (docs/52 §7.2). 그리고 `unk` 는
+        그 분모 중 **소진량을 못 읽은** 몫이라 `frn` 은 `srv - unk` 위에서 읽는다
+        (docs/52 §13 — 사각지대는 운영에서 전부 429 였고 429 인 초에는 `frn` 이 0 이다).
         """
         # 첨두를 먼저 보여준다 — 평균만 보면 버스트가 안 보인다(2026-08-04 착시).
         parts = [f"{g}=peak{int(s['peak_1s'])}/p95:{s['p95_1s']:.0f}"
                  f"/avg{s['measured']:.2f}/tgt{s['target']:.2f}"
-                 f"/srv{int(s['server_seconds'])}/over{int(s['server_over_1s'])}"
+                 f"/srv{int(s['server_seconds'])}/unk{int(s['server_seconds_unknown'])}"
+                 f"/over{int(s['server_over_1s'])}"
                  f"/frn{int(s['foreign_seconds'])}/frnmax{int(s['foreign_max'])}"
                  for g, s in self.snapshot().items()]
         return "budget " + " ".join(parts)
