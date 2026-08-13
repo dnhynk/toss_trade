@@ -19,7 +19,7 @@
   스크립트 전문은 본 문서에 인라인으로 포함한다(§VI). 리포 파일 수정 금지 원칙 때문에
   스크립트 자체는 커밋하지 않았다.
 - 실행 환경 함정 2건(전역 site-packages 의 `tests` 패키지가 리포 `tests/` 를 가림,
-  `filelock` 미설치)은 `coordination/HANDOFF-W6.md` §1 그대로다. §VI 의 부트스트랩이
+  `filelock` 미설치)은 `coordination/archive/HANDOFF-W6.md` §1 그대로다. §VI 의 부트스트랩이
   둘 다 우회한다.
 - 전체 스위트 기준선: HEAD(= main `adb5821` 동등 코드)에서 795 passed / 1 skipped 확인
   (샌드박스, `PYTHONPATH` 로 filelock 주입).

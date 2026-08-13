@@ -8,7 +8,7 @@
 | | |
 |---|---|
 | `main` | `a868e1a` |
-| **라이브 워크트리** | **`w5-ops`** = `d376c1f` — 차이는 `coordination/HANDOFF-20260813.md` 신설과 `docs/48` 1 줄뿐이다. **문서 전용이라 배포·재시작 불필요**(`git diff --stat d376c1f a868e1a` 로 확인) |
+| **라이브 워크트리** | **`w5-ops`** = `d376c1f` — 차이는 `coordination/archive/HANDOFF-20260813.md` 신설과 `docs/48` 1 줄뿐이다. **문서 전용이라 배포·재시작 불필요**(`git diff --stat d376c1f a868e1a` 로 확인) |
 | 테스트 | **2,061 passed · 1 skipped · 4 deselected** (304.44s, exit 0) — `.venv/Scripts/python.exe -m pytest -q` 직접 실행 |
 | 수집기 | **가동 중.** `w5-ops/data/collector.log` 가 13:17:14 에 쓰였다(확인 시각 13:17:40). `STOP`·`PLANNED` 표식 **없음** |
 
