@@ -3,6 +3,24 @@
 > **[현행]** 소유 코디 · 2026-08-09 · ★ **계약 정본. 다른 문서와 상충하면 이 문서가 이긴다**
 > 상태 표기의 뜻과 전수 목록: [`docs/INDEX.md`](INDEX.md)
 
+<details>
+<summary><b>이 문서의 지도 — 절 12개 (463줄)</b></summary>
+
+- C-1. 시간 규약 (최우선)
+- C-2. 가격·수량 표현
+- C-3. 데이터 모델 (`tossmon/api/models.py`, 전부 `@dataclass(frozen=True, slots=True)`)
+- C-4. API 레이어 시그니처 (`tossmon/api/`)
+- C-5. 에러 분류 (`tossmon/api/errors.py`)와 재시도 책임
+- C-6. 스토리지 계약 (`tossmon/store/`)
+- C-7. 분석 계약 (`tossmon/analysis/`)
+- C-8. 컬렉터 계약 (`tossmon/collector/`)
+- C-9. 오프라인 개발 규약
+- C-10. 의존성 (고정 — 추가는 코디네이터 승인 후 main에서만)
+- C-11. 금지 목록 (재확인)
+- C-2 개정 (2026-08-03) — 랭킹 `tradingAmount` 는 KRW 표기 (예외)
+
+</details>
+
 > 이 문서의 시그니처·규약은 **코디네이터 승인 없이 변경 금지**.
 > 변경이 필요하면 코드를 고치지 말고 `ask`로 근거와 제안을 보낼 것.
 > 근거 문서: `docs/01_api_analysis.md`(API 사실), `docs/03_phase1_monitor_design.md`(설계).

@@ -3,6 +3,20 @@
 > **[기록]** 소유 코디 · 2026-08-12 · **`12` 와 함께 동결**(2026-08-13 사용자) — 고해상도 재시작에는 **새 명세가 필요하다**
 > 상태 표기의 뜻과 전수 목록: [`docs/INDEX.md`](INDEX.md)
 
+<details>
+<summary><b>이 문서의 지도 — 절 8개 (785줄)</b></summary>
+
+- 1. 전역 규약과 수치적 함정
+- 2. 베이스라인 (`baselines.py`)
+- 3. 이벤트 라벨링 (`labeling.py`)
+- 4. 전조 피처 (`features.py`) — 룩어헤드 금지
+- 5. 리드타임 측정의 두 정의 (검증질문 1의 핵심)
+- 6. 평가 (`evaluate.py`)
+- 7. 알려진 편향·한계 총목록
+- 8. 합성 데이터 생성기 (`tests/synth.py`)
+
+</details>
+
 > 소유: W3. 구현: `tossmon/analysis/{baselines,labeling,features,evaluate,report}.py`,
 > 합성 생성기 `tests/synth.py`.
 > 근거 문서: `docs/04_contracts.md`(C-7 + **개정 A1**, C-6/C-8 **개정 A2**),

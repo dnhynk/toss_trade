@@ -3,6 +3,22 @@
 > **[기록]** 소유 W6 · 2026-08-03 · 감사 4 차
 > 상태 표기의 뜻과 전수 목록: [`docs/INDEX.md`](INDEX.md)
 
+<details>
+<summary><b>이 문서의 지도 — 절 10개 (968줄)</b></summary>
+
+- 0. 한 문단 요약 (결론 먼저)
+- 1. 집행 비용 모델 (`execution.py` · docs/18) — 최우선
+- 2. 회전 측정 (`rotation.py` · docs/17)
+- 3. v3 판정 (docs/15) — 4/5 게이트와 개정의 정직성
+- 4. 횡단 일관성 — 문서마다 다른 숫자
+- 5. 【치명 A7】 검증 카드 — 구조적 방어가 이미 뚫려 있다
+- 6. 동작 확인된 것 (정상 — 이번 감사에서 깨지지 않았다)
+- 7. 재현 스크립트
+- 8. 권고 요약
+- 9. 이 감사 자신의 한계
+
+</details>
+
 > 소유: W6. 실행일 2026-08-03. 브랜치 `w6-audit` (main `9c5fb54` 위로 rebase).
 > 대상: `tossmon/analysis/execution.py`, `tossmon/analysis/rotation.py`,
 > `docs/15` v3 절, `docs/16`, `docs/17`, `docs/18`, `docs/12`, `docs/13`.
