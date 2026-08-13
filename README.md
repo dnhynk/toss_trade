@@ -87,7 +87,7 @@
 | | 누가 고칠 수 있나 |
 |---|---|
 | 스케줄러 `LogonType=Interactive` (콘솔 피살) | **사용자만** — `Set-ScheduledTask` 가 관리자 권한을 요구한다 |
-| 텔레메트리 `limit_header_clamped` 가 로그와 어긋남 | 미규명 |
+| ~~텔레메트리 `limit_header_clamped` 가 로그와 어긋남~~ | ✅ **닫힘 (2026-08-13, `cbc3b08`)** — 어긋난 적이 없었다. 진짜 결함은 `counter_scope` 오선언 (`docs/56` §9) |
 | `srv_s_unknown` 이 0 이 아니다 (사각지대 실재) | 미규명 |
 | `rankings_snap` 보존정책 없음 (단조 증가) | 미결 |
 | 서버 20/s 의 정체 (사양 상향인가 헤더 의미 변경인가) | 미규명 — 모르면 천장을 못 올린다 |
