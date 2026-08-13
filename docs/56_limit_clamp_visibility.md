@@ -1,6 +1,10 @@
 # 56. 서버가 한도를 올렸는데 우리가 잘랐고, 그 사실이 어느 줄에도 안 남았다
 
-> **[현행]** 소유 W1 · 2026-08-13 · ★ **텔레메트리 어긋남이 열려 있다** — 로그는 뜨는데 `limit_header_clamped=0`
+> **[현행]** 소유 W1 · 2026-08-13 · ~~★ **텔레메트리 어긋남이 열려 있다** — 로그는 뜨는데 `limit_header_clamped=0`~~
+> **정정 (같은 날, §9)**: 어긋난 것이 아니었다 — 그 `0` 은 클램프보다 **3.9 초 앞선 기동
+> 스냅샷**(`proc_uptime_s=1`)이다. 다만 그 옆의 `counter_scope` 가 이 값을 **설치 수명**
+> 이라고 잘못 선언하고 있었고(실제로는 프로세스 수명), 그게 `0` 을 오독하게 만든 진짜
+> 결함이다. **고쳤다.** 판정 근거·배제한 가설·빨강→초록은 **§9**.
 > 상태 표기의 뜻과 전수 목록: [`docs/INDEX.md`](INDEX.md)
 
 작성: W1, 2026-08-13
@@ -213,4 +217,264 @@ limiter 를 읽지 못하는 경우(구식 클라이언트 주입 등)에는 **�
   20/s 를 실제로 시도해 429 가 나는지 보는 것 말고는 가르는 방법이 없고, 그건 라이브
   실험이라 이 태스크 범위 밖이다.
 - 워치독(`w5-ops`)이 `limit_header_clamped > 0` 을 판독하게 할지는 W5 소유다.
-  지금은 텔레메트리 줄에 값이 있으므로 읽을 수는 있다.
+  ~~지금은 텔레메트리 줄에 값이 있으므로 읽을 수는 있다.~~
+  **정정 (2026-08-13, §9)**: 값이 줄에 있는 것은 맞지만 **그냥 `> 0` 으로 읽으면 안 된다.**
+  이 값은 **프로세스 수명**이라 재기동마다 0 으로 돌아간다. `proc_uptime_s` 를 같이 읽어라
+  — 실제로 그것을 안 읽어서 이 값이 "고장난 계측기" 로 보고됐다. 자세한 것은 §9.
+
+---
+
+## 9. 텔레메트리가 로그와 다른 값을 말한다 — 가설 넷 중 (가) 였고, 진짜 거짓말은 그 옆에 있었다
+
+작성: W1, 2026-08-13 (같은 문서에 이어 씀)
+질문: `LIMIT-CLAMP` 로그는 뜨는데 텔레메트리는 `limit_header_clamped=0` 이다.
+**계측이 고장났나, 읽는 방법이 틀렸나.**
+
+## 9.0 측정 조건 (먼저 읽을 것)
+
+| 항목 | 값 |
+|---|---|
+| 코드 | `feat/core-api` @ `0c769e1` (`main` 에 fast-forward, 82 커밋 따라잡음) |
+| **라이브 API 호출** | **0건** — 판정에 필요 없었다. 관측은 전부 기존 로그 원문이다 |
+| 관측 원본 | `w5-ops/data/collector.log` — **읽기 전용.** 수집기가 지금도 쓰고 있어 파일이 자란다. 아래 수치는 전부 **2026-08-13 14:24:49 KST 판(247,645 줄)** 기준이다 |
+| 수집기 | **건드리지 않았다.** `STOP`/`PLANNED` 없음. 재시작·설정 변경 없음 |
+| 천장·송신률 | `SPEC_LIMITS`·`config` **변경 없음.** 이 절도 가시성만이다 |
+| 테스트 | `tests/test_api_limit_clamp_visibility.py` **신규 4건**, 회귀 전체 2,065 passed |
+
+## 9.1 무엇이 관측됐나
+
+`coordination/COORDINATOR-STATE.md` §2:
+
+> `LIMIT-CLAMP` 로그는 뜨는데 **같은 시각** 텔레메트리는 `limit_header_clamped=0`,
+> `groups=-` 이다. 텔레메트리가 로그보다 먼저 찍혔을 가능성 — **미규명**.
+
+## 9.2 가설 넷과 **각각을 반증할 관측**
+
+먼저 세운 뒤에 봤다. 순서를 바꾸면 보고 싶은 것만 보게 된다.
+
+| # | 가설 | 참이라면 무엇이 보여야 하나 (= 반증 관측) | 판정 |
+|---|---|---|---|
+| **(가)** | 텔레메트리 스냅샷 시점이 카운터 증가보다 **앞선다** | `0` 인 줄이 클램프 로그 줄보다 **먼저** 찍혀 있고, 그 뒤의 줄은 전부 0 이 아니다. 뒤에 찍힌 0 이 하나라도 있으면 **기각** | **확정** (§9.3) |
+| **(나)** | 카운터를 올리는 코드 경로와 로그를 찍는 경로가 **다르다** | 응답과 텔레메트리를 촘촘히 번갈아 돌리면 "로그는 나갔는데 카운터 0" 인 스냅샷이 잡힌다 | **기각** (§9.4) |
+| **(다)** | 방향(`clamped`/`lowered`)을 한 통에 세다가 **상쇄된다** | `clamped` 와 `lowered` 가 같은 카운터를 쓰거나, `lowered` 가 커서 사건이 묻힌다 | **기각** (§9.4) |
+| **(라)** | 프로세스/스레드 경계에서 **카운터 인스턴스가 다르다** | 같은 로그 파일에 다른 프로세스가 쓰거나, 로그를 잇는 limiter 와 텔레메트리가 읽는 limiter 가 다른 객체다 | **기각** (§9.4) |
+
+## 9.3 (가) 확정 — 로그 원문이 그대로 말한다
+
+`limit_header_clamped=` 를 실은 텔레메트리 줄은 **27 개**(14:24:49 판)이고,
+`LIMIT-CLAMP` 줄은 **2 개**다. 시간순으로 늘어놓으면 이렇다:
+
+```
+line 247358  2026-08-13 12:11:00,931  proc_uptime_s=1     limit_header_clamped=0      groups=-
+line 247359  2026-08-13 12:11:04,846  WARNING LIMIT-CLAMP start group=MARKET_DATA       server=15.0 ceiling=10.0
+line 247360  2026-08-13 12:11:05,027  WARNING LIMIT-CLAMP start group=MARKET_DATA_CHART server=20.0 ceiling=5.0
+line 247387  2026-08-13 12:16:01,745  proc_uptime_s=302   limit_header_clamped=887    groups=MARKET_DATA:15>10x718,MARKET_DATA_CHART:20>5x169
+line 247399  2026-08-13 12:21:02,116  proc_uptime_s=602   limit_header_clamped=1753   groups=MARKET_DATA:15>10x1441,MARKET_DATA_CHART:20>5x312
+   ... (같은 모양으로 단조 증가, 24 줄 더) ...
+line 247645  2026-08-13 14:21:39       proc_uptime_s=7840  limit_header_clamped=23050  groups=MARKET_DATA:15>10x19085,MARKET_DATA_CHART:20>5x3965
+```
+
+**세 가지가 한꺼번에 나온다.**
+
+1. **`0` 인 줄은 파일 전체에 딱 하나**고(line 247358), 그 줄은 클램프 로그보다
+   **3.9 초 앞선다.**
+2. 그 줄의 `proc_uptime_s=1` — **프로세스가 1 초 된 시점**이다. 아직 응답을 한 건도
+   안 받았다. 0 이 아니면 그게 이상한 것이다.
+3. **클램프 로그 줄 뒤에 찍힌 텔레메트리 26 줄 중 `0` 은 0 개다.** 값도 그룹 문자열도
+   로그와 정확히 맞는다. (같은 판에서 `limit_header_lowered != 0` 인 줄도 **0 개** — §9.4 의 (다).)
+
+> ### 판정: 계측기는 로그와 어긋나지 않았다. **같은 분(minute)에 찍힌 두 줄을 "같은 시각" 으로 읽은 것**이다.
+>
+> `12:11:00` 과 `12:11:04` 는 같은 분이지만 그 사이에 **수집기의 첫 클램프 응답**이 있다.
+> 반증 관측("뒤에 찍힌 0 이 하나라도 있으면 기각")을 걸었고, 그런 줄은 **0 개**였다.
+
+고정한 테스트: `test_startup_zero_precedes_the_clamp_log_it_does_not_contradict_it`
+(라이브의 순서를 그대로 재현한다 — 기동 직후 0 → 첫 클램프 → 로그 줄 → 비-0).
+
+## 9.4 나머지 셋을 무엇으로 배제했나
+
+**(나) 경로가 다르다 — 기각.** `limiter.py:230-242` 에서 계상(`counters += 1`,
+`st["count"] += 1`)이 콜백(`_emit_clamp_change`)보다 **먼저**이고 그 사이에 `await` 가
+없다. 단일 이벤트루프이므로 다른 코루틴이 그 틈에 끼어들 수 없다 — 즉 *"로그는 나갔는데
+카운터는 0"* 인 스냅샷은 **한 프로세스 안에서 존재할 수 없다.**
+직접 시험했다: 두 그룹 응답과 `ctx.telemetry()` 를 12 회 번갈아 돌려 로그 줄이 나간
+뒤의 모든 스냅샷이 `> 0` 임을 확인 (`test_telemetry_is_never_zero_once_the_clamp_line_has_fired`).
+라이브 26 줄도 같은 말을 한다.
+
+**(다) 방향이 상쇄된다 — 기각.** 카운터는 위 §3.1 에서 이미 갈랐고, 라이브 27 줄
+**전부** `limit_header_lowered=0` 이다. 상쇄될 값 자체가 없다. (덧붙여 `clamped>0` 이고
+`lowered=0` 이라는 조합은 §3.1 이 노린 교차 확인이 작동했다는 뜻이다 — 헤더를 못 읽는
+상태라면 **둘 다** 0 이어야 한다.)
+
+**(라) 인스턴스가 다르다 — 기각.** 세 가지로 갈랐다.
+- `_wire_clamp_log(ctx)` 는 `ctx.client.limiter` 에 훅을 걸고(`loops.py:1399`),
+  `_limiter_clamp(self.client)` 는 **같은** `ctx.client.limiter` 를 읽는다(`loops.py:1381`).
+  객체가 하나다.
+- 같은 파일에 쓰는 다른 프로세스가 없다: `GroupRateLimiter` 를 만드는 자리는 4 곳이고
+  (`collector/__main__.py:33`, `universe/__main__.py:55`, `tools/backfill.py:892`,
+  `tools/live_probe.py:2184`) **`collector.log` 에 쓰는 것은 수집기뿐**이다 —
+  universe 는 `universe_build.log` 로 간다(`universe/__main__.py:52`).
+- 값 자체가 증거다. 26 줄의 `groups` 가 로그 두 줄의 `group`·`server`·`ceiling` 과
+  **정확히** 일치한다(`MARKET_DATA:15>10`, `MARKET_DATA_CHART:20>5`). 다른 인스턴스라면
+  이 일치가 나올 수 없다.
+
+## 9.5 그런데 계측기는 결백한가 — 아니다. **바로 옆 필드가 거짓말하고 있었다**
+
+(가)가 확정됐다고 여기서 끝내면 *"코디네이터가 잘못 읽었다"* 가 되는데, 그건 이 프로젝트가
+같은 실수를 다시 하게 두는 결론이다. **왜 그렇게 읽혔는지**를 봐야 한다.
+
+같은 텔레메트리 줄에는 `counter_scope` 필드가 있다. `docs/52` §7 이 만든 것이고,
+만든 이유가 정확히 이것이다 — **"에포크 없는 0 은 아무 뜻도 없다."**
+
+```
+counter_scope=proc:http_429,over_limit_1s,precision_parsed,precision_rounded,quota_not_ours,srv_s_unknown;rest:install
+```
+
+뜻: 여기 적힌 것은 **프로세스 수명**(재시작마다 0), **나머지는 전부 설치 수명**(상태파일로
+누적). 그런데 `limit_header_clamped` 는 이 목록에 **없다.** 즉 이 줄은 클램프 값이
+설치 이래 누계라고 **말하고 있었다.**
+
+**사실은 정반대다.** 이 값들은 `GroupRateLimiter.counters` 안에 있고 limiter 는 기동마다
+새로 만들어진다(`collector/__main__.py:33`). `collector_state.json` 에 안 들어간다.
+**재시작마다 0 이다.**
+
+> ### 이 오선언이 만드는 것이 바로 이번 증상이다
+>
+> `LIMIT-CLAMP start` 줄은 `collector.log` 에 **영구히** 남고, 카운터는 프로세스와 함께
+> 죽는다. 그래서 **재기동 직후에는 "로그에는 start 가 있는데 텔레메트리는 0" 이 실제로
+> 나온다.** 이건 모순이 아니라 **분모가 다른 두 값**이다 —
+> `docs/52` §7.1 의 `http_429_under_own_limit=431 > http_429=178` 과 **같은 모양**이다.
+>
+> 그리고 `counter_scope` 가 설치 수명이라고 말하는 한, 읽는 사람은 그 `0` 을
+> *"설치 이래 한 번도 안 잘렸다"* 로 읽을 수밖에 없다. 그러면 로그와 어긋난 것처럼 보인다.
+
+**고친 것 (최소 diff, `loops.py` 1 곳):** 세 필드를 `PROC_SCOPED_COUNTERS` 에 넣었다.
+
+```
+counter_scope=proc:...,srv_s_unknown,limit_header_clamped,limit_header_lowered,limit_header_clamped_groups;rest:install
+```
+
+`limit_header_clamped_groups` 는 카운터가 아니라 문자열이지만 **같은 수명이고 같은 오독을
+만든다**(`-`). 그래서 같이 선언했다. 값에 공백이 없으므로 `k=v` 파싱은 그대로다.
+
+### 왜 "수명을 통일" 하지 않았나
+
+`docs/52` §7.2 가 이미 판단한 자리라 다시 열지 않았다: 아래로 통일하면 설치 수명 기록이
+사라지고, 위로 통일하면 수집기가 남의 객체 내부 상태를 자기 상태파일에 쓰게 된다.
+**표시가 한 필드 값이고 잃는 것이 없다.** 이번 건은 그 판단이 옳았음을 확인해 준다 —
+필요한 것은 저장이 아니라 **에포크를 함께 적는 것**이었다.
+
+### 이걸 막았어야 할 테스트가 왜 안 죽었나 — **한 방향만 보고 있었다**
+
+`loops.py` 주석은 *"목록이 드리프트하면 그 테스트가 먼저 죽는다"* 라고 적고 있었다.
+`test_telemetry_declares_which_counters_reset_on_restart` 를 열어 보면 **손으로 적은
+이름 4 개**(`watched`)만 재고 `reset == watched & declared` 를 단언한다. 이건
+*"선언한 것이 정말 리셋되는가"* 만 본다. **"리셋되는 것이 전부 선언됐는가" 는 안 본다.**
+
+이번 드리프트는 정확히 그 안 보는 쪽으로 났다 — `docs/56`(08-13)이 새 필드 3 개를
+줄에 실으면서 선언에 등록하지 않았다. **테스트를 안 만든 게 아니라, 만든 테스트가 한
+방향짜리였다.** 반대 방향은 새 테스트가 막는다(§9.6 의 4 번째).
+
+## 9.6 빨강 → 초록
+
+수정 **전** (`0c769e1`, `PROC_SCOPED_COUNTERS` 손대기 전):
+
+```
+$ .venv/Scripts/python.exe -m pytest tests/test_api_limit_clamp_visibility.py -q
+E   AssertionError: `limit_header_clamped` 는 재시작으로 0 이 되는데 `counter_scope` 는
+    설치 수명이라고 말한다 — 그러면 0 이 '안 잘렸다' 인지 '방금 떴다' 인지 구분할 수 없다.
+    선언: ['http_429', 'over_limit_1s', 'precision_parsed', 'precision_rounded',
+           'quota_not_ours', 'srv_s_unknown']
+E   AssertionError: limiter 가 싣는데 프로세스 수명으로 선언 안 된 항목:
+    ['limit_header_clamped', 'limit_header_clamped_groups', 'limit_header_lowered']
+2 failed, 14 passed in 3.97s
+```
+
+수정 **후**:
+
+```
+$ .venv/Scripts/python.exe -m pytest tests/test_api_limit_clamp_visibility.py tests/test_send_time_accounting.py -q
+32 passed in 6.40s
+
+$ .venv/Scripts/python.exe -m pytest -q
+2065 passed, 1 skipped, 4 deselected, 24 warnings in 277.94s (0:04:37)
+```
+
+(직전 기준은 2,061 passed — 신규 4 건이 더해진 수다.)
+
+| 신규 테스트 | 무엇을 막나 | 수정 전 |
+|---|---|---|
+| `test_startup_zero_precedes_the_clamp_log_it_does_not_contradict_it` | (가) 를 코드로 고정 — 기동 0 → 로그 → 비-0 순서 | 초록 (증상 재현이 아니라 **가설 확정**용) |
+| `test_telemetry_is_never_zero_once_the_clamp_line_has_fired` | (나)·(다) 재발 — 로그 뒤 스냅샷이 0 이면 죽는다 | 초록 (배제 근거를 고정) |
+| `test_clamp_counters_reset_on_restart_and_the_line_says_so` | 재시작으로 0 이 되는데 줄이 그 사실을 말하지 않는 것 | **빨강** |
+| `test_every_limiter_sourced_field_is_declared_process_scoped` | limiter 가 싣는 항목이 하나 더 늘 때 같은 거짓말이 반복되는 것 | **빨강** |
+
+앞의 둘이 처음부터 초록인 것을 숨기지 않는다 — **어긋남은 코드에 없었기 때문에 빨강으로
+만들 수 없다.** 그 둘은 "지금 안 어긋난다"를 못 박는 회귀 방지이고, 빨강→초록은 §9.5 의
+오선언 쪽이다.
+
+**§9 에서 건드린 파일 — 셋뿐이다.**
+
+| 파일 | 무엇 | 왜 |
+|---|---|---|
+| `tossmon/collector/loops.py` | `PROC_SCOPED_COUNTERS` 에 클램프 3 필드 추가 + 위 주석에 기존 테스트의 한계 한 줄 | **동작 코드 0 줄.** 이 튜플은 텔레메트리 문자열에만 들어간다 |
+| `tests/test_api_limit_clamp_visibility.py` | 신규 4 건 + 재시작 헬퍼 `_restart` | 가설 확정·배제를 코드로 고정 |
+| `docs/56_limit_clamp_visibility.md` | 이 §9 + §8·머리말 정정 병기 | — |
+
+`tossmon/api/limiter.py` 는 **건드리지 않았다** — 거기엔 결함이 없었다.
+`SPEC_LIMITS`·`config` 도 그대로다.
+
+## 9.7 덤으로 나온 라이브 사실 — **`MARKET_DATA` 도 잘리고 있다 (15 → 10)**
+
+`docs/56` 본문(§2~§6)은 `MARKET_DATA_CHART` **20 → 5** 하나만 알고 썼다. 로그 원문에는
+그룹이 **둘**이다:
+
+| 그룹 | 서버가 주는 값 | 우리 천장 | 12:11 기동 ~ 14:21:39 (2 시간 11 분) 계상 |
+|---|---|---|---|
+| `MARKET_DATA` | **15.0** | 10.0 | **19,085 건** |
+| `MARKET_DATA_CHART` | 20.0 | 5.0 | 3,965 건 |
+
+**아무 조치도 하지 않았다** — 천장을 올리는 것은 `COORDINATOR-STATE` §3-1 에서 이미
+기각됐고(*"두 번째 서버 리미터의 정체를 모르는데 천장을 4 배로 올리면 그것을 더 세게
+때린다"*), 이 절은 가시성 태스크다. 다만 §8 의 열린 질문 *"서버 20/s 가 진짜 사양
+상향인지 헤더 의미 변경인지"* 에 **재료가 하나 늘었다.**
+
+헤더 의미가 **초당→분당 쿼터**로 바뀐 것이라면 값은 공시 한도의 **60 배**여야 한다 —
+`MARKET_DATA` 는 600, `MARKET_DATA_CHART` 는 300. 실제로 온 값은 **15 와 20** 이고,
+배수도 서로 다르다(1.5 배 / 4.0 배). **분당 쿼터 가설은 이 관측과 맞지 않는다.**
+
+**확정은 아니다.** 서버가 그룹별로 그냥 다른 값을 주는 것일 수도 있고, 우리가 못 보는
+세 번째 의미일 수도 있다. §8 이 적은 대로 **20/s 를 실제로 시도해 429 가 나는지 보는
+것 말고는 가르는 방법이 없고, 그건 라이브 실험이라 이 태스크 범위 밖이다.**
+
+## 9.8 `docs/58` G-0 의 **0-3** 판정
+
+> 0-3 | 텔레메트리와 로그가 어긋나지 않는다 | **미충족** — `LIMIT-CLAMP` 로그는 뜨는데
+> 텔레메트리는 `limit_header_clamped=0`
+
+**충족으로 바꿀 근거가 나왔다.**
+
+1. 관측된 어긋남은 **어긋남이 아니었다** — 3.9 초 앞선 기동 스냅샷이다 (§9.3, 라이브
+   텔레메트리 27 줄 + 로그 2 줄 전수 대조. **클램프 로그 뒤의 0 은 0 개**).
+2. 한 프로세스 안에서는 **구조적으로 어긋날 수 없다** — 계상과 콜백 사이에 `await` 가
+   없다 (§9.4, 테스트로 고정).
+3. 재시작 경계에서는 `0` 과 로그 줄이 공존할 수 있는데, **이제 줄이 그 사실을 말한다** —
+   `counter_scope` 에 세 필드가 선언됐고 `proc_uptime_s` 가 같은 줄에 있다 (§9.5).
+
+**판정은 코디네이터 몫이다.** 다만 **이것만은 명확히 적는다: 위 셋은 `limit_header_*`
+세 필드에 대한 것이지, 텔레메트리 줄 전체에 대한 것이 아니다.** 같은 줄의 다른 값이
+로그와 어긋나는지는 이 태스크가 재지 않았다.
+
+## 9.9 안 고친 것 · 남은 것
+
+- **`tests/test_send_time_accounting.py` 의 한 방향 테스트는 그대로 뒀다** (W4 소유).
+  `loops.py` 주석에 한 줄로 그 한계를 적고, 반대 방향은 내 테스트 파일에서 막았다.
+  **`ctx`·`client`·`budget` 쪽 필드에는 같은 전수 대조가 아직 없다** — 거기서 같은
+  드리프트가 나면 여전히 조용하다. W4 안건으로 남긴다.
+- **`docs/INDEX.md` 의 `56` 행이 아직 *"텔레메트리 어긋남 열려 있음"*, `COORDINATOR-STATE`
+  §2 에도 같은 행이 있다.** 둘 다 코디네이터 소유라 안 고쳤다.
+- **`docs/52` §7.2 의 예시 줄**(`counter_scope=proc:http_429,...,precision_rounded;rest:install`)
+  은 그날 찍힌 출력이라 지금 값과 다르다. 사양이 아니라 기록이라 안 고쳤다.
+- **`MARKET_DATA` 15/s 의 정체** — §9.7. 분당 쿼터 가설과는 안 맞지만 확정은 못 했다.
+- **송신률은 한 건도 안 바뀌었다.** 이 절의 코드 변경은 `PROC_SCOPED_COUNTERS` 튜플
+  하나뿐이고, 그 값은 텔레메트리 문자열에만 들어간다.

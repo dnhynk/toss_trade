@@ -228,12 +228,23 @@ TELEMETRY_EVERY_S = 300.0
 #: 같이 찍는 `proc_uptime_s` 하나로 직접 막힌다. **에포크 없는 0 은 아무 뜻도 없다.**
 #:
 #: `tests/test_send_time_accounting.py` 가 **재시작을 실제로 흉내내서** 이 목록이
-#: 사실과 맞는지 확인한다 — 목록이 드리프트하면 그 테스트가 먼저 죽는다.
+#: 사실과 맞는지 확인한다. 다만 그 테스트는 이름 4개를 손으로 적어 놓고 재므로
+#: *"선언한 것이 정말 리셋되는가"* 만 본다 — **"리셋되는 것이 전부 선언됐는가" 는 못 본다.**
+#: 실제 드리프트는 그 못 보는 쪽으로 났다 (docs/56 §9). 그쪽 방향은
+#: `tests/test_api_limit_clamp_visibility.py` 의 `_limiter_clamp` 전수 대조가 막는다.
 PROC_SCOPED_COUNTERS: tuple[str, ...] = (
     "http_429", "over_limit_1s", "precision_parsed", "precision_rounded",
     # 서버 초 감사도 프로세스 수명이다 — `client._sec_counts` 와 `budget._server_seconds`
     # 는 둘 다 상태파일로 복원되지 않는다 (docs/52 §12).
     "quota_not_ours", "srv_s_unknown", "srv_s_all",
+    # 헤더 클램프 3개도 프로세스 수명이다 — 이 값들은 `GroupRateLimiter` 안에 있고
+    # limiter 는 기동마다 새로 만들어진다(`__main__.py:33`). 상태파일에 안 들어간다.
+    # **이걸 선언 안 하면 `limit_header_clamped=0` 이 "안 잘렸다" 로 읽힌다.** 그런데
+    # `LIMIT-CLAMP start` 로그 줄은 collector.log 에 영구히 남으므로, 재기동 직후에는
+    # "로그에는 start 가 있는데 텔레메트리는 0" 이 실제로 나온다 — 분모가 다른 두 값이지
+    # 계측기 고장이 아니다. 실제로 그것을 고장으로 보고한 적이 있다 (docs/56 §9).
+    # `groups` 는 카운터가 아니라 문자열이지만 같은 수명이고 같은 오독을 만든다("-").
+    "limit_header_clamped", "limit_header_lowered", "limit_header_clamped_groups",
 )
 PROC_SCOPE_FIELD = "proc:" + ",".join(PROC_SCOPED_COUNTERS) + ";rest:install"
 
