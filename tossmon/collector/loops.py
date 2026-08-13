@@ -233,7 +233,7 @@ PROC_SCOPED_COUNTERS: tuple[str, ...] = (
     "http_429", "over_limit_1s", "precision_parsed", "precision_rounded",
     # 서버 초 감사도 프로세스 수명이다 — `client._sec_counts` 와 `budget._server_seconds`
     # 는 둘 다 상태파일로 복원되지 않는다 (docs/52 §12).
-    "quota_not_ours", "srv_s_unknown",
+    "quota_not_ours", "srv_s_unknown", "srv_s_all",
 )
 PROC_SCOPE_FIELD = "proc:" + ",".join(PROC_SCOPED_COUNTERS) + ";rest:install"
 
@@ -1042,6 +1042,9 @@ class CollectorContext:
             # `md_srv_s` 가 **분모**다. 분모 없는 0 은 아무 뜻도 없다 (docs/52 §7.2).
             # 0/0 = "아직 아무 초도 안 닫혔다", 0/58 = "58초를 봤는데 깨끗하다".
             "md_srv_s": int(self.budget.server_seconds_seen(GROUP_MARKET_DATA)),
+            # 그 분모 중 **소진량을 못 읽은** 초. 아래 `md_foreign_s` 는 이 초들에서
+            # 구조적으로 0 이므로 `md_srv_s - md_srv_unk` 위에서 읽어야 한다 (docs/52 §13).
+            "md_srv_unk": int(self.budget.server_seconds_unknown(GROUP_MARKET_DATA)),
             # 서버가 라벨한 초 중 **우리 송신만으로** 한도를 넘긴 초 (리미터 밖 송신).
             "md_srv_over": int(self.budget.server_over_limit_seconds(GROUP_MARKET_DATA)),
             # 그 초의 소진량이 우리 송신보다 많았던 초 = **우리 것이 아닌 소비**.
@@ -1054,6 +1057,11 @@ class CollectorContext:
             # 서버가 소진량을 안 알려준 초 (헤더 없음/모순) — 위 두 값의 **사각지대** 크기.
             "srv_s_unknown": int(getattr(self.client, "counters", {}).get(
                 "server_second_unknown", 0)),
+            # 그 **분모**: 이 프로세스가 정산한 서버 초 전부 (전 그룹). 분모 없는 사각지대
+            # 수는 크기가 아니다 — 8 이 8/12,000 인지 8/12 인지 못 고른다. 실제로
+            # *"0 → 8 로 변동, 미규명"* 으로 남은 것이 그 상태였다 (docs/52 §13).
+            "srv_s_all": int(getattr(self.client, "counters", {}).get(
+                "server_seconds", 0)),
             # 자기 한도 안인데 맞은 429 — 0 이 아니면 우리 한도 모델이 틀린 것이다
             # (CHART 0.5/3.5 인데 429 인 미해결 건의 판별 지표).
             "http_429_under_own_limit": int(self.counters.get("http_429_under_own_limit", 0)),

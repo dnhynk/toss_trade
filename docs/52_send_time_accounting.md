@@ -1,10 +1,11 @@
 # 52. 계상 시각을 완료에서 송신으로 — 그리고 잔여 11~13 의 진짜 주인은 시계였다
 
-> **[현행]** 소유 W4 · 2026-08-12 · ★ **잔여 첨두 11~13 의 주인은 시계였다**
+> **[현행]** 소유 W4 · 2026-08-13 · ★ **잔여 첨두 11~13 의 주인은 시계였다**
+> ★ **사각지대(`srv_s_unknown`)는 429 였다 — §13** (docs/58 §G-0 의 0-4)
 > 상태 표기의 뜻과 전수 목록: [`docs/INDEX.md`](INDEX.md)
 
 <details>
-<summary><b>이 문서의 지도 — 절 13개 (768줄)</b></summary>
+<summary><b>이 문서의 지도 — 절 14개 (839줄)</b></summary>
 
 - 0. 측정 조건 (먼저 읽을 것)
 - 1. 결론 세 줄
@@ -19,6 +20,7 @@
 - 10. 안 한 것 / 못 밝힌 것
 - 11. 재현 명령
 - 12. 침묵한 감시점 셋을 살아 있는 자리로 옮겼다 (2026-08-12, 코디네이터 지시)
+- 13. **사각지대의 크기 — `srv_s_unknown` 은 429 였다** (2026-08-13). §12.5·§12.6 정정
 
 </details>
 
@@ -688,8 +690,15 @@ docs/06 §9-6 의 두 후보 중 어느 쪽인지는 이 관측만으로 판별�
   **판별을 선언하지 않는다.**
 
 **그리고 이 관측은 `date`·`x-ratelimit-*` 헤더에 의존한다.** 헤더가 안 오는 초는
-`server_second_unknown` 으로 세어 **사각지대의 크기를 드러낸다** — 깨끗한 초로 세지
-않는다. 텔레메트리 `srv_s_unknown` 이 그 값이다.
+`server_second_unknown` 으로 세어 **사각지대의 크기를 드러낸다** —
+~~깨끗한 초로 세지 않는다.~~ 텔레메트리 `srv_s_unknown` 이 그 값이다.
+
+> **정정 (2026-08-13, §13).** 취소선 부분이 거짓이었다. `client` 는 그 초를 `-1` 로
+> 표시해 넘기지만 `budget.on_server_second` 는 그것을 `foreign=0` 으로 접어
+> `_server_seconds` 창에 **그대로 넣는다.** 그래서 분모 `md_srv_s` 안에서 사각지대는
+> **깨끗한 초와 구별되지 않았다.** 그리고 사각지대에서 **안 오는 것은 `date` 가 아니라
+> 소진량**이었다 — 운영 실측 47/47 이 429 였고 429 에도 `date` 는 온다.
+> 크기·기전·무엇이 조용해지는지는 **§13**.
 
 ### 12.6 텔레메트리 — **분모를 같이 찍는다**
 
@@ -707,6 +716,13 @@ srv_s_unknown=<n>   # 소진량을 못 읽은 초 = 사각지대 (프로세스 �
 `md_srv_s=0` 과 `md_srv_s=58` 에서의 `md_foreign_s=0` 은 전혀 다른 진술이다.
 새 프로세스 수명 카운터 둘은 `PROC_SCOPED_COUNTERS` 에 선언했고, 선언이 사실인지는
 `test_telemetry_declares_which_counters_reset_on_restart` 가 재시작을 흉내내서 잰다.
+
+> **정정 (2026-08-13, §13).** 이 절이 세운 규칙("분모를 같이 찍는다")을 **이 절 자신이
+> 마지막 줄에서 어겼다.** `srv_s_unknown` 만 분모 없이 나갔고 — 게다가 **수명도 범위도**
+> 위 넷과 다르다 (프로세스 수명·전 그룹 vs 60초·MARKET_DATA). 그래서 이 값 하나로는
+> *"8 이 8/12,000 인지 8/12 인지"* 를 못 고른다. 실제로 코디네이터에게
+> *"0 → 8 로 변동, 미규명"* 으로 남은 것이 그 상태였다. **§13 에서 둘을 더했다** —
+> `srv_s_all`(같은 수명·같은 범위의 분모)과 `md_srv_unk`(같은 창·같은 그룹의 사각지대).
 
 ### 12.7 `over_limit_1s()` 메서드는 뜻을 안 바꿨다 — 경계 정정
 
@@ -784,3 +800,315 @@ python -m pytest -q
 5. **`_settle_server_seconds` 를 앞에서 자르지 않고 전수 검사로 썼다.** `OrderedDict`
    의 순서가 생성 순서가 아니라 **마지막 접근 순서**라, 앞 하나만 보고 멈추면 뒤에 남은
    오래된 초가 영영 정산되지 않을 수 있다. 길이가 16 으로 묶여 있어 비용이 없다.
+
+---
+
+## 13. 사각지대의 크기 — `srv_s_unknown` 은 429 였다 (2026-08-13)
+
+> 받은 것: `docs/58_gate.md` §G-0 의 **0-4** — *"감시의 사각지대 크기를 안다"*.
+> 코디네이터가 남긴 것: *"`srv_s_unknown` 이 0 → 8 로 변동. 사각지대가 실재하고 크기가
+> 변한다. 미규명."*
+> **통과 조건은 "0 으로 만드는 것" 이 아니라 "크기를 수치로 말하는 것" 이다.**
+
+### 13.0 측정 조건 (먼저 읽을 것)
+
+| 항목 | 값 |
+|---|---|
+| 브랜치 | `feat/collector` (`0c769e1` = `origin/main` 위) |
+| 로그 | `../w5-ops/data/collector.log` — **읽기 전용** |
+| 관측 창 | **2026-08-13 10:11:03 ~ 14:52:08 KST** (4시간 41분) |
+| 표본 | 텔레메트리 **56줄**(5분 간격) · `HTTP-429-DETAIL` **51줄** · 수집기 프로세스 **4개** |
+| 세션 | **`day` 뿐이다.** 이 창에 정규장은 없다 |
+| **라이브 API 호출** | **0건** |
+| **수집기 재시작·배포·`w5-ops` 접촉** | **0회** |
+| 천장·문턱·폴 주기·정원 변경 | **없음** (`config.yaml`·`limiter.py` 미접촉) |
+| 회귀 | **2,067 passed / 1 skipped / 4 deselected** (main 기준 2,061 + 신규 6) |
+
+### 13.1 결론 세 줄
+
+1. **사각지대는 429 다.** `srv_s_unknown` 의 증가는 **429 가 그 서버 초에서 우리
+   유일한 요청이었을 때만** 일어난다. 관측 창에서 **47 = 47, 잔차 0**.
+2. **크기**: 프로세스당 **최대 23 · 중앙 12**, 시간당 **약 10.8초**,
+   정산된 서버 초의 **0.18%** (`MARKET_DATA_CHART` 안에서만 보면 **약 0.55%**).
+3. **그런데 그 0.18% 는 무작위가 아니라 서버가 우리를 거절한 초에 정확히 몰려 있다** —
+   `foreign` 을 가장 보고 싶은 자리가 구조적으로 안 보인다. 이것이 크기보다 중요하다.
+
+### 13.2 가설 → 반증 관측 → 결과
+
+`srv_s_unknown` 을 올리는 자리는 하나뿐이다 (`tossmon/api/client.py`
+`_retire_server_second`):
+
+```python
+if rec.consumed < 0:
+    self.counters["server_second_unknown"] += 1
+```
+
+`rec.consumed` 가 `-1`(모름)로 남는 길은 `_ServerSecond.note_quota` 에 셋뿐이다:
+
+| # | 길 | 코드 |
+|---|---|---|
+| (a) | 그 초의 응답이 **전부 429** | `if status == 429: return` (docs/06 §9-3) |
+| (b) | `x-ratelimit-limit`/`-remaining` 이 **없다** | `if limit is None or remaining is None: return` |
+| (c) | 두 값이 **앞뒤가 안 맞는다** | `if limit <= 0 or remaining < 0 or remaining > limit: return` |
+
+`date` 가 없는 응답은 애초에 원장을 안 만든다(`_count_in_server_second` 가 0 을 내고
+끝난다) — **세지도 않는다.** 그러니 §12.5 가 적은 *"헤더가 안 오는 초"* 는 정확한
+서술이 아니었다. 안 오는 것은 `date` 가 아니라 **소진량**이다.
+
+> **가설 H1**: 운영의 증가분은 전부 (a) 이고, 그중에서도 **429 가 그 (그룹, `date` 초)
+> 원장의 유일한 요청**일 때만 오른다. 형제 200 이 같은 초에 있으면 그 200 이 헤더를
+> 채우므로 안 오른다.
+>
+> **이 가설을 반증할 관측**:
+> * **R1** — `srv_s_unknown` 이 `http_429` 없이 오르는 구간이 하나라도 있으면 (b)·(c)
+>   경로가 살아 있다는 뜻이고 H1 은 불완전하다.
+> * **R2** — `own_in_server_s ≥ 2` 인 429 에서도 사각지대가 오르면 "유일한 요청" 조건이
+>   틀렸다.
+> * **R3** — 프로세스별 `srv_s_unknown` 최종값이 그 프로세스의 **단독 429 수**와 다르면
+>   H1 이 설명 못 하는 잔차가 있다.
+
+#### 관측 결과 — 셋 다 H1 을 반증하지 못했다
+
+**R1.** 프로세스 안 인접 텔레메트리 52 구간 전부에서 `Δsrv_s_unknown ≤ Δhttp_429` 다:
+
+```
+intervals: 52   d(unk)>d(429) or d(unk)<0 : 0   equal: 49   d(unk)<d(429): 3
+```
+
+`d(unk) < d(429)` 인 3 구간은 아래 R2 의 3 건과 **같은 구간**이다.
+
+**R2.** 창 안 `HTTP-429-DETAIL` 51 줄 전부가 `MARKET_DATA_CHART`(`/api/v1/candles`)이고
+`limit_hdr=20` 이다. `own_in_server_s` 는 **48건이 1, 3건이 2**. 그 3 건이 정확히
+위 3 구간에 있다:
+
+```
+10:15:07 own=2 date=Thu, 13 Aug 2026 01:15:06 GMT
+10:30:54 own=2 date=Thu, 13 Aug 2026 01:30:52 GMT
+12:20:44 own=2 date=Thu, 13 Aug 2026 03:20:43 GMT
+```
+
+**R3.** 프로세스별로 맞춰 보면 잔차가 **0** 이다.
+
+| `resumes` | 창 (KST) | 수명 | `srv_s_unknown` | `http_429` | 단독 429 | 형제 있는 429 |
+|---|---|---:|---:|---:|---:|---:|
+| 31 | 10:11:03..10:21:14 | 612s | **0** | 1 | 0 | 1 |
+| 32 | 10:26:00..11:36:26 | 4,227s | **18** | 19 | 18 | 1 |
+| 33 | 11:41:01..12:01:05 | 1,205s | **6** | 6 | 6 | 0 |
+| 34 | 12:11:00..14:52:08 | 9,668s | **23** | 24 | 23 | 1 |
+| **합** | | 15,712s | **47** | **50** | **47** | **3** |
+
+> `srv_s_unknown` **= 단독 429 수. 47 = 47, 정확히 맞는다.**
+> `http_429` **= 단독 + 형제. 50 = 47 + 3.**
+
+**(b)·(c) 는 이 창에서 한 번도 발화하지 않았다** — 증가 47 건이 전부 (a) 로 설명된다.
+배제된 것이 아니라 **미관측**이다: 헤더 없는 응답·모순 헤더가 나오면 같은 카운터가
+오른다. 그래서 §13.6 이 분모를 같이 싣는다.
+
+### 13.3 결정론적 재현 — 합성 열로 같은 모양을 만들었다
+
+`tests/test_server_second_watch.py` §G. 라이브가 아니라 `MockTransport` 다.
+
+| 테스트 | 무엇을 고정하나 |
+|---|---|
+| `test_a_lone_429_is_the_whole_blind_spot` | 초 0 에 429 한 건, 초 1·2 에 200 → `server_second_unknown == 1`, `server_seconds == 3` |
+| `test_a_sibling_response_in_the_same_second_removes_the_blind_spot` | 같은 초에 429 + 200 → `own == 2`, `consumed >= 0`, 사각지대 **0** (실측 3/51 의 재현) |
+| `test_the_blind_second_hides_a_foreign_sender_but_still_counts_as_observed` | 남의 소비 4 가 200 이면 `foreign=4`, 429 면 **0** — 그런데 분모에는 그대로 들어간다 |
+| `test_control_a_clean_load_leaves_the_blind_spot_at_zero` | 429 가 없으면 사각지대 0, 분모 = 관측한 초 수 |
+
+### 13.4 그래서 **무엇이 안 보이나** — 크기보다 이쪽이 중요하다
+
+사각지대의 초에서 `consumed` 가 `-1` 이면 `foreign` 은 **구조적으로 0** 이다
+(`budget.on_server_second`). 그 초는 그러면서도 `_server_seconds` 창에 들어가 분모
+`md_srv_s` 를 채운다. 즉 **"관측했고 깨끗했다" 로 읽힌다.**
+
+| 감시 | 사각지대의 초에서 |
+|---|---|
+| `md_foreign_s` · `md_foreign_max` | **안 보인다** (`foreign` 이 0 으로 고정) |
+| `quota_not_ours()` 경보 | **못 운다** (`foreign_seconds` 에 안 들어가므로) |
+| `should_grow()` 복원 거부 | **못 막는다** |
+| `loops.tier2_orderbook_allowed` 게이트 | **못 닫는다** |
+| `md_srv_over` (우리 송신만으로 초과) | **그대로 본다** — `own` 은 헤더와 무관한 참값이다 |
+| `md_srv_s` (분모) | **1 늘어난다** — 사각지대가 깨끗한 초처럼 분모를 키운다 |
+
+> ### 이 사각지대는 무작위가 아니다
+> 안 보이는 초는 **서버가 우리를 초당 한도로 거절한 초**다. 그 초야말로 그룹의 한도가
+> 실제로 바닥난 자리이고, **남의 소비가 있었다면 거기서 가장 크게 보였을 자리**다.
+> 크기는 0.18% 인데 **정보량으로는 그 반대쪽 끝**이다.
+> 창 안의 `MARKET_DATA_CHART` 429 51 건은 **한 건도 `foreign` 판정에 못 들어갔다.**
+
+### 13.5 크기 — 수치 (창 길이·표본 수·측정 방법 병기)
+
+**직접 센 것** (창 `10:11:03~14:52:08`, 텔레메트리 56 표본, 429 상세 51 줄):
+
+| 무엇 | 값 |
+|---|---|
+| 프로세스당 총 사각지대 | `[0, 18, 6, 23]` → **최대 23 · 중앙 12** |
+| 시간당 | 프로세스 34 에서 **8.6/시간**, 4 프로세스 합산 **10.8/시간** |
+| 그룹 | **`MARKET_DATA_CHART` 100%** (429 51/51) |
+| 상한 | **`srv_s_unknown` ≤ `http_429` 가 항상 참이다** — 등호는 형제 응답이 없을 때 |
+
+**분모** — 이건 **추정**이다. 텔레메트리에 정산된 서버 초의 총수가 없어서
+`| budget` 꼬리의 그룹별 `srv`(60초 창)를 38 표본 평균해 수명으로 늘렸다:
+
+| 그룹 | 60초당 정산된 서버 초 (n=38) |
+|---|---|
+| `MARKET_DATA` | 평균 47.9 · 중앙 52 · 최대 59 |
+| `MARKET_DATA_CHART` | 평균 25.8 · 중앙 27 · 최대 36 |
+| `RANKING` | 평균 6.4 · 중앙 7 · 최대 10 |
+| `STOCK` | 평균 0.1 · 중앙 0 · 최대 1 |
+| **합** | **80.3 (그룹, 초) 원장 / 60 벽시계 초** |
+
+프로세스 34(수명 9,668초) 기준:
+
+```
+분모 추정 = 80.3/60s * 9668s = 12,934 원장
+사각지대  = 23 / 12,934 = 0.178 %
+CHART 만  = 23 / 4,151  = 0.55 %
+```
+
+> **이 분모가 추정이라는 것이 곧 결함이다.** 그래서 §13.6 이 그것을 관측치로 바꾼다 —
+> 다음 세션은 이 절의 산술을 다시 하지 않아도 된다.
+
+### 13.6 최소 diff — **크기를 읽을 수 있게** 했다 (경보·문턱·천장 불변)
+
+**사각지대 자체는 결함이 아니다.** 429 의 잔량을 안 믿는 것은 docs/06 §9-3 의 실측에서
+나온 옳은 규칙이고, 그것을 되돌리면 없는 외부 소비가 생긴다. **결함은 그 크기를 읽을
+방법이 없었다는 것이다.** 그래서 고친 것은 가시성뿐이다 (`docs/56` 과 같은 모양).
+
+| 파일 | 무엇 | 왜 |
+|---|---|---|
+| `budget.py` | `_server_seconds` 원소에 `unknown` 을 넣고 `server_seconds_unknown(group)` 추가 | 분모 안에서 사각지대를 **가릴 수 있게** |
+| `budget.py` | `snapshot()` 에 `server_seconds_unknown`, `describe()` 에 `/unk{n}` | 그룹별로 어디가 안 보이는지 |
+| `loops.py` | `md_srv_unk` (60초·MARKET_DATA), `srv_s_all` (프로세스 수명·전 그룹) | `srv_s_unknown` 과 **같은 수명·같은 범위의 분모** |
+| `loops.py` | `PROC_SCOPED_COUNTERS` 에 `srv_s_all` 선언 | 선언이 사실인지는 기존 재시작 테스트가 잰다 |
+
+**판정 로직은 한 줄도 안 바뀌었다.** `foreign_seconds`·`quota_not_ours`·`should_grow`·
+`tier2_orderbook_allowed` 의 값이 전부 그대로다 (기존 39 건 초록).
+**`md_srv_s` 에서 사각지대를 빼지 않았다** — 그건 경보의 분모를 조용히 바꾸는 일이고,
+읽는 쪽이 `srv - unk` 로 직접 뺄 수 있으면 충분하다. 원인을 모르는 채 값을 움직이지
+않는다는 규율과 같은 이유다.
+
+**빨강 → 초록**:
+
+```
+$ .venv/Scripts/python.exe -m pytest tests/test_server_second_watch.py -q \
+    -k "lone_429 or sibling_response or hides_a_foreign or carries_its_denominator or visible_per_group or clean_load_leaves"
+
+# 수정 전
+E               KeyError: 'srv_s_all'
+E       AttributeError: 'BudgetGuard' object has no attribute 'server_seconds_unknown'
+E       AttributeError: 'BudgetGuard' object has no attribute 'server_seconds_unknown'
+FAILED tests/test_server_second_watch.py::test_the_blind_spot_counter_carries_its_denominator
+FAILED tests/test_server_second_watch.py::test_the_blind_second_is_visible_per_group_in_the_same_window
+FAILED tests/test_server_second_watch.py::test_control_a_clean_load_leaves_the_blind_spot_at_zero
+3 failed, 3 passed, 33 deselected in 2.81s
+
+# 수정 후
+6 passed, 33 deselected in 3.74s
+```
+
+앞서 초록이던 셋(G1~G3)은 **기전의 재현**이라 수정 전에도 통과한다 — 사각지대는
+버그가 아니라 규칙의 결과이기 때문이다. 빨강인 셋이 *"크기를 못 읽는다"* 쪽이다.
+
+전체 회귀:
+
+```
+$ .venv/Scripts/python.exe -m pytest -q
+2067 passed, 1 skipped, 4 deselected, 23 warnings in 344.49s (0:05:44)
+```
+
+### 13.7 "0 → 8 로 변동" 의 정체 — 변동이 아니라 **재시작**이다
+
+`srv_s_unknown` 은 프로세스 수명 카운터다(`PROC_SCOPED_COUNTERS`). 관측 창에서
+**프로세스 안에서 감소한 적이 0 회**이고, 네 프로세스의 시작값이 전부 0 이다.
+
+코디네이터가 본 `0 → 8` 은 `resumes=32` 프로세스의 첫 10 분이다:
+
+```
+10:26:00 resumes=32 up=1s    unknown=0  http_429=0     <- 재시작 직후
+10:31:01 resumes=32 up=302s  unknown=2  http_429=3
+10:36:01 resumes=32 up=602s  unknown=8  http_429=9     <- "8"
+```
+
+**경계 사건은 셋이고 배포·개장·서버 헤더 변화는 그중에 없다.**
+
+1. **카운터 자체가 그날 새로 생겼다.** `srv_s_unknown` 이 없는 마지막 텔레메트리가
+   `10:05:23`, 있는 첫 줄이 `10:11:03`(값 0). 그전 값은 존재하지 않는다.
+2. **재시작이 0 으로 되돌린다.** 창 안에 재시작 4 회(`resumes` 31→34).
+3. **그 뒤로는 CHART 429 하나당 정확히 1 씩** 오른다 (형제 200 이 없으면).
+
+즉 *"크기가 변한다"* 로 보인 것은 **단조 카운터 + 재시작**이었다. 변동의 주인은
+429 의 발생률이고, 그건 `http_429` 가 이미 세고 있었다.
+
+### 13.8 부수 관측 — 내 안건이 아니라 **세기만 한다**
+
+**(1) `docs/55` 의 (B)/(C) 판정 — 세기만 하고 판정하지 않는다.**
+`docs/55` §5 가 가르는 자리로 지목한 것은 **RANKING 그룹의 `foreign` 최대값**이다
+((B) 면 4~7, (C) 면 2 이하). 창 안 38 표본:
+
+| 그룹 | `frn` 최대 | `frnmax` 최대 | `frnmax > 0` 인 표본 |
+|---|---:|---:|---:|
+| `MARKET_DATA` | 4 | **7** | 35/38 |
+| `MARKET_DATA_CHART` | 1 | 2 | 4/38 |
+| **`RANKING`** | 1 | **2** | 5/38 |
+| `STOCK` | 0 | 0 | 0/36 |
+
+> **판정하지 않는다.** 이유 둘. (ㄱ) **이 창에 정규장이 없다** — 56 표본 전부
+> `session=day` 다. `docs/55` 가 요구한 것은 정규장 전체다. (ㄴ) RANKING 의 분모가
+> 60초당 6.4 초뿐이라 (B) 가 예측하는 4~7 을 볼 기회 자체가 얇다.
+> **`docs/55` §5 의 열린 항목은 그대로 열려 있다.**
+
+**(2) 서버 20/s 의 정체 — 천장은 안 건드렸고, 헤더 관측만 남긴다.**
+창 안 429 51 건이 **전부** `limit_hdr=20` 이고 `x-ratelimit-remaining: 19` 다. 같은
+시각 텔레메트리는 `limit_header_clamped_groups=MARKET_DATA:15>10x20497,`
+`MARKET_DATA_CHART:20>5x4248` 를 찍는다 — 즉 **서버는 CHART 에 20, MARKET_DATA 에
+15 를 말하고 있고 우리는 각각 5·10 으로 자르고 있다.** `MARKET_DATA` 의 **15** 는
+`docs/55` §2.2 가 적은 CHART 의 20 과 **다른 새 수**다. 사양 상향인지 헤더 의미
+변경인지는 **여전히 모른다.** 천장·문턱 미변경.
+
+**(3) 429 는 `own_in_server_s=1` 에서 나온다.** 51/51 이 `under_own_limit=True` 이고
+`md_plus_chart` 는 7~12 였다. 우리 CHART 송신 1 건이 그 초의 20 한도를 넘길 수는
+없으므로 원인은 그 그룹 밖이다. **이 문서에서 판정하지 않는다** — `docs/55` 의 안건이다.
+
+### 13.9 안 한 것 / 선언하지 않는 것
+
+* **배포하지 않았다.** 수집기 재시작 0, 라이브 호출 0, `w5-ops` 미접촉.
+* **`srv_s_unknown` 을 0 으로 만들지 않았다.** 만들려면 429 의 잔량을 믿어야 하고
+  그건 docs/06 §9-3 이 실측으로 금지한 것이다. **사각지대는 옳은 규칙의 대가**다.
+* **경보 문턱·천장·폴 주기 무변경.** `FOREIGN_SECONDS_MIN` 도 그대로다.
+* **(b)·(c) 경로를 배제하지 않았다.** 이 창에서 미관측일 뿐이다. `srv_s_all` 이
+  들어갔으니 다음 창에서는 `srv_s_unknown` 이 429 를 넘는지 바로 보인다.
+* **정규장 수치가 없다.** 이 창은 전부 `day` 세션이다. 정규장의 429 밀도가 다르면
+  사각지대의 크기도 다르다 — **0.18% 를 정규장으로 옮겨 적지 마라.**
+* **`md_srv_s` 에서 사각지대를 빼지 않았다** (§13.6).
+
+### 13.10 재현 명령
+
+```bash
+# 사각지대 6건 (재현 3 + 빨강 3)
+.venv/Scripts/python.exe -m pytest tests/test_server_second_watch.py -q \
+  -k "lone_429 or sibling_response or hides_a_foreign or carries_its_denominator or visible_per_group or clean_load_leaves"
+
+# 전체 회귀
+.venv/Scripts/python.exe -m pytest -q
+```
+
+로그 쪽 수치는 `../w5-ops/data/collector.log` 를 **읽기 전용**으로 훑어 냈다.
+`telemetry` 줄의 `srv_s_unknown`·`http_429`·`proc_uptime_s`·`resumes` 와
+`HTTP-429-DETAIL` 줄의 `group`·`own_in_server_s`·`date` 를 프로세스별로 맞춘 것이
+§13.2 의 표다.
+
+### 13.11 혼자 내린 판단 (자기 신고)
+
+1. **가시성 필드 둘을 새로 넣었다** (`srv_s_all`·`md_srv_unk`). 지시는 *"크기를 알아내라"*
+   였고 코드 변경은 조건부였다. 넣은 근거는 §13.5 의 분모가 **추정**이라는 것이다 —
+   추정을 문서에 박아 두면 다음 세션이 같은 산술을 다시 하거나, 더 나쁘게는 그 추정을
+   실측으로 인용한다. 필드 둘이면 그 자리가 관측치가 된다.
+2. **`md_srv_s` 에서 사각지대를 빼지 않았다.** 빼는 쪽이 "더 옳은 분모" 로 보이지만
+   그것은 `md_foreign_s/md_srv_s` 를 읽는 모든 과거 비교를 조용히 옮기는 일이다.
+   드러내고 읽는 쪽이 빼게 두는 편을 택했다 (`docs/56` 이 클램프에서 택한 것과 같다).
+3. **`docs/INDEX.md` 의 52 행 한 줄을 고쳤다.** 색인은 *"어느 문서가 현행인가"* 의
+   유일한 근거이고, §12.5·§12.6 이 정정됐다는 사실이 색인에 없으면 낡은 문장을
+   현행으로 읽게 된다. **판정(게이트 통과 여부)은 안 건드렸다** — `docs/58` §G-0 의
+   0-4 행, `README.md` 열린 결함표, `coordination/COORDINATOR-STATE.md` §2 는 아직
+   *"미규명"* 이라고 적고 있고, 그것을 뒤집는 것은 코디네이터의 몫이다.

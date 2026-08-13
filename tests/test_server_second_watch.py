@@ -962,3 +962,197 @@ def test_global_counters_are_not_rendered_as_groups():
                  "server_seconds_over_limit", "over_limit_1s", "events_out_of_order"):
         assert name not in snap, f"{name} 이 그룹으로 렌더된다"
     assert GROUP_MARKET_DATA in snap
+
+
+# --------------------------------------------------------------------------- #
+# G. 사각지대 — `srv_s_unknown` 이 정확히 무엇을 세고, 그 크기를 어떻게 읽나
+#    (docs/52 §13 · docs/58 §G-0 의 0-4)
+#
+# 운영 실측 (2026-08-13 10:11:03~14:36:50 KST, 텔레메트리 53표본, 프로세스 4개):
+# `srv_s_unknown` 의 증가 **47 건 전부**가 429 였고 (429 없이 오른 구간 0/49),
+# 429 가 그 서버 초에서 **우리 유일한 요청**이었을 때만 올랐다 (48/51).
+# 형제 응답이 같은 초에 있던 3 건에서는 안 올랐다 (3/51) — 그 200 이 헤더를 줬기 때문이다.
+#
+# 아래 G1~G3 이 그 기전의 결정론적 재현이고, G4~G5 가 "크기를 읽을 수 있게" 하는 빨강이다.
+# --------------------------------------------------------------------------- #
+def _mixed_client(tmp_path, script, *, shadow: int = 0):
+    """응답 하나당 `(date 초, status)` 를 그대로 내는 client.
+
+    `_QuotaServer` 는 200 만 내고 `_scripted_client` 는 429 를 못 낸다. 사각지대는
+    **200 과 429 가 같은 초에 섞일 때** 갈리므로 그 열을 직접 정한다.
+    200 은 서버 계약대로 `remaining = limit - k` 를 싣고 (docs/06 §9-1), 429 는
+    **다음 창의 잔량**을 싣는다 (docs/06 §9-3 의 실측 조건 — 우리는 그것을 안 믿는다).
+    `shadow` 는 매 초 맨 앞에서 먼저 깎는 다른 발신자다.
+    """
+    it = iter(script)
+    used: dict[int, int] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sec, status = next(it)
+        used[sec] = used.get(sec, shadow) + 1
+        date = formatdate(EPOCH + sec, usegmt=True)
+        if status == 429:
+            return httpx.Response(429, headers={
+                "date": date,
+                "x-ratelimit-limit": str(MD_LIMIT),
+                "x-ratelimit-remaining": str(MD_LIMIT - 1),
+            }, json={"error": {"code": "rate-limit-exceeded", "message": "x"}})
+        return httpx.Response(200, headers={
+            "date": date,
+            "x-ratelimit-limit": str(MD_LIMIT),
+            "x-ratelimit-remaining": str(MD_LIMIT - used[sec]),
+        }, json={"result": []})
+
+    c = make_client("http://stub", tmp_path)
+    c._http = httpx.AsyncClient(base_url="http://stub",
+                                transport=httpx.MockTransport(handler))
+    return c
+
+
+def _run_mixed(c, script) -> list[dict]:
+    async def body():
+        try:
+            for _sec, status in script:
+                if status == 429:
+                    with pytest.raises(Exception):
+                        await c._send("GET", PRICES, GROUP_MARKET_DATA)
+                else:
+                    await c._send("GET", PRICES, GROUP_MARKET_DATA)
+            return _settle(c)
+        finally:
+            await c.aclose()
+
+    return run(body())
+
+
+def test_a_lone_429_is_the_whole_blind_spot(tmp_path):
+    """① **기전.** 429 가 그 서버 초의 우리 유일한 요청이면 그 초는 사각지대가 된다.
+
+    `note_quota` 가 `status == 429` 에서 곧바로 돌아가므로(docs/06 §9-3) 그 초의
+    소진량을 아무도 안 채운다. 운영에서 이것이 48/51 이었다.
+    """
+    c = _mixed_client(tmp_path, [(0, 429), (1, 200), (2, 200)])
+    recs = _run_mixed(c, [(0, 429), (1, 200), (2, 200)])
+
+    blind = [r for r in recs if r["consumed"] < 0]
+    assert len(recs) == 3, [r["date"] for r in recs]
+    assert len(blind) == 1 and blind[0]["own"] == 1, recs
+    assert c.counters["server_second_unknown"] == 1
+    assert c.counters["server_seconds"] == 3, "분모가 안 늘면 크기를 못 읽는다"
+
+
+def test_a_sibling_response_in_the_same_second_removes_the_blind_spot(tmp_path):
+    """② 같은 초에 200 이 하나라도 있으면 사각지대가 아니다 — 운영의 3/51 이 이것이다.
+
+    이 대조군이 없으면 "429 = 사각지대" 라는 더 거친 규칙을 참으로 읽게 된다.
+    실측 3 건은 전부 `own_in_server_s=2` 였다.
+    """
+    script = [(0, 429), (0, 200)]
+    c = _mixed_client(tmp_path, script)
+    recs = _run_mixed(c, script)
+
+    assert len(recs) == 1 and recs[0]["own"] == 2, recs
+    assert recs[0]["consumed"] >= 0, "형제 200 의 헤더를 안 썼다"
+    assert c.counters["server_second_unknown"] == 0
+
+
+def test_the_blind_second_hides_a_foreign_sender_but_still_counts_as_observed(tmp_path):
+    """③ **무엇이 조용해지나.** 사각지대에서는 `foreign` 이 구조적으로 0 이다.
+
+    같은 초·같은 남의 소비(4건)인데 응답이 200 이면 `foreign=4`, 429 면 0 이다.
+    그런데 그 초는 분모(`server_seconds_seen`)에는 **그대로 들어간다** — 즉 사각지대가
+    "관측했고 깨끗했다" 로 읽힌다. docs/52 §12.5 는 *"깨끗한 초로 세지 않는다"* 고
+    적었는데 분모에서는 그렇지 않다 (docs/52 §13 이 정정한다).
+    """
+    seen = _mixed_client(tmp_path, [(0, 200)], shadow=4)
+    ok = _run_mixed(seen, [(0, 200)])
+    assert ok[0]["own"] == 1 and ok[0]["foreign"] == 4, ok
+
+    blind = _mixed_client(tmp_path, [(0, 429)], shadow=4)
+    hidden = _run_mixed(blind, [(0, 429)])
+    assert hidden[0]["own"] == 1 and hidden[0]["foreign"] == 0, hidden
+    assert blind.counters["server_second_unknown"] == 1
+
+    g, _clock = _guard()
+    for rec in hidden:
+        g.on_server_second(GROUP_MARKET_DATA, rec["own"], rec["consumed"],
+                           rec["limit_header"])
+    assert g.server_seconds_seen(GROUP_MARKET_DATA) == 1, "분모에는 들어간다"
+    assert g.foreign_seconds(GROUP_MARKET_DATA) == 0, "그런데 볼 수 있는 것은 없다"
+
+
+def test_the_blind_spot_counter_carries_its_denominator(tmp_path):
+    """④ **빨강.** `srv_s_unknown` 옆에 분모가 없으면 그 값은 크기가 아니다.
+
+    §7.2 에서 이미 한 번 걸린 실패다: 에포크 없는 0 은 아무 뜻도 없다. 8 이라는 값이
+    8/12,000 인지 8/12 인지 텔레메트리만 보고는 못 고른다 — 실제로 코디네이터가
+    *"0 → 8 로 변동, 미규명"* 으로 남긴 것이 그 상태였다.
+    """
+    script = [(0, 429), (1, 200), (2, 200), (3, 200)]
+    real = _mixed_client(tmp_path, script)
+    ctx = _build_ctx(tmp_path)
+    ctx.client = real
+    try:
+        _run_mixed(real, script)
+        ctx.sync_rate_limits(GROUP_MARKET_DATA)
+        tel = ctx.telemetry()
+        assert tel["srv_s_unknown"] == 1
+        assert tel["srv_s_all"] == 4, (
+            "사각지대의 분모(정산된 서버 초 전부)가 텔레메트리에 없다")
+    finally:
+        ctx.store.close()
+
+
+def test_the_blind_second_is_visible_per_group_in_the_same_window(tmp_path):
+    """⑤ **빨강.** 어느 그룹이 얼마나 안 보이는지가 `md_srv_s` 와 **같은 창**에 있어야 한다.
+
+    `srv_s_unknown` 은 프로세스 수명·전 그룹이고 `md_srv_s` 는 60초·MARKET_DATA 다.
+    수명도 범위도 다른 두 수로는 "지금 이 그룹의 몇 %가 안 보이나" 를 못 만든다.
+    실측에서 사각지대는 전부 `MARKET_DATA_CHART` 였다 (429 51/51).
+    """
+    g, _clock = _guard()
+    g.on_server_second(GROUP_MARKET_DATA, own=1, consumed=-1)
+    g.on_server_second(GROUP_MARKET_DATA, own=5, consumed=5)
+
+    assert g.server_seconds_seen(GROUP_MARKET_DATA) == 2
+    assert g.server_seconds_unknown(GROUP_MARKET_DATA) == 1
+    assert "/srv2/unk1/" in g.describe(), g.describe()
+
+    ctx = _build_ctx(tmp_path)
+    try:
+        ctx.budget.on_server_second(GROUP_MARKET_DATA, own=1, consumed=-1)
+        ctx.budget.on_server_second(GROUP_MARKET_DATA, own=5, consumed=5)
+        tel = ctx.telemetry()
+        assert tel["md_srv_s"] == 2 and tel["md_srv_unk"] == 1, tel
+    finally:
+        ctx.store.close()
+
+
+def test_control_a_clean_load_leaves_the_blind_spot_at_zero(tmp_path):
+    """⑥ **대조군.** 429 가 없으면 사각지대도 0 이고, 분모는 관측한 초 수와 같다.
+
+    이것이 초록이라야 위 넷이 "값을 만들어 낸 것" 이 아니다.
+    """
+    srv = _QuotaServer()
+    c = _wire(tmp_path, srv)
+
+    async def body():
+        try:
+            for _ in range(5):
+                await _fire(c, 4)
+                srv.tick()
+            return _settle(c)
+        finally:
+            await c.aclose()
+
+    recs = run(body())
+    assert len(recs) == 5 and all(r["consumed"] == 4 for r in recs), recs
+    assert c.counters["server_second_unknown"] == 0
+    assert c.counters["server_seconds"] == 5
+
+    g, _clock = _guard()
+    for rec in recs:
+        g.on_server_second(GROUP_MARKET_DATA, rec["own"], rec["consumed"],
+                           rec["limit_header"])
+    assert g.server_seconds_unknown(GROUP_MARKET_DATA) == 0
+    assert "/srv5/unk0/" in g.describe(), g.describe()
