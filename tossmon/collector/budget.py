@@ -30,6 +30,13 @@ GROUP_RANKING = "RANKING"
 #: 그룹 → 그 그룹이 먹여 살리는 티어 (축소 지시의 대상).
 SHRINK_TIER: dict[str, int] = {GROUP_MARKET_DATA: 3, GROUP_CHART: 2}
 
+#: `self.counters` 안에서 **그룹 이름이 아닌** 키들. 그룹별 요청 수와 한 dict 을 쓰기
+#: 때문에 목록이 필요하다 — `snapshot()` 이 이것을 그룹으로 착각하면 유령 그룹이 렌더된다.
+GLOBAL_COUNTERS: frozenset[str] = frozenset({
+    "events_out_of_order", "server_seconds", "server_seconds_over_limit",
+    "server_seconds_foreign", "over_limit_1s", "quota_not_ours",
+})
+
 #: 배치 상한 (/prices, /stocks). client.BATCH_MAX 와 같은 값.
 BATCH_MAX = 200
 #: 랭킹 스냅샷 종류 수의 **기본값**. 2026-08-04 사용자 결정으로 4종(MARKET/TOSS ×
@@ -684,10 +691,27 @@ class BudgetGuard:
                     f"budget: {group} 초당 한도를 우리 혼자 쓰고 있지 않다 — 최근 60초 중 "
                     f"{self.foreign_seconds(group)}초에서 서버가 센 소진량이 우리 송신보다 "
                     f"많았다 (최대 {self.foreign_sends(group)}건/초, 관측 "
-                    f"{self.server_seconds_seen(group)}초). 같은 자격증명으로 도는 다른 "
-                    "발신자(수집기 다중 기동·백필·프로브)이거나 그룹 밖 한도다 "
-                    "(docs/06 §9-6). 리미터는 프로세스 간 조율을 못 하므로 티어를 깎아도 "
-                    "고쳐지지 않는다 — 발신자를 하나로 만들어야 한다")
+                    f"{self.server_seconds_seen(group)}초). 원인 후보 셋이고 "
+                    f"**그룹별 비대칭으로 가른다** — {self._foreign_by_group()}: "
+                    "(1) 같은 자격증명의 다른 발신자(수집기 다중 기동·백필·프로브) — "
+                    "비대칭 없음. (2) 우리 그룹 구획과 다른 서버 바구니 — 송신이 적은 "
+                    "그룹에서 가장 크다. (3) 창 어긋남(경계 렌더·정산 뒤 늦은 도착) — "
+                    "크기가 그 그룹 자기 송신 변동폭에 갇힌다 (docs/55 §4 에서 남의 소비 "
+                    "0 으로 재현했다). (1)·(2)면 티어를 깎아도 안 고쳐진다")
+
+    def _foreign_by_group(self) -> str:
+        """경보 문구에 실을 **그룹별 foreign** 요약 (`그룹 frn/관측·최대`).
+
+        경보 하나만 보고 원인 후보를 좁힐 수 있어야 한다. 지금까지는 경보를 맞은 그룹의
+        수만 실려 있었고, 그래서 이 경보를 받고도 세 후보 중 어느 쪽인지 알 수 없었다
+        (2026-08-13 실제로 그랬다 — docs/55 §3).
+
+        관측이 있는 그룹만 싣는다. 관측 0 인 그룹을 "깨끗함" 으로 보이게 하지 않는다.
+        """
+        seen = [(g, self.server_seconds_seen(g)) for g in sorted(self._server_seconds)]
+        parts = [f"{g} {self.foreign_seconds(g)}/{n}초·최대{self.foreign_sends(g)}"
+                 for g, n in seen if n > 0]
+        return " | ".join(parts) if parts else "그룹별 관측 없음"
 
     def over_limit_1s(self, group: str) -> bool:
         """**계상 첨두가 한도를 넘겼나** — 즉 우리 계상이 한도 초과를 주장하는가.
@@ -928,7 +952,13 @@ class BudgetGuard:
     # ---- 관측 덤프 ------------------------------------------------------
 
     def snapshot(self) -> dict[str, dict[str, float]]:
-        groups = set(self.counters) | set(self._events) | set(
+        # `self.counters` 에는 그룹별 요청 수와 **전역 카운터**(`server_seconds`,
+        # `quota_not_ours` …)가 같이 산다. 그것을 그대로 그룹 목록으로 쓰면 전역 카운터
+        # 이름이 유령 그룹으로 렌더된다 — 운영 로그에 실제로 그렇게 찍혀 있었다
+        # (`| budget … quota_not_ours=peak0/p95:0/avg0.00/tgt0.85`). 유령 그룹은 한도 1.0
+        # 짜리 미지 그룹으로 보이므로 **"그 그룹은 깨끗하다" 로 읽힌다.** 이 진단을 읽으려고
+        # 만든 줄이 진단을 방해하고 있었다 (docs/55 §6).
+        groups = (set(self.counters) - set(GLOBAL_COUNTERS)) | set(self._events) | set(
             self.plan.rates() if self.plan is not None else {})
         return {
             group: {
@@ -951,9 +981,27 @@ class BudgetGuard:
         }
 
     def describe(self) -> str:
+        """텔레메트리 꼬리의 `| budget …` 한 줄.
+
+        서버 초 감사를 **그룹마다 나란히** 싣는다 (2026-08-13, docs/55 §5). 텔레메트리
+        본문은 `md_foreign_s` 처럼 MARKET_DATA 만 싣는데, docs/52 §12 §3 이 "못 갈랐다" 고
+        남긴 두 후보는 **그룹 사이의 비대칭**으로만 갈린다:
+
+          * **바구니가 우리 그룹들을 걸쳐 있다** — 소진량에 남의 그룹 송신이 섞여 보이므로
+            **송신이 적은 그룹에서 foreign 이 가장 크다.** RANKING(0.25/s)이 MARKET_DATA
+            (2/s)보다 큰 `frn`/`frnmax` 를 내면 그 방향이다.
+          * **같은 자격증명의 다른 발신자** — 그의 송신은 우리 그룹 구성과 무관하므로
+            비대칭이 없다. 그룹마다 자기 관측 기회에 비례해 비슷하게 보인다.
+          * **창 어긋남(경계 렌더·늦은 도착)** — 크기가 **그 그룹 자기 송신의 변동폭**에
+            갇힌다. 3건 버스트를 내는 RANKING 은 최대 2 를 넘을 수 없다 (docs/55 §4).
+
+        `srv` 가 분모다 — 분모 없는 0 은 아무 뜻도 없다 (docs/52 §7.2).
+        """
         # 첨두를 먼저 보여준다 — 평균만 보면 버스트가 안 보인다(2026-08-04 착시).
         parts = [f"{g}=peak{int(s['peak_1s'])}/p95:{s['p95_1s']:.0f}"
                  f"/avg{s['measured']:.2f}/tgt{s['target']:.2f}"
+                 f"/srv{int(s['server_seconds'])}/over{int(s['server_over_1s'])}"
+                 f"/frn{int(s['foreign_seconds'])}/frnmax{int(s['foreign_max'])}"
                  for g, s in self.snapshot().items()]
         return "budget " + " ".join(parts)
 

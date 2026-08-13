@@ -50,7 +50,8 @@ from tests.test_collector_helpers import (FrozenClock, calendar_dict, make_confi
 from tossmon.api import client as client_mod
 from tossmon.collector import budget as budget_mod
 from tossmon.collector import loops
-from tossmon.collector.budget import GROUP_MARKET_DATA, BudgetGuard, TierPlan
+from tossmon.collector.budget import (GROUP_CHART, GROUP_MARKET_DATA, GROUP_RANKING,
+                                      BudgetGuard, TierPlan)
 from tossmon.collector.loops import CollectorContext
 from tossmon.collector.notifier import Notifier
 from tossmon.store import Store
@@ -729,3 +730,235 @@ def test_a_client_without_the_observation_does_not_break_accounting(tmp_path):
         assert ok, "관측이 없다는 이유로 게이트가 닫혔다"
     finally:
         ctx.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# E. `foreign > 0` 이 **무엇의 증거인가** (2026-08-13, docs/55)
+#
+# 배포 첫날 `md_foreign_s` 가 2~5, `quota_not_ours` 경보가 11건 울렸다. docs/52 §12 §3 은
+# 이 값이 "다른 발신자" 와 "그룹 밖 한도" 를 못 가른다고 적었는데, 아래는 **세 번째
+# 후보**가 있음을 보인다: 남의 소비가 정확히 0 인데도 값이 오른다. 그러면 이 경보는
+# 그 자체로는 어떤 가설의 증거도 아니다 — 가르는 것은 **그룹 사이의 비대칭**이다.
+#
+# 이 절의 규율은 앞과 같다: ① 문장 ② 합성 ③ 관측 ④ 대조군.
+#
+# ⚠️ 아래 `_invents_foreign_consumption_` 둘은 **지금 동작을 고정하는 특성 테스트**다.
+# 옳은 동작이 아니라 **틀린 동작을 문서화한 것**이라, 이 관측을 docs/55 §7 대로 고치면
+# 두 테스트는 뒤집혀야 한다 (`foreign == 0` 으로). 조용히 지우지 말 것 — 그러면 이
+# 오탐이 다시 들어올 수 있다.
+# --------------------------------------------------------------------------- #
+def _scripted_client(tmp_path, script):
+    """응답 하나당 `(date 초, 서버 카운터 값)` 을 그대로 실어 보내는 client.
+
+    `_QuotaServer` 로는 못 만드는 열이 있다: **date 는 이 초인데 카운터는 앞 초의 것**
+    (경계 렌더), 그리고 **정산이 끝난 초에 도착한 응답**. 둘 다 실측된 조건이다
+    (docs/06 §9-5). 그래서 헤더를 테스트가 직접 정한다 — 서버 계약(`remaining =
+    limit - k`)은 그대로 지킨다.
+    """
+    it = iter(script)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sec, used = next(it)
+        return httpx.Response(200, headers={
+            "date": formatdate(EPOCH + sec, usegmt=True),
+            "x-ratelimit-limit": str(MD_LIMIT),
+            "x-ratelimit-remaining": str(MD_LIMIT - used),
+        }, json={"result": []})
+
+    c = make_client("http://stub", tmp_path)
+    c._http = httpx.AsyncClient(base_url="http://stub",
+                                transport=httpx.MockTransport(handler))
+    return c
+
+
+def _run_script(c, script, *, settle_after=None) -> list[dict]:
+    """열을 흘리고 정산된 서버 초를 모아 온다. `settle_after` 건 뒤에 한 번 정산한다."""
+    import time
+
+    async def body():
+        try:
+            out: list[dict] = []
+            for i in range(len(script)):
+                await c._send("GET", PRICES, GROUP_MARKET_DATA)
+                if settle_after is not None and i + 1 == settle_after:
+                    c._settle_server_seconds(
+                        time.monotonic() + client_mod.SERVER_SECOND_SETTLE_S + 1)
+                    out += c.drain_server_seconds()
+            c._settle_server_seconds(
+                time.monotonic() + client_mod.SERVER_SECOND_SETTLE_S + 1)
+            return out + c.drain_server_seconds()
+        finally:
+            await c.aclose()
+
+    return run(body())
+
+
+def test_a_boundary_render_invents_foreign_consumption_with_no_foreign_sender(tmp_path):
+    """① 남의 소비가 **0** 인데 `foreign` 이 오른다 — 경계 렌더 한 건으로.
+
+    초 0 에 5건을 보냈고 서버는 1..5 를 셌다. 그 중 마지막 응답만 `date=1` 로 렌더된다
+    (docs/06 §9-5 의 실측 조건). 초 1 에는 1건만 보냈다.
+
+    그러면 초 1 의 원장은 우리 몫 2건(늦은 것 + 새 것)에 소진량 5 를 갖는다 —
+    `consumed` 를 **최댓값**으로 잡기 때문에 앞 초의 카운터가 이 초로 넘어온다.
+    `foreign = 5 - 2 = 3`. **다른 발신자도, 공유 바구니도 없다.**
+    """
+    script = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5), (1, 1)]
+    c = _scripted_client(tmp_path, script)
+    recs = _run_script(c, script)
+
+    late = [r for r in recs if r["date"] == formatdate(EPOCH + 1, usegmt=True)]
+    assert len(late) == 1, [r["date"] for r in recs]
+    assert late[0]["own"] == 2 and late[0]["consumed"] == 5
+    assert late[0]["foreign"] == 3, (
+        "경계 렌더가 남의 소비로 안 보이면 이 테스트의 전제가 깨진 것이다")
+    assert c.counters["server_second_foreign"] == 1
+
+
+def test_a_late_arrival_after_settlement_invents_foreign_consumption(tmp_path):
+    """① 정산이 끝난 초에 응답이 늦게 오면 원장이 **재생성**되고 그것도 foreign 이 된다.
+
+    정산은 그 초를 처음 본 뒤 `SERVER_SECOND_SETTLE_S`(3초) 가 지나면 끝난다. 그보다
+    늦게 도착한 응답은 같은 `date` 로 **새 원장**을 만든다 — 우리 몫 1건에 소진량은 그
+    창의 전체값이므로 `foreign = consumed - 1` 이다. 이벤트루프가 DB 쓰기로 막히는
+    구간에서 응답이 3초 넘게 밀리는 것은 이 수집기에서 드문 일이 아니다.
+    """
+    script = [(0, 1), (0, 2), (0, 3), (0, 4)]
+    c = _scripted_client(tmp_path, script)
+    recs = _run_script(c, script, settle_after=3)
+
+    assert len(recs) == 2, "같은 초가 두 번 정산되지 않았다 (재생성이 안 일어났다)"
+    assert recs[0]["own"] == 3 and recs[0]["foreign"] == 0
+    assert recs[1]["own"] == 1 and recs[1]["consumed"] == 4
+    assert recs[1]["foreign"] == 3
+
+
+def test_control_no_skew_no_foreign(tmp_path):
+    """④ 대조군 — 어긋남이 없으면 같은 열에서 foreign 은 0 이다."""
+    script = [(0, 1), (0, 2), (0, 3), (0, 4), (0, 5)]
+    c = _scripted_client(tmp_path, script)
+    recs = _run_script(c, script)
+    assert len(recs) == 1 and recs[0]["own"] == 5 and recs[0]["foreign"] == 0
+
+
+def test_the_three_second_threshold_does_not_separate_the_artifact():
+    """① `FOREIGN_SECONDS_MIN = 3` 은 이 artifact 를 못 걸러낸다.
+
+    지난 태스크에서 이 문턱의 근거를 "경계 렌더는 **산발적**이고 다른 발신자는
+    지속적이다" 로 적었다 (docs/52 §12 §2). 그 진술은 검증되지 않은 선택이었다 —
+    경계 렌더가 60초 창에서 세 번 있으면(초당 2건 보내는 그룹에서 응답의 몇 %가 초
+    경계를 넘으면 그렇게 된다) 문턱을 넘고 경보가 오른다.
+    """
+    rec = Rec()
+    g, _clock = _guard(rec)
+    for _ in range(3):                             # 서로 떨어진 세 번의 경계 렌더
+        g.on_server_second(GROUP_MARKET_DATA, own=2, consumed=5, limit_header=MD_LIMIT)
+        for _ in range(9):                         # 그 사이는 깨끗하다
+            g.on_server_second(GROUP_MARKET_DATA, own=2, consumed=2,
+                               limit_header=MD_LIMIT)
+    assert g.foreign_seconds(GROUP_MARKET_DATA) == 3
+    assert g.quota_not_ours(GROUP_MARKET_DATA) is True, (
+        "문턱 3 이 artifact 3건을 통과시키지 않으면 이 테스트의 전제가 깨진 것이다")
+    g._note_over_limit(GROUP_MARKET_DATA)
+    assert len(rec.alerts) == 1
+
+
+# --- 가르는 관측: 그룹 사이의 비대칭 (docs/55 §5) --------------------------- #
+def _feed(g, rows: list[tuple[str, int, int]]) -> None:
+    for group, own, consumed in rows:
+        g.on_server_second(group, own=own, consumed=consumed, limit_header=MD_LIMIT)
+
+
+def test_a_shared_basket_shows_up_as_asymmetry_between_groups():
+    """③ **바구니가 그룹들을 걸쳐 있으면** 송신이 적은 그룹에서 foreign 이 가장 크다.
+
+    합성: 한 서버 초에 우리가 MARKET_DATA 5 · CHART 2 · RANKING 1 을 보냈고 서버는
+    하나의 바구니에서 8 을 셌다. 세 그룹의 원장은 모두 소진량 8 을 보지만 자기 몫만
+    세므로 RANKING 이 7, CHART 가 6, MARKET_DATA 가 3 을 "남의 소비" 로 본다.
+
+    **이것이 가르는 자리다**: 다른 발신자라면 우리 그룹 구성과 무관하므로 이 순서가
+    나올 이유가 없고, 창 어긋남이라면 크기가 그 그룹 **자기 송신**에 갇힌다.
+    """
+    g, _clock = _guard()
+    for _ in range(5):
+        _feed(g, [(GROUP_MARKET_DATA, 5, 8), (GROUP_CHART, 2, 8), (GROUP_RANKING, 1, 8)])
+
+    md = g.foreign_sends(GROUP_MARKET_DATA)
+    ch = g.foreign_sends(GROUP_CHART)
+    rk = g.foreign_sends(GROUP_RANKING)
+    assert (md, ch, rk) == (3, 6, 7)
+    assert rk > ch > md, "공유 바구니의 비대칭이 관측에서 사라졌다"
+    # 그리고 그 비대칭이 **로그로 나간다** — 이것이 없어서 첫날 못 갈랐다.
+    line = g.describe()
+    assert "RANKING=" in line and "frnmax7" in line, line
+    assert "MARKET_DATA=" in line and "frnmax3" in line, line
+
+
+def test_a_window_skew_artifact_is_bounded_by_the_group_own_sends():
+    """③ **창 어긋남**이면 foreign 의 크기가 그 그룹 자기 송신의 변동폭에 갇힌다.
+
+    RANKING 은 12초마다 3건을 낸다. 그 중 하나가 다음 초로 렌더돼도 소진량은 3 을 못
+    넘으므로 `foreign <= 2` 다. 같은 초에 MARKET_DATA 가 5건을 보내고 있어도 그 5 는
+    RANKING 의 원장에 **들어오지 않는다** — 바구니가 그룹별이기 때문이다.
+    그래서 공유 바구니(위 테스트)와 크기가 갈린다.
+    """
+    g, _clock = _guard()
+    for _ in range(5):
+        _feed(g, [(GROUP_RANKING, 1, 3), (GROUP_MARKET_DATA, 3, 5)])
+
+    assert g.foreign_sends(GROUP_RANKING) == 2, "어긋남이 자기 버스트를 넘었다"
+    assert g.foreign_sends(GROUP_MARKET_DATA) == 2
+
+
+def test_an_outside_sender_shows_no_asymmetry_between_groups():
+    """③ **다른 발신자**면 그룹별 크기가 우리 송신 구성과 무관하다 (비대칭 없음).
+
+    합성: 남이 매 초 2건씩 먹는다. 그가 어느 바구니를 먹는지는 우리 송신량과 상관없으므로
+    세 그룹 모두 `foreign = 2` 로 같다. 위 두 테스트와 **모양이 다르다** — 그것이 세
+    후보를 가르는 근거다.
+    """
+    g, _clock = _guard()
+    for _ in range(5):
+        _feed(g, [(GROUP_MARKET_DATA, 5, 7), (GROUP_CHART, 2, 4), (GROUP_RANKING, 1, 3)])
+
+    sends = {gr: g.foreign_sends(gr)
+             for gr in (GROUP_MARKET_DATA, GROUP_CHART, GROUP_RANKING)}
+    assert set(sends.values()) == {2}, sends
+
+
+def test_the_alarm_carries_the_per_group_numbers_that_split_the_hypotheses():
+    """③ 경보 문구 하나로 세 후보를 좁힐 수 있어야 한다.
+
+    첫날 경보에는 MARKET_DATA 의 수만 있었고, 그래서 그것을 받고도 어느 후보인지 알 수
+    없었다. 이제 그룹별 `frn/관측·최대` 가 같은 문구에 실린다.
+    """
+    rec = Rec()
+    g, _clock = _guard(rec)
+    for _ in range(5):
+        _feed(g, [(GROUP_MARKET_DATA, 5, 8), (GROUP_RANKING, 1, 8)])
+    g._note_over_limit(GROUP_MARKET_DATA)
+
+    assert len(rec.alerts) == 1
+    msg = rec.alerts[0]
+    assert "RANKING 5/5초·최대7" in msg, msg
+    assert "MARKET_DATA 5/5초·최대3" in msg, msg
+    assert "창 어긋남" in msg, "세 번째 후보가 경보에 없다"
+
+
+def test_global_counters_are_not_rendered_as_groups():
+    """④ 전역 카운터가 **유령 그룹**으로 렌더되면 이 진단을 읽을 수 없다.
+
+    운영 로그에 실제로 이렇게 찍혀 있었다:
+        `| budget ... quota_not_ours=peak0/p95:0/avg0.00/tgt0.85 server_seconds=peak0/...`
+    한도 1.0 짜리 미지 그룹으로 보이므로 **"그 그룹은 깨끗하다" 로 읽힌다.**
+    """
+    g, _clock = _guard()
+    _feed(g, [(GROUP_MARKET_DATA, 5, 8)])
+    g.counters["quota_not_ours"] = 1
+    g.counters["server_seconds_foreign"] = 1
+
+    snap = g.snapshot()
+    for name in ("quota_not_ours", "server_seconds", "server_seconds_foreign",
+                 "server_seconds_over_limit", "over_limit_1s", "events_out_of_order"):
+        assert name not in snap, f"{name} 이 그룹으로 렌더된다"
+    assert GROUP_MARKET_DATA in snap
