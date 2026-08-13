@@ -283,7 +283,7 @@ W4 워커 둘이 `loops.py` 를 동시에 편집할 뻔했다(한 명이 멈춰 
 
 | 찾는 것 | 파일 |
 |---|---|
-| **문서 57 개 전수 목록 + 상태** | **`docs/INDEX.md`** |
+| ****문서 60 개** 전수 목록 + 상태** | **`docs/INDEX.md`** |
 | 레포 정문 (3 분) | `README.md` |
 | 계약 정본 | `docs/04_contracts.md` |
 | 전략 방향 정본 | `docs/16_strategy_design_notes.md` |

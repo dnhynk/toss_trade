@@ -1,5 +1,8 @@
 # 55. `foreign` 이 가리킨 것 — 세 후보와, 갈라진 것 / 못 갈라진 것
 
+> **[현행]** 소유 W4 · 2026-08-13 · ★ **(B)/(C) 판정이 열려 있다**
+> 상태 표기의 뜻과 전수 목록: [`docs/INDEX.md`](INDEX.md)
+
 작성: W4, 2026-08-13. 브랜치 `w4-collector`.
 도구: `tools/analyze_quota_partition.py` (라이브 호출 0, `w5-ops` 읽기 전용).
 표본: `data/collector.log` 의 `HTTP-429-DETAIL` **597줄** 중 **429 원문 332줄**

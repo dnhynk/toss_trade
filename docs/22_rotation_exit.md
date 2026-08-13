@@ -1,5 +1,8 @@
 # 22 — 감사 4차 blocker 해소 + 랭킹 기반 동적 이탈 프레임워크
 
+> **[기록]** 소유 W3 · 2026-08-03 · **이탈 축은 사망**(D-6). 1 분봉 자
+> 상태 표기의 뜻과 전수 목록: [`docs/INDEX.md`](INDEX.md)
+
 > 소유: W3. 실행 2026-08-03. 코드 `tossmon/analysis/rotation_exit.py`(신규, 테스트 25건),
 > `tossmon/analysis/measure/`(스크립트 승격), `execution.py`·`rotation.py` 수정.
 > **라이브 0콜 · 홀드아웃 봉인 · 검증 카드 0/5 유지**(이 태스크는 카드를 쓰지 않는다).

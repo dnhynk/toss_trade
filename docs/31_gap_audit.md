@@ -1,5 +1,8 @@
 # 31. 결손 감사 — 우리 테이프가 6초짜리 사건을 담고 있는가 (2026-08-04, 소유: W5)
 
+> **[현행]** 소유 W5 · 2026-08-05 · `ops/gap_audit.py` 가동 중
+> 상태 표기의 뜻과 전수 목록: [`docs/INDEX.md`](INDEX.md)
+
 `coordination/DATA-QUALITY-PROGRAM.md` 축 1 의 첫 항목. 도구는 `ops/gap_audit.py`,
 검증은 `tests/test_ops_gap_audit.py`, 배선은 `ops/daily_health.py`.
 

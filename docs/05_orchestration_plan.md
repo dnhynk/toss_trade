@@ -1,6 +1,9 @@
 # 05 — 오케스트레이션 계획 (Phase 1)
 
-> 원본 지시서: `ORCHESTRATION_PROMPT.md`. 이 문서는 배치표·DAG·리스 정책의 기록이다.
+> **[기록]** 소유 코디 · 2026-07-30 · W1~W6 웨이브 배치표. **그 웨이브는 끝났다** — 현행 배치는 `coordination/COORDINATOR-STATE.md` §4
+> 상태 표기의 뜻과 전수 목록: [`docs/INDEX.md`](INDEX.md)
+
+> 원본 지시서: `coordination/archive/ORCHESTRATION_PROMPT.md`(2026-08-13 아카이브). 이 문서는 배치표·DAG·리스 정책의 기록이다.
 
 ## 워커 배치표 (동시 실행 최대 3)
 

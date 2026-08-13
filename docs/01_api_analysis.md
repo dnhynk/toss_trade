@@ -1,5 +1,8 @@
 # 토스증권 Open API 분석 — 미국 소형주 유동성 감시 전략 관점
 
+> **[현행]** 소유 W1 · 2026-07-30 · 실측 정정본은 `06` — 둘이 다르면 **06 이 이긴다**
+> 상태 표기의 뜻과 전수 목록: [`docs/INDEX.md`](INDEX.md)
+
 > 기준: OpenAPI 스펙 v1.2.5 (2026-07-30 확인)
 > 공식 문서: https://developers.tossinvest.com/docs
 > 기계용 스펙: https://openapi.tossinvest.com/openapi-docs/latest/openapi.json

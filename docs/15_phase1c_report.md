@@ -1,5 +1,8 @@
 # 15 — Phase 1-C 본분석 리포트 (train + validation, 홀드아웃 봉인)
 
+> **[기록]** 소유 W3(작성)·W7(표기) · 2026-08-12 · ★ 인용할 때 **1 분봉 자로 쟀다**를 병기한다 (D-6·D-10)
+> 상태 표기의 뜻과 전수 목록: [`docs/INDEX.md`](INDEX.md)
+
 > 소유: W3. 실행일 2026-08-02. 정본 규약: `docs/12_preregistration.md`(개정 6건 반영본).
 > 시행 기록: `docs/13_trial_registry.md`. 부록 표: `run_all_appendix.md`(스크래치패드 산출물).
 >

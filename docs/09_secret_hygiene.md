@@ -1,5 +1,8 @@
 # 09 — 시크릿 위생 (Secret Hygiene)
 
+> **[현행]** 소유 W5 · 2026-07-30 · 시크릿 정책
+> 상태 표기의 뜻과 전수 목록: [`docs/INDEX.md`](INDEX.md)
+
 > 소유: W5. 스캐너 구현은 `ops/hooks/pre_commit_secret_scan.py`.
 
 ## 1. 시크릿 목록 (이 리포에서 절대 커밋되면 안 되는 것)

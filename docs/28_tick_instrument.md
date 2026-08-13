@@ -1,5 +1,8 @@
 # 28. 틱 해상도 계측기 — 숫자만, **판정 없음**
 
+> **[기록]** 소유 W3 · 2026-08-04 · 2026-08-04 04:00 KST 스냅샷
+> 상태 표기의 뜻과 전수 목록: [`docs/INDEX.md`](INDEX.md)
+
 작성: W3, 2026-08-04. 스냅샷 2026-08-04 ~04:00 KST.
 
 > **재실행**: `python -m tossmon.analysis.measure.tick_instrument <db>` →

@@ -1,5 +1,8 @@
 # 38. 디스패치 훑기 — 완료 보고를 믿지 않고 산출물과 대조한다
 
+> **[현행]** 소유 W5 · 2026-08-08 · `ops/dispatch_sweep.py`
+> 상태 표기의 뜻과 전수 목록: [`docs/INDEX.md`](INDEX.md)
+
 소유: W5. 구현 `ops/dispatch_sweep.py`, 검증 `tests/test_ops_dispatch_sweep.py`.
 
 ## 1. 왜 — 2026-08-07 하루에 정반대 두 사고가 났다

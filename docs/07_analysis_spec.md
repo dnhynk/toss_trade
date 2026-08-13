@@ -1,5 +1,8 @@
 # 07 — 분석 지표 명세 (정의식·경계조건·알려진 편향)
 
+> **[기록]** 소유 코디 · 2026-08-12 · **`12` 와 함께 동결**(2026-08-13 사용자) — 고해상도 재시작에는 **새 명세가 필요하다**
+> 상태 표기의 뜻과 전수 목록: [`docs/INDEX.md`](INDEX.md)
+
 > 소유: W3. 구현: `tossmon/analysis/{baselines,labeling,features,evaluate,report}.py`,
 > 합성 생성기 `tests/synth.py`.
 > 근거 문서: `docs/04_contracts.md`(C-7 + **개정 A1**, C-6/C-8 **개정 A2**),

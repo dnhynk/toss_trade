@@ -30,7 +30,7 @@
 
 ## 처음 3 분에 읽을 것 (이 순서로)
 
-1. **`docs/INDEX.md`** — `docs/` 57 개 전수 목록. **어느 문서가 현행이고 어느 것이
+1. **`docs/INDEX.md`** — `docs/` **60 개** 전수 목록. **어느 문서가 현행이고 어느 것이
    그날의 기록인지** 여기서만 알 수 있다
 2. **`coordination/COORDINATOR-STATE.md`** — 지금 무엇이 돌고 있고 무엇이 깨져 있나
 3. **`coordination/USER-INPUT-QUEUE.md`** — 사용자 결정 대기. **추측으로 메우지 말고

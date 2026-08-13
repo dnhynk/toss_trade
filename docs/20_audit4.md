@@ -1,5 +1,8 @@
 # 20 — 적대적 감사 4차: 의사결정에 직접 쓰이는 신규 분석 코드
 
+> **[기록]** 소유 W6 · 2026-08-03 · 감사 4 차
+> 상태 표기의 뜻과 전수 목록: [`docs/INDEX.md`](INDEX.md)
+
 > 소유: W6. 실행일 2026-08-03. 브랜치 `w6-audit` (main `9c5fb54` 위로 rebase).
 > 대상: `tossmon/analysis/execution.py`, `tossmon/analysis/rotation.py`,
 > `docs/15` v3 절, `docs/16`, `docs/17`, `docs/18`, `docs/12`, `docs/13`.
