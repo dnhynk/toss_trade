@@ -534,6 +534,9 @@ class CollectorContext:
             _seed_event_suppression(ctx)
         _seed_universe_from_db(ctx)
         ctx.refresh_plan()
+        # limiter 는 로거를 모른다. 클램프 **상태 전이** 한 줄을 사람이 보는 채널로 잇는다
+        # (docs/56). 카운터만 있으면 누가 세어보기 전엔 모른다 — 이번이 그랬다.
+        _wire_clamp_log(ctx)
         return ctx
 
     # ---- 실행 제어 ------------------------------------------------------
@@ -1116,6 +1119,13 @@ class CollectorContext:
             "tier2_orderbook_skipped": sum(
                 int(v) for k, v in self.counters.items()
                 if k.startswith("tier2_orderbook_skipped_")),
+            # ↓ 서버가 알려준 한도를 천장(SPEC_LIMITS/config)으로 자른 사건 (docs/56).
+            # **방향이 갈려 있다.** `limit_header_clamped` 만 보고 대상이다 — 서버가 천장보다
+            # 높게 줬는데 우리가 안 쓴 것이라 기회 손실이다(08-11 이후 candles 20/s → 5/s 를
+            # 이틀 반 동안 아무도 몰랐다). `limit_header_lowered` 는 서버가 낮게 줘서 따라
+            # 내려간 정상 경로다 — 경보로 읽지 말 것. 다만 **둘 다 0** 이면 "클램프가 없다"
+            # 가 아니라 "헤더를 못 읽고 있다" 일 수 있으니 그때만 같이 본다.
+            **_limiter_clamp(self.client),
             "precision_rounded": int(getattr(self.client, "counters", {})
                                      .get("precision_rounded", 0)),
             "precision_parsed": parsed,
@@ -1349,6 +1359,48 @@ def _default_log_path(cfg: Config) -> Path | None:
     if store_cfg is None:
         return None
     return Path(store_cfg.db_path).parent / "collector.log"
+
+
+def _limiter_clamp(client) -> dict[str, object]:
+    """limiter 의 헤더 클램프 요약을 텔레메트리에 실을 형태로 (docs/56).
+
+    읽지 못하면 **키를 지우지 않고 못 읽었다고 적는다**(-1/n/a). 관측치가 조용히
+    사라지는 것이 바로 이 태스크의 원인이라, 없어지는 것보다 틀린 게 낫다.
+    """
+    report = getattr(getattr(client, "limiter", None), "clamp_report", None)
+    if report is None:
+        return {"limit_header_clamped": -1, "limit_header_clamped_groups": "n/a",
+                "limit_header_lowered": -1}
+    try:
+        return dict(report())
+    except Exception:
+        return {"limit_header_clamped": -1, "limit_header_clamped_groups": "err",
+                "limit_header_lowered": -1}
+
+
+def _wire_clamp_log(ctx: CollectorContext) -> None:
+    """클램프 상태가 **바뀔 때만** 한 줄. 매 응답마다 찍으면 소음이다.
+
+    시작 쪽이 `warn` 인 이유: 서버가 천장보다 높게 주는데 우리가 자르고 있다는 뜻이라
+    사람이 판단해야 한다(사양이 올랐거나, 헤더 의미가 초당→분당으로 바뀌었거나).
+    끝 쪽은 정상 복귀라 `info` 다.
+    """
+    limiter = getattr(ctx.client, "limiter", None)
+    if limiter is None or not hasattr(limiter, "on_clamp_change"):
+        return
+
+    def _on_change(group: str, st: dict) -> None:
+        if st.get("active"):
+            ctx.notifier.warn(
+                f"LIMIT-CLAMP start group={group} server={st.get('header')} "
+                f"ceiling={st.get('ceiling')} — 서버가 천장보다 높은 한도를 주는데 "
+                f"우리는 천장으로 자르고 있다 (송신률은 그대로, 판단은 사람이)")
+        else:
+            ctx.notifier.info(
+                f"LIMIT-CLAMP end group={group} ceiling={st.get('ceiling')} "
+                f"clamped_total={st.get('count')}")
+
+    limiter.on_clamp_change = _on_change
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:

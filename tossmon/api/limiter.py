@@ -28,6 +28,11 @@
 - `X-RateLimit-Limit`      : 서버가 알려주는 초당 한도. **한도를 내리는 데만 쓴다.**
                              공시값(SPEC_LIMITS)보다 큰 값은 채택하지 않는다 — 헤더 의미가
                              바뀌면(예: 분당 쿼터 600) rate 가 60배로 뛰어 429 폭풍이 난다(감사 B-2).
+                             **이 규칙은 옳지만 이틀 반 동안 보이지 않았다** — 서버가 08-11
+                             12:51 부터 `/api/v1/candles` 에 20/s 를 줬는데 우리는 5/s 로 돌았고
+                             그 사실이 어느 줄에도 안 남았다. 그래서 클램프를 **방향별로** 세고
+                             (`limit_header_clamped` vs `limit_header_lowered`) 상태가 바뀔 때
+                             한 줄을 남긴다 (docs/56). 규칙은 그대로다 — 보이게만 만든다.
 - `X-RateLimit-Remaining`  : 버킷 잔량. 우리 추정 잔량보다 작으면 **서버값으로 끌어내린다**
                              (다른 프로세스가 같은 client 를 쓰고 있을 수 있으므로 위로는 올리지 않는다).
 - `X-RateLimit-Reset`      : 토큰 1개 재충전까지 예상 초. Remaining=0 일 때 다음 시도 시각으로 쓴다.
@@ -58,7 +63,7 @@ import asyncio
 import random
 import time
 from collections import deque
-from typing import Mapping
+from typing import Callable, Mapping
 
 from .endpoints import DEFAULT_LIMIT, SPEC_LIMITS
 
@@ -145,9 +150,34 @@ class GroupRateLimiter:
         self.limits = dict(limits)
         self.usage_ratio = float(usage_ratio)
         self._buckets: dict[str, _Bucket] = {}
-        # 관측: 서버 헤더가 공시 한도를 넘겨 클램프된 횟수. 0 이 아니면 API 사양 변경 신호다.
-        self.counters: dict[str, int] = {"limit_header_clamped": 0}
+        # 헤더 자기보정의 **방향을 가른 관측치** (docs/56).
+        #
+        # 둘을 한 카운터로 세면 안 된다 — 뜻이 정반대다:
+        #  · `limit_header_clamped` : 서버가 천장보다 **높게** 줬는데 우리가 잘랐다.
+        #    **이게 보고 대상이다.** 서버 한도가 올라간 걸 우리만 모르고 있다는 뜻이고,
+        #    (a) 실제로 사양이 올라갔거나 (b) 헤더 의미가 초당→분당으로 바뀌었거나 둘 중 하나다.
+        #    어느 쪽이든 사람이 판단해야 하는 사건이지, 자동으로 따라 올라갈 일이 아니다.
+        #  · `limit_header_lowered` : 서버가 천장보다 **낮게** 줘서 우리가 내려갔다.
+        #    **정상 경로다.** 이걸 위와 같이 세면 평상시 값이 커져서 (a)/(b) 가 묻힌다.
+        #    여기 남기는 이유는 하나 — 둘 다 0 이면 "클램프가 없다" 가 아니라
+        #    "헤더를 아예 못 읽고 있다" 일 수 있기 때문이다. 그 구분이 안 되면
+        #    이번(08-11~08-13, 서버 20/s 를 이틀 반 동안 모르고 지나간 건)이 반복된다.
+        self.counters: dict[str, int] = {
+            "limit_header_clamped": 0,
+            "limit_header_lowered": 0,
+            # 아래 `on_clamp_change` 콜백이 던진 예외 수. 관측 코드가 요청 경로를 죽이면
+            # 안 되므로 삼키되, 삼킨 사실까지 조용해지지는 않게 센다.
+            "clamp_log_failures": 0,
+        }
         self.last_clamped: dict | None = None
+        # 그룹별 클램프 상태. **그룹을 모르면 쓸모가 없다** — 어느 엔드포인트 묶음이
+        # 잘리는지가 곧 얼마나 손해인지다. `header_max` 는 서버가 준 최대값이라
+        # "5 로 잘렸다" 와 "20 이 5 로 잘렸다" 를 구분한다.
+        self.clamped: dict[str, dict[str, float | int | bool]] = {}
+        # 상태 전이(안 잘림↔잘림) 한 줄을 사람이 보는 채널로 내보내는 훅.
+        # limiter 는 로거를 모른다 — `logging` 을 직접 쓰면 컬렉터가 root 핸들러를
+        # 설정하지 않으므로 그 줄이 `collector.log` 에 **안 남는다**(실측). 그래서 주입한다.
+        self.on_clamp_change: Callable[[str, dict], None] | None = None
 
     # ---- internals ------------------------------------------------------
 
@@ -180,6 +210,62 @@ class GroupRateLimiter:
         if group in self.limits:
             candidates.append(float(self.limits[group]))
         return max(candidates)
+
+    # ---- 클램프 관측 (docs/56) ------------------------------------------
+
+    def _note_header_limit(self, group: str, header_limit: float, ceiling: float) -> None:
+        """헤더 한도 1건을 **방향별로** 계상하고, 상태가 바뀐 그룹만 한 줄 알린다.
+
+        `header_limit == ceiling` 은 어느 쪽도 아니다 — 평시 정상이라 세지 않는다.
+        """
+        above = header_limit > ceiling
+        st = self.clamped.get(group)
+        if st is None:
+            st = {"count": 0, "active": False, "ceiling": ceiling,
+                  "header": 0.0, "header_max": 0.0}
+            self.clamped[group] = st
+        st["ceiling"] = ceiling
+
+        if above:
+            self.counters["limit_header_clamped"] += 1
+            st["count"] = int(st["count"]) + 1
+            st["header"] = header_limit
+            st["header_max"] = max(float(st["header_max"]), header_limit)
+            self.last_clamped = {"group": group, "header": header_limit, "ceiling": ceiling}
+        elif header_limit < ceiling:
+            self.counters["limit_header_lowered"] += 1
+
+        # **전이일 때만** 내보낸다. 매 응답마다 찍으면 그건 로그가 아니라 소음이고,
+        # 소음이 되는 순간 워치독의 텔레메트리 탐지가 다시 묻힌다 (notifier.promotion 의 교훈).
+        if above != bool(st["active"]):
+            st["active"] = above
+            self._emit_clamp_change(group, st)
+
+    def _emit_clamp_change(self, group: str, state: dict) -> None:
+        cb = self.on_clamp_change
+        if cb is None:
+            return
+        try:
+            cb(group, dict(state))
+        except Exception:       # 관측이 요청 경로를 죽이면 안 된다 — 삼키되 센다.
+            self.counters["clamp_log_failures"] += 1
+
+    def clamp_report(self) -> dict[str, object]:
+        """텔레메트리 한 줄에 실을 요약.
+
+        `limit_header_clamped_groups` 는 **한 번이라도 위로 잘린** 그룹만 담는다:
+        `GROUP:서버최대>천장x횟수`. 정상 하향(`limit_header_lowered`)은 여기 안 들어온다.
+        """
+        parts = [
+            f"{g}:{_short(float(st['header_max']))}>{_short(float(st['ceiling']))}"
+            f"x{int(st['count'])}"
+            for g, st in sorted(self.clamped.items()) if int(st["count"]) > 0
+        ]
+        return {
+            "limit_header_clamped": int(self.counters["limit_header_clamped"]),
+            "limit_header_clamped_groups": ",".join(parts) or "-",
+            "limit_header_lowered": int(self.counters["limit_header_lowered"]),
+        }
 
     def snapshot(self, group: str) -> dict[str, float]:
         """관측/테스트용 상태 덤프."""
@@ -261,9 +347,7 @@ class GroupRateLimiter:
             # 바뀌기만 해도(600 = 10/s, 같은 뜻) rate 가 60배로 뛰기 때문이다.
             ceiling = self._spec_ceiling(group)
             effective_limit = min(limit, ceiling)
-            if limit > ceiling:
-                self.counters["limit_header_clamped"] += 1
-                self.last_clamped = {"group": group, "header": limit, "ceiling": ceiling}
+            self._note_header_limit(group, limit, ceiling)
             target = effective_limit * self.usage_ratio
             if abs(target - b.rate) > 1e-9:
                 b.rate = max(target, 1e-3)
@@ -296,6 +380,11 @@ class GroupRateLimiter:
         b.last_429 = now
         # 회복 타이머를 지금부터 다시 센다 — 429 직후 곧바로 풀리지 않도록.
         b.last_recover = now
+
+
+def _short(x: float) -> str:
+    """텔레메트리 한 줄은 공백으로 갈리므로 값에 공백이 없어야 한다. 20.0 → 20."""
+    return str(int(x)) if float(x).is_integer() else f"{x:g}"
 
 
 def _num(headers: Mapping[str, str], name: str) -> float | None:
