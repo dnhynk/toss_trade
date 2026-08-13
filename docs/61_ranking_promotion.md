@@ -454,7 +454,17 @@ $ .venv/Scripts/python.exe -m pytest -q
 2143 passed, 1 skipped, 4 deselected, 23 warnings in 333.32s (0:05:33)
 ```
 
-(main 기준 **2,113** + 신규 **30** = **2,143**. 차이 없음.)
+(명세가 준 기준 **2,113** + 신규 **30** = **2,143**. 차이 없음.)
+
+**병합 뒤 다시 돌렸다** — `origin/main` 이 `71b4a1b`(W1 `docs/62` + `tests/test_cadence_plan.py`)
+까지 움직여서 병합은 새 코드다:
+
+```
+$ .venv/Scripts/python.exe -m pytest -q
+2156 passed, 1 skipped, 4 deselected, 23 warnings in 285.98s (0:04:45)
+```
+
+(병합 후 main 2,126 + 신규 30 = 2,156.)
 
 ### 9-2. 변이 게이트
 
