@@ -274,3 +274,161 @@ def test_telemetry_says_so_when_the_limiter_cannot_be_read(tmp_path):
     out = _limiter_clamp(_NoLimiter())
     assert out["limit_header_clamped"] == -1
     assert out["limit_header_clamped_groups"] == "n/a"
+
+
+# ====================== 5. 텔레메트리와 로그가 어긋나는가 (docs/56 §9, G-0 0-3)
+#
+# 관측된 증상: `LIMIT-CLAMP` 로그는 뜨는데 텔레메트리는 `limit_header_clamped=0`,
+# `groups=-` 였다. 아래 두 묶음이 그 증상의 두 조각을 각각 못박는다.
+#
+#   (A) 한 프로세스 안에서는 **어긋날 수 없다** — 로그 줄이 나간 시점에 카운터는 이미
+#       올라가 있다. 실제 어긋남은 재시작 경계에서만 생긴다.
+#   (B) 그 경계를 읽을 수 있어야 한다 — 클램프 값은 **프로세스 수명**인데 같은 줄의
+#       `counter_scope` 가 설치 수명이라고 말하고 있었다. 그러면 `0` 은 "안 잘렸다" 와
+#       "방금 떴다" 를 구분할 수 없고, 그게 이 증상을 결함으로 읽게 만든 것이다.
+
+
+def _restart(tmp_path, ctx):
+    """상태파일을 저장하고 **새 프로세스처럼** limiter·client·ctx 를 다시 만든다.
+
+    `__main__.py:33-34` 가 기동마다 하는 것과 같다 — limiter 는 새로 만들어진다.
+    """
+    ctx.save_state(force=True)
+    fresh_lim = GroupRateLimiter(dict(ctx.cfg.limits), ctx.cfg.api.usage_ratio)
+    fresh = CollectorContext.create(
+        _LimiterClient(fresh_lim), Store(ctx.cfg.store.db_path), ctx.cfg,
+        notifier=Notifier(console=False), clock=ctx.clock, resume=True,
+        state_path=str(ctx.state_path))
+    fresh.session = ctx.session
+    return fresh, fresh_lim
+
+
+def test_startup_zero_precedes_the_clamp_log_it_does_not_contradict_it(tmp_path):
+    """★ 확정된 가설 (가) — 텔레메트리 스냅샷이 카운터 증가보다 **앞섰을 뿐**이다.
+
+    라이브 로그(`w5-ops/data/collector.log`)의 순서를 그대로 재현한다:
+    `12:11:00.931 telemetry ... limit_header_clamped=0 groups=- proc_uptime_s=1`
+    → `12:11:04.846 WARNING LIMIT-CLAMP start ...`.
+    두 줄은 **3.9초 떨어져 있고 그 사이에 첫 클램프 응답이 있다.** 어긋난 것이 아니다.
+    """
+    lim = GroupRateLimiter({CHART: 5.0}, usage_ratio=0.85)
+    ctx = _build_ctx(tmp_path, lim)
+    cap = _Capture()
+    ctx.notifier.log.addHandler(cap)
+    try:
+        # [1] 기동 직후 — 아직 어떤 응답도 안 받았다.
+        first = ctx.telemetry()
+        assert first["limit_header_clamped"] == 0
+        assert first["limit_header_clamped_groups"] == "-"
+        assert not [ln for ln in cap.lines if ln.startswith("LIMIT-CLAMP")], (
+            "로그 줄이 먼저 나갔다면 순서 가설이 틀린 것이다")
+
+        # [2] 첫 클램프 응답 — 여기서 비로소 로그 줄이 나간다.
+        lim.update_from_headers(CHART, hdr("20"), status=200)
+        assert [ln for ln in cap.lines if ln.startswith("LIMIT-CLAMP start")]
+
+        # [3] 그 뒤의 텔레메트리는 **한 번도 0 이 아니다.**
+        after = ctx.telemetry()
+        assert after["limit_header_clamped"] == 1
+        assert after["limit_header_clamped_groups"] == f"{CHART}:20>5x1"
+    finally:
+        ctx.notifier.log.removeHandler(cap)
+        ctx.store.close()
+
+
+def test_telemetry_is_never_zero_once_the_clamp_line_has_fired(tmp_path):
+    """(나)·(다) 배제 — 로그를 찍는 경로와 카운터를 올리는 경로가 같은 자리다.
+
+    `_note_header_limit` 은 계상 **뒤에** 콜백을 부르고 그 사이에 `await` 가 없다.
+    그래서 "로그는 떴는데 카운터는 0" 인 스냅샷은 한 프로세스 안에서 존재할 수 없다.
+    응답과 텔레메트리를 촘촘히 번갈아 돌려 그 불변식을 직접 확인한다.
+    """
+    lim = GroupRateLimiter({CHART: 5.0, "MARKET_DATA": 10.0}, usage_ratio=0.85)
+    ctx = _build_ctx(tmp_path, lim)
+    cap = _Capture()
+    ctx.notifier.log.addHandler(cap)
+    try:
+        seen_line = False
+        for i in range(12):
+            # 라이브와 같은 두 그룹을 섞는다 (MARKET_DATA 15>10, CHART 20>5).
+            lim.update_from_headers("MARKET_DATA", hdr("15"), status=200)
+            lim.update_from_headers(CHART, hdr("20"), status=200)
+            seen_line = seen_line or any(
+                ln.startswith("LIMIT-CLAMP start") for ln in cap.lines)
+            tel = ctx.telemetry()
+            if seen_line:
+                assert int(tel["limit_header_clamped"]) > 0, (
+                    f"{i}번째 회차: 로그 줄이 나간 뒤인데 텔레메트리가 0 이다")
+                assert tel["limit_header_clamped_groups"] != "-"
+        # 두 그룹 모두 이름과 크기가 남는다 — 라이브 줄과 같은 모양.
+        groups = str(ctx.telemetry()["limit_header_clamped_groups"])
+        assert "MARKET_DATA:15>10x12" in groups and f"{CHART}:20>5x12" in groups
+    finally:
+        ctx.notifier.log.removeHandler(cap)
+        ctx.store.close()
+
+
+def test_clamp_counters_reset_on_restart_and_the_line_says_so(tmp_path):
+    """★ 진짜 어긋남은 재시작 경계에 있다 — 그 경계가 줄 안에 적혀 있어야 한다.
+
+    `LIMIT-CLAMP start` 는 `collector.log` 에 **영구히** 남는데 카운터는 프로세스와 함께
+    죽는다. 그래서 재기동 직후에는 "로그에는 start 가 있고 텔레메트리는 0" 이 실제로
+    나온다. 이건 결함이 아니라 **분모가 다른 두 값**이고, 그 사실은 같은 줄의
+    `counter_scope` + `proc_uptime_s` 로만 읽을 수 있다 (docs/52 §7 이 정한 방식).
+
+    `counter_scope` 가 이 값들을 설치 수명이라고 말하면 `0` 은 "안 잘렸다" 로 읽힌다 —
+    그게 이번 증상을 계측기 고장으로 보고하게 만든 것이다.
+    """
+    from tossmon.collector.loops import PROC_SCOPED_COUNTERS
+
+    lim = GroupRateLimiter({CHART: 5.0}, usage_ratio=0.85)
+    ctx = _build_ctx(tmp_path, lim)             # state_path 는 tmp_path 아래로 잡힌다
+    fresh = None
+    try:
+        for _ in range(6):
+            lim.update_from_headers(CHART, hdr("20"), status=200)
+        ctx.bump("events", 3)                       # 대조군: 설치 수명은 살아남는다
+        before = ctx.telemetry()
+        assert before["limit_header_clamped"] == 6
+
+        fresh, _ = _restart(tmp_path, ctx)
+        after = fresh.telemetry()
+
+        # 사실: 재시작으로 0 이 된다 (limiter 는 상태파일이 없다).
+        assert after["limit_header_clamped"] == 0
+        assert after["limit_header_lowered"] == 0
+        assert after["limit_header_clamped_groups"] == "-"
+        assert int(after["events"]) == 3, "대조군(설치 수명)까지 지워졌다면 다른 문제다"
+
+        # 선언: 줄이 그 사실을 말하는가.
+        declared = str(after["counter_scope"]).split(";")[0][len("proc:"):].split(",")
+        for name in ("limit_header_clamped", "limit_header_lowered",
+                     "limit_header_clamped_groups"):
+            assert name in declared, (
+                f"`{name}` 는 재시작으로 0 이 되는데 `counter_scope` 는 설치 수명이라고 "
+                f"말한다 — 그러면 0 이 '안 잘렸다' 인지 '방금 떴다' 인지 구분할 수 없다. "
+                f"선언: {declared}")
+            assert name in PROC_SCOPED_COUNTERS
+    finally:
+        if fresh is not None:
+            fresh.store.close()
+        ctx.store.close()
+
+
+def test_every_limiter_sourced_field_is_declared_process_scoped():
+    """다음에 클램프 항목이 하나 더 늘어도 같은 거짓말이 안 생기게 못박는다.
+
+    limiter 는 상태파일이 없다 — `_limiter_clamp` 가 실어 나르는 **모든** 키는 정의상
+    프로세스 수명이다. 기존 `test_telemetry_declares_which_counters_reset_on_restart`
+    는 이름 4개를 손으로 적어 놓고 재는 것이라 "선언한 것이 정말 리셋되는가" 만 보고
+    **"리셋되는 것이 전부 선언됐는가" 는 못 본다.** 이번 드리프트가 그쪽으로 났다.
+    """
+    from tossmon.collector.loops import PROC_SCOPED_COUNTERS, _limiter_clamp
+
+    class _NoLimiter:
+        limiter = GroupRateLimiter({CHART: 5.0}, usage_ratio=0.85)
+
+    missing = [k for k in _limiter_clamp(_NoLimiter()) if k not in PROC_SCOPED_COUNTERS]
+    assert not missing, (
+        f"limiter 가 싣는데 프로세스 수명으로 선언 안 된 항목: {missing} — "
+        "limiter 는 재시작마다 새로 만들어지므로(`__main__.py:33`) 전부 프로세스 수명이다")
