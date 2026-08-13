@@ -494,6 +494,12 @@ class CollectorContext:
     #: 다르다 — 한산한 종목은 체결이 몇 시간 전이어도 폴은 4초마다 돌기 때문이다.
     #: 결손 행에 같이 남겨, 하류가 "폴링이 연속이었는가"를 임계 없이 가르게 한다.
     last_trade_poll_ms: dict[str, int] = field(default_factory=dict)
+    #: 랭킹 차선(D-21)이 쥐고 있는 tier3 좌석 — 심볼 → 좌석 만료 시각(벽시계 ms).
+    #: **기능이 꺼져 있으면 영원히 빈 dict 다.** monotonic 을 넣지 않는다 —
+    #: 상태파일·로그로 나가는 값이라 프로세스마다 원점이 다르면 안 된다.
+    ranking_seats_ms: dict[str, int] = field(default_factory=dict)
+    #: 좌석을 놓은 시각 — 재진입 쿨다운(`cooldown_s`)의 기준.
+    ranking_seat_freed_ms: dict[str, int] = field(default_factory=dict)
     #: 유니버스 거부를 이미 로그한 심볼 (같은 심볼이 12초마다 로그를 도배하지 않게).
     _universe_logged: set[str] = field(default_factory=set)
     #: 재시작 시 복원한 심볼별 마지막 봉 시각 (백필 시작점 힌트).
@@ -985,7 +991,10 @@ class CollectorContext:
                 f",t3max{uni.tier3_max},tr{_num(poll.tier3_trades_s)}s"
                 f",ob{_num(poll.tier3_orderbook_s)}s"
                 f",t2ob{_num(getattr(poll, 'tier2_orderbook_s', 0) or 0)}s"
-                f",t2c{_num(poll.tier2_candle_s)}s,rk{_num(poll.ranking_snap_s)}s")
+                f",t2c{_num(poll.tier2_candle_s)}s,rk{_num(poll.ranking_snap_s)}s"
+                # D-21 랭킹 차선. **꺼져 있으면 빈 문자열**이라 지문이 안 흔들린다 —
+                # 없는 경계를 데이터에 만들지 않기 위해서다. 켜는 순간 바뀐다.
+                + self.cfg.ranking_promotion.signature())
 
     def log_config_signature(self, why: str) -> None:
         """전환 경계를 로그에도 한 줄 남긴다 (기동 시 / 지문이 바뀌었을 때)."""
@@ -1029,6 +1038,10 @@ class CollectorContext:
             # 정원을 로그에서 뒤지지 않고 바로 본다 (래칫 감시용).
             "tier2_cap": int(self.tiers.capacity.get(2) or 0),
             "tier3_cap": int(self.tiers.capacity.get(3) or 0),
+            # D-21 랭킹 차선 — **지금 쥐고 있는 좌석 수**와 누계 승격. 꺼져 있으면 둘 다
+            # 0 이고, 그 0 은 `tier3_cap` 옆에서 읽어야 뜻이 있다 (분모 없는 0 금지).
+            "rk_t3_seats": len(self.ranking_seats_ms),
+            "rk_t3_promotions": int(self.counters.get("ranking_tier3_promotions", 0)),
             # 초당 첨두 — **버스트를 드러내는 유일한 관측치**. 60초 평균만 보던 시절에는
             # "한도의 1/5 인데 429" 가 설명되지 않았다 (평균이 1초 쏠림을 숨긴다).
             # 서버는 1초 창으로 재므로 이 값이 한도를 넘는 순간이 진짜 위반이다.
@@ -1309,6 +1322,11 @@ class CollectorContext:
                                if b.last_ts() is not None},
             "last_trade_ms": dict(self.last_trade_ms),
             "last_ranking_snap_ms": self.rankings.last_snap_ms,
+            # D-21 좌석. **저장하지 않으면 재시작마다 고아 좌석이 남는다** — 티어는
+            # `seed` 로 복원되는데 좌석 원장은 비어 있어 아무도 그 tier3 멤버를 놓아 주지
+            # 않고, 그 상태로 좌석 수만큼 예산이 새어 나간다 (좌석 하나 = 0.583 req/s).
+            # 벽시계 ms 다 — monotonic 은 상태파일로 나가면 안 된다.
+            "ranking_seats_ms": dict(self.ranking_seats_ms),
             "missing_streak": dict(self.missing_streak),
             "counters": dict(self.counters),
         }
@@ -1346,6 +1364,12 @@ class CollectorContext:
             self.tiers.seed(str(sym), int(tier), saved_ms)
         self.last_trade_ms.update({str(k): int(v)
                                    for k, v in (data.get("last_trade_ms") or {}).items()})
+        # 좌석은 **켜져 있을 때만** 복원한다. 꺼진 채로 기동했는데 옛 상태파일의 좌석이
+        # 살아나면 아무도 안 놓아 주는 tier3 멤버가 생긴다.
+        if self.cfg.ranking_promotion.enabled:
+            self.ranking_seats_ms.update(
+                {str(k): int(v)
+                 for k, v in (data.get("ranking_seats_ms") or {}).items()})
         self.missing_streak.update({str(k): int(v)
                                     for k, v in (data.get("missing_streak") or {}).items()})
         self.counters.update({str(k): int(v)
@@ -1690,6 +1714,14 @@ async def rankings_once(ctx: CollectorContext) -> int:
             ctx.notifier.warn(f"rankings store failed ({page.ranking_type}): "
                               f"{type(exc).__name__}: {exc} — 이 폴 분량은 복구 불가 유실")
         ctx.bump("ranking_snaps")
+        rp = ctx.cfg.ranking_promotion
+        if rp.enabled and rtype in rp.types:
+            # 차선 후보의 tier0 판정을 **승격 이전에** 확정한다 (감사 F-2 와 같은 순서).
+            # `_resolve_universe` 는 심볼당 1회 캐시라 정상 상태에서 추가 호출은 0 이다.
+            await _resolve_universe(
+                ctx, [(row.symbol, int(row.last_u)) for row in page.rows
+                      if row.rank <= rp.top_n], snap_ms)
+            _ranking_tier3_lane(ctx, page, snap_ms)
         if rtype not in FEATURE_RANKING_TYPES:
             continue                     # 1d 목록은 실시간 경로에 들이지 않는다 (docstring)
         ctx.rankings.add(snap_ms, page, keep=watch)
@@ -1790,6 +1822,70 @@ def _ranking_triggers(ctx: CollectorContext, page: RankingPage, snap_ms: int) ->
             if ctx.tiers.force(sym, 2, "ranking_entry", ACTIVITY_ENTRY_SCORE,
                                snap_ms, record_score=0.0) is not None:
                 ctx.bump("ranking_promotions")
+    ctx.flush_changes()
+
+
+def _ranking_tier3_lane(ctx: CollectorContext, page: RankingPage, snap_ms: int) -> None:
+    """랭킹 진입을 **tier3** 승격 사유로 쓰는 차선 (D-21, docs/61). **기본값 꺼짐.**
+
+    왜 tier2 가 아니라 tier3 인가: `trades_snap` 을 채우는 것은 tier3 뿐이다
+    (`_poll_trades` 는 `run_tier3_micro` 에서만 불린다). 실측으로도 tier3 를 거친 종목
+    집합과 체결 행이 있는 종목 집합이 **정확히 같다**(985 = 985, docs/61 §1). 그래서
+    기존 `_ranking_triggers` 의 tier2 승격은 테이프 커버리지를 한 건도 못 늘린다 —
+    13 일 동안 그 경로로 올라간 종목이 80 개뿐인 이유가 아니라, **80 개를 올렸어도
+    테이프는 안 늘었다**는 것이 요점이다.
+
+    좌석 규칙 (`cfg.ranking_promotion`):
+      * `tier3_slots` 개의 좌석만 쓴다. `fill_to_capacity(3, reserve=...)` 가 그만큼을
+        비워 두므로 차선은 **`compete=False`**(축출 금지)로 들어간다 — 2026-08-04 에
+        무너진 자리가 정확히 축출이고, 이 차선은 기존 멤버를 절대 밀어내지 않는다.
+      * `rotate` 는 `hold_s` 뒤에 **무조건** 놓아 준다(폭). `sticky` 는 상위 N 에 남아
+        있는 동안 계속 쥔다(깊이). 실측 커버리지 차가 4~10 배다 (docs/61 §3).
+      * 놓은 종목은 `cooldown_s` 동안 다시 못 앉는다 (진동 차단).
+
+    **좌석을 놓는 것이 이 함수의 첫 일이다.** 08-04 의 교훈이 그것이다 — 전이 0 은
+    안정화가 아니라 동결 신호였다 (`STRATEGY-VERDICTS` §4.4-E).
+    """
+    rp = ctx.cfg.ranking_promotion
+    if not rp.enabled or page.ranking_type not in rp.types:
+        return
+    hold_ms = rp.hold_s * 1000
+    for sym in [s for s, until in ctx.ranking_seats_ms.items() if until <= snap_ms]:
+        ctx.ranking_seats_ms.pop(sym, None)
+        ctx.ranking_seat_freed_ms[sym] = snap_ms
+        # **아직 tier3 일 때만** 내린다. 예산 가드가 먼저 깎아 갔을 수 있는데(차선 멤버는
+        # `st.score` 가 0.0 이라 `set_capacity` 의 최약체다) 그때 그냥 내리면 좌석이 산 적
+        # 없는 tier2 자리까지 뺏는다. 좌석은 tier3 한 칸만 샀다.
+        if ctx.tiers.tier_of(sym) < 3:
+            continue
+        if ctx.tiers.release(sym, snap_ms, "ranking_hold_expired") is not None:
+            ctx.bump("ranking_tier3_releases")
+    for row in page.rows:
+        if row.rank > rp.top_n:
+            continue
+        sym = row.symbol.upper()
+        ctx.watch(sym)                       # 유니버스 게이트는 watch() 안에 있다
+        if sym not in ctx.watchlist:
+            continue
+        if sym in ctx.ranking_seats_ms:
+            if rp.policy == "sticky":        # 아직 상위 N 이면 좌석을 새로 연장한다
+                ctx.ranking_seats_ms[sym] = snap_ms + hold_ms
+            continue
+        if len(ctx.ranking_seats_ms) >= rp.tier3_slots:
+            ctx.bump("ranking_tier3_blocked")
+            continue
+        freed = ctx.ranking_seat_freed_ms.get(sym)
+        if freed is not None and snap_ms - freed < rp.cooldown_s * 1000:
+            ctx.bump("ranking_tier3_cooldown")
+            continue
+        # `record_score=0.0`: 랭킹은 "볼 이유"이지 유망도가 아니다 (감사 H-7). 경쟁
+        # 점수는 넘기되 스코어 채널은 오염시키지 않는다 — `compete=False` 가 그것까지 막는다.
+        if ctx.tiers.force(sym, 3, "ranking_tier3", ACTIVITY_ENTRY_SCORE, snap_ms,
+                           compete=False, record_score=0.0) is None:
+            ctx.bump("ranking_tier3_no_seat")
+            continue
+        ctx.ranking_seats_ms[sym] = snap_ms + hold_ms
+        ctx.bump("ranking_tier3_promotions")
     ctx.flush_changes()
 
 
@@ -2204,7 +2300,11 @@ async def run_tier3_micro(client: TossClient, store: Store, cfg: Config, *,
         # 빈 tier3 정원을 측정된 상위 후보로 채운다 — 빈 슬롯은 순손실이다
         # (절대 임계 0.60 은 개장 직후에만 넘어서, 그 뒤 장 내내 정원이 비어 있었다).
         if ctx.collecting():
-            filled = ctx.tiers.fill_to_capacity(3, ctx.clock.now_ms())
+            # 랭킹 차선이 쓸 좌석은 비워 둔다 (D-21). 꺼져 있으면 0 이라 지금과 같다 —
+            # 예약이 없으면 이 호출이 매 사이클 정원을 꽉 채워 차선이 영원히 못 들어온다.
+            filled = ctx.tiers.fill_to_capacity(
+                3, ctx.clock.now_ms(),
+                reserve=ctx.cfg.ranking_promotion.tier3_slots)
             if filled:
                 ctx.bump("tier3_capacity_fills", len(filled))
                 ctx.flush_changes()

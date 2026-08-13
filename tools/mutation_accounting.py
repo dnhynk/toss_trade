@@ -214,10 +214,10 @@ class GateError(RuntimeError):
     """게이트 **자신**이 고장난 경우. 변이 생존과 엄격히 구분한다."""
 
 
-def _run_suites() -> subprocess.CompletedProcess:
+def _run_suites(suites: tuple[str, ...] = SUITES) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-         "-m", "not mutation", *SUITES],
+         "-m", "not mutation", *suites],
         cwd=ROOT, capture_output=True, text=True,
         # 하위 pytest 의 출력에는 한글 assert 메시지가 섞인다. 시스템 기본 코덱(Windows
         # cp949)으로 읽으면 디코딩이 터지고 `stdout` 이 None 이 되는데, 그러면 "탐지 0건"
@@ -244,7 +244,8 @@ def _apply(text: str, mut: Mutation, nl: str) -> str:
     return out
 
 
-def check_one(mut: Mutation, *, verbose: bool = True) -> dict:
+def check_one(mut: Mutation, *, verbose: bool = True,
+              suites: tuple[str, ...] = SUITES) -> dict:
     original = mut.target.read_bytes()
     text = original.decode("utf-8")
     mutated = _apply(text, mut, _newline_of(text))          # (a)(b)
@@ -255,7 +256,7 @@ def check_one(mut: Mutation, *, verbose: bool = True) -> dict:
         mut.target.write_bytes(payload)
         if mut.target.read_bytes() != payload:              # (c)
             raise GateError(f"{mut.id}: 디스크 내용이 의도한 변이와 다르다")
-        proc = _run_suites()
+        proc = _run_suites(suites)
     finally:
         mut.target.write_bytes(original)                    # (e)
         if mut.target.read_bytes() != original:
@@ -289,18 +290,24 @@ def check_one(mut: Mutation, *, verbose: bool = True) -> dict:
     return res
 
 
-def run(*, verbose: bool = True) -> list[dict]:
-    """모든 변이를 시험한다. 원본은 **항상** 복원된다."""
+def run(*, verbose: bool = True, mutations: tuple[Mutation, ...] = MUTATIONS,
+        suites: tuple[str, ...] = SUITES, what: str = "accounting defects") -> list[dict]:
+    """모든 변이를 시험한다. 원본은 **항상** 복원된다.
+
+    `mutations`/`suites` 를 넘길 수 있는 이유: 같은 규율(앵커 1회·복원 검증·assert 로만
+    탐지 인정)을 다른 결함군에도 그대로 쓰려는 것이다. `tools/mutation_ranking_promotion.py`
+    가 그 첫 사용자다. 기본값은 그대로라 이 파일의 19/19 는 안 흔들린다.
+    """
     if verbose:
-        print(f"targets: {', '.join(sorted({m.target.name for m in MUTATIONS}))}")
-        print(f"suites : {' '.join(SUITES)}")
-        print(f"planted: {len(MUTATIONS)} accounting defects\n")
-    base = _run_suites()
+        print(f"targets: {', '.join(sorted({m.target.name for m in mutations}))}")
+        print(f"suites : {' '.join(suites)}")
+        print(f"planted: {len(mutations)} {what}\n")
+    base = _run_suites(suites)
     if base.returncode != 0:
         raise GateError(
             "변이 전 기준 스위트가 이미 실패한다 - 게이트를 신뢰할 수 없다:\n"
             + (base.stdout or base.stderr)[-1500:])
-    return [check_one(m, verbose=verbose) for m in MUTATIONS]
+    return [check_one(m, verbose=verbose, suites=suites) for m in mutations]
 
 
 def main() -> int:
