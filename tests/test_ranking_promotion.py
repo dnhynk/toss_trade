@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import pytest
 
+from tests.test_api_support import run
 from tests.test_collector_helpers import make_config
 from tests.test_collector_loops import DAY0, StubClient, build_ctx
 from tossmon.api.models import RankingPage, RankingRow
 from tossmon.collector import loops
+from tossmon.collector.detector import ACTIVITY_ENTRY_SCORE, EVICTION_MARGIN
 from tossmon.config import RankingPromotionConfig, parse_config
 from tossmon.store import Store
 
@@ -115,22 +117,44 @@ def test_the_lane_does_nothing_at_all_while_the_flag_is_off(tmp_path):
         ctx.store.close()
 
 
-def test_capacity_fill_reserves_nothing_while_the_flag_is_off(tmp_path):
-    """`fill_to_capacity` 의 `reserve` 가 0 이라 정원을 지금처럼 꽉 채운다.
+def _reserve_passed_by_the_tier3_loop(tmp_path, **sections) -> int:
+    """`run_tier3_micro` 가 `fill_to_capacity` 에 **실제로 넘기는** `reserve` 를 잡는다.
+
+    테스트가 `fill_to_capacity` 를 직접 부르면 그 인자는 **테스트가 고른 값**이지
+    프로덕션이 넘기는 값이 아니다. 그 차이 때문에 호출 자리를 `tier3_slots + 1` 로
+    바꿔도 아무도 안 죽었다 (docs/61 §10 의 F5). 그래서 여기서는 배선을 직접 잡는다.
+    """
+    ctx = _ctx(tmp_path, ("AAA",), **sections)
+    seen: list[int] = []
+    real = ctx.tiers.fill_to_capacity
+
+    def spy(tier, ts_ms, **kw):
+        if tier == 3:
+            seen.append(int(kw.get("reserve", 0)))
+        return real(tier, ts_ms, **kw)
+
+    ctx.tiers.fill_to_capacity = spy                    # type: ignore[method-assign]
+    try:
+        run(loops.run_tier3_micro(ctx.client, ctx.store, ctx.cfg, ctx=ctx, cycles=1))
+    finally:
+        ctx.store.close()
+    assert seen, "전제 위반: tier3 루프가 fill_to_capacity 를 아예 안 불렀다"
+    return seen[0]
+
+
+def test_the_tier3_loop_reserves_nothing_while_the_flag_is_off(tmp_path):
+    """꺼져 있으면 **프로덕션 호출 자리**가 `reserve=0` 을 넘긴다.
 
     이 자리가 조용히 1 이라도 되면 tier3 가 매일 한 칸씩 비고, 그건 순손실이다
     (빈 슬롯 = 체결 테이프 0 건, `fill_to_capacity` docstring).
     """
-    ctx = _ctx(tmp_path, ("AAA", "BBB", "CCC"))
-    try:
-        ctx.tiers.capacity[3] = 2
-        for s in ("AAA", "BBB", "CCC"):
-            _raise_to(ctx, s, 2, 0.50, DAY0)
-        filled = ctx.tiers.fill_to_capacity(
-            3, DAY0 + 5 * MIN_MS, reserve=ctx.cfg.ranking_promotion.tier3_slots)
-        assert len(ctx.tiers.members(3)) == 2, filled
-    finally:
-        ctx.store.close()
+    assert _reserve_passed_by_the_tier3_loop(tmp_path) == 0
+
+
+def test_the_tier3_loop_reserves_exactly_the_configured_slots_when_on(tmp_path):
+    """④ **대조군.** 켜면 같은 자리가 `tier3_slots` 를 넘긴다 — 두 값이 갈려야 배선이다."""
+    got = _reserve_passed_by_the_tier3_loop(tmp_path, ranking_promotion=ON)
+    assert got == ON["tier3_slots"] == 2, got
 
 
 def test_telemetry_carries_the_lane_fields_and_they_read_zero_when_off(tmp_path):
@@ -141,6 +165,23 @@ def test_telemetry_carries_the_lane_fields_and_they_read_zero_when_off(tmp_path)
         assert tel["rk_t3_seats"] == 0
         assert tel["rk_t3_promotions"] == 0
         assert "tier3_cap" in tel, "분모 없는 0 은 뜻이 없다 (docs/52 §7.2)"
+    finally:
+        ctx.store.close()
+
+
+def test_telemetry_actually_counts_the_seats_when_the_lane_holds_them(tmp_path):
+    """④ **대조군.** 0 만 단언하면 그 필드를 **상수 0 으로 박아도** 안 죽는다.
+
+    실제로 안 죽었다 (docs/61 §10 의 L12). 배포 후 동결을 읽는 유일한 표면이 이것이라
+    "0 이 나온다" 가 아니라 **"실제 좌석 수가 나온다"** 를 고정해야 한다.
+    """
+    ctx = _ctx(tmp_path, ("AAA", "BBB", "CCC"), ranking_promotion=ON)
+    try:
+        loops._ranking_tier3_lane(ctx, _page(["AAA", "BBB", "CCC"]), DAY0)
+        assert len(ctx.ranking_seats_ms) == 2, "전제 위반: 좌석을 안 잡았다"
+        tel = ctx.telemetry()
+        assert tel["rk_t3_seats"] == 2, tel["rk_t3_seats"]
+        assert tel["rk_t3_promotions"] == 2, tel["rk_t3_promotions"]
     finally:
         ctx.store.close()
 
@@ -168,45 +209,99 @@ def test_a_ranked_symbol_reaches_tier3_not_tier2(tmp_path):
         ctx.store.close()
 
 
-def test_the_lane_never_evicts_an_existing_tier3_member(tmp_path):
-    """축출은 2026-08-04 에 무너진 자리다. 차선은 **빈자리에만** 들어간다."""
-    ctx = _ctx(tmp_path, ("AAA", "BBB", "OLD"), ranking_promotion=ON)
+def _weak_tier3_holder(tmp_path, symbols=("AAA", "BBB", "OLD")):
+    """정원 1 을 **약해진 점유자**(`OLD`, 점수 0.10)가 쥐고 있는 상태.
+
+    점수가 `ACTIVITY_ENTRY_SCORE`(0.30) − `EVICTION_MARGIN`(0.08) 아래라야
+    **축출이 가능하다.** 그래야 `compete=False` 가 그 축출을 막는 것이 관측된다 —
+    점유자가 0.90 이면 `compete` 가 어느 쪽이든 못 밀어내므로 그 플래그를 못 가른다
+    (실제로 그 픽스처가 사보타주 B 를 놓쳤다, docs/61 §10).
+
+    0.10 은 `ACTIVITY_ENTRY_SCORE` 의 docstring (a) 가 겨눈 상태 그대로다 —
+    *"이미 유지선(0.22) 아래로 떨어진 점유자는 밀어낼 수 있다."*
+    """
+    ctx = _ctx(tmp_path, symbols, ranking_promotion=ON)
+    ctx.tiers.capacity[3] = 1
+    _raise_to(ctx, "OLD", 3, 0.90, DAY0)
+    assert ctx.tiers.members(3) == ["OLD"], "전제 위반: 점유자가 tier3 에 없다"
+    weak = ACTIVITY_ENTRY_SCORE - EVICTION_MARGIN - 0.05
+    assert weak > 0.0, "상수가 바뀌었다 — 이 픽스처의 전제를 다시 세워라"
+    ctx.tiers.states["OLD"].score = weak        # 봉 데이터로 약해졌다
+    return ctx
+
+
+def test_control_this_fixture_can_actually_evict(tmp_path):
+    """④ **대조군이자 반공허 단언.** 이 픽스처에서 축출이 **실제로 일어난다.**
+
+    아래 테스트의 *"안 밀어냈다"* 는 축출이 **가능한** 상태에서만 뜻이 있다.
+    이 대조군이 없으면 `compete` 를 무엇으로 두든 초록이고, 그것이 정확히
+    2026-08-04 을 막는다는 가드가 비어 있던 방식이다.
+    """
+    ctx = _weak_tier3_holder(tmp_path)
     try:
-        ctx.tiers.capacity[3] = 1
-        _raise_to(ctx, "OLD", 3, 0.90, DAY0)
-        assert ctx.tiers.members(3) == ["OLD"]
+        got = ctx.tiers.force("AAA", 3, "x", ACTIVITY_ENTRY_SCORE,
+                              DAY0 + 20 * MIN_MS, compete=True, record_score=0.0)
+        assert got == 3, "compete=True 인데도 못 들어갔다 — 픽스처가 축출 불가 상태다"
+        assert ctx.tiers.tier_of("OLD") == 2, "축출이 안 일어났다"
+    finally:
+        ctx.store.close()
+
+
+def test_the_lane_never_evicts_an_existing_tier3_member(tmp_path):
+    """축출은 2026-08-04 에 무너진 자리다. 차선은 **빈자리에만** 들어간다.
+
+    위 대조군과 **같은 픽스처**다 — 저기서는 밀어냈고 여기서는 안 밀어낸다.
+    갈리는 것은 `compete` 하나뿐이므로 이 단언이 그 플래그를 지킨다.
+    """
+    ctx = _weak_tier3_holder(tmp_path)
+    try:
         loops._ranking_tier3_lane(ctx, _page(["AAA", "BBB"]), DAY0 + 20 * MIN_MS)
-        assert ctx.tiers.members(3) == ["OLD"], "기존 멤버를 밀어냈다"
+        assert ctx.tiers.members(3) == ["OLD"], "기존 멤버를 밀어냈다 (compete=True?)"
+        assert ctx.tiers.tier_of("AAA") == 1 and ctx.tiers.tier_of("BBB") == 1
         assert ctx.counters.get("ranking_tier3_promotions", 0) == 0
         assert ctx.counters["ranking_tier3_no_seat"] == 2
     finally:
         ctx.store.close()
 
 
+#: 정원 5 를 채울 **여유 후보**. 5 명이라야 `reserve` 가 결과를 가른다 —
+#: 후보가 정원보다 적으면 예약이 있으나 없으나 같은 수가 차서 단언이 공허해진다.
+_FILL_CANDS = ("S1", "S2", "S3", "S4", "S5")
+
+
+def _filled_with_reserve(tmp_path, reserve: int):
+    """**같은 상태**에서 `reserve` 만 바꿔 tier3 정원을 채운다."""
+    ctx = _ctx(tmp_path, ("AAA",) + _FILL_CANDS, ranking_promotion=ON)
+    ctx.tiers.capacity[3] = 5
+    for s in _FILL_CANDS:
+        _raise_to(ctx, s, 2, 0.50, DAY0)
+    ctx.tiers.fill_to_capacity(3, DAY0 + 5 * MIN_MS, reserve=reserve)
+    return ctx
+
+
 def test_the_reserve_is_what_makes_a_seat_exist_at_all(tmp_path):
     """예약이 없으면 `fill_to_capacity` 가 매 사이클 정원을 꽉 채워 차선이 굶는다.
 
-    ①(예약 없음) 침묵 → ②(예약 있음) 좌석 확보. 같은 상황에서 갈린다.
+    **두 실행이 갈려야 가드다.** 같은 상태·같은 후보에서 `reserve` 만 0 과 2 로 두고
+    비교한다. 첫 단언이 **반공허 장치**다 — 후보가 모자라 정원이 애초에 안 차면
+    `reserve` 를 통째로 무시해도 초록이 되고, 실제로 그렇게 뚫렸다 (docs/61 §10).
     """
-    ctx = _ctx(tmp_path, ("AAA", "S1", "S2", "S3"), ranking_promotion=ON)
+    greedy = _filled_with_reserve(tmp_path / "greedy", 0)
+    keep = _filled_with_reserve(tmp_path / "keep", 2)
     try:
-        ctx.tiers.capacity[3] = 3
-        for s in ("S1", "S2", "S3"):
-            _raise_to(ctx, s, 2, 0.50, DAY0)
-        # ① 예약 0 이면 세 자리가 다 찬다
-        ctx.tiers.fill_to_capacity(3, DAY0 + 5 * MIN_MS, reserve=0)
-        assert len(ctx.tiers.members(3)) == 3
-        loops._ranking_tier3_lane(ctx, _page(["AAA"]), DAY0 + 6 * MIN_MS)
-        assert ctx.tiers.tier_of("AAA") == 1, "예약 없이도 들어갔다면 축출한 것이다"
+        assert len(greedy.tiers.members(3)) == 5, (
+            "전제 위반: 후보가 모자라 정원이 안 찼다 — 이 상태에서는 reserve 가 "
+            "결과를 못 가르므로 아래 단언이 공허하다")
+        assert len(keep.tiers.members(3)) == 3, "예약분까지 채웠다 (reserve 무시)"
 
-        # ② 같은 상태에서 예약 2 를 주면 채우기가 물러난다
-        ctx.tiers.capacity[3] = 5
-        ctx.tiers.fill_to_capacity(3, DAY0 + 10 * MIN_MS, reserve=2)
-        assert len(ctx.tiers.members(3)) == 3, "예약분까지 채웠다"
-        loops._ranking_tier3_lane(ctx, _page(["AAA"]), DAY0 + 11 * MIN_MS)
-        assert ctx.tiers.tier_of("AAA") == 3
+        # 그리고 그 빈자리가 실제로 차선의 좌석이 된다 — 예약의 존재 이유가 이것이다.
+        loops._ranking_tier3_lane(greedy, _page(["AAA"]), DAY0 + 6 * MIN_MS)
+        assert greedy.tiers.tier_of("AAA") == 1, "정원이 꽉 찼는데 들어갔다 = 축출한 것이다"
+        loops._ranking_tier3_lane(keep, _page(["AAA"]), DAY0 + 6 * MIN_MS)
+        assert keep.tiers.tier_of("AAA") == 3, "예약해 둔 자리에 차선이 못 들어갔다"
     finally:
-        ctx.store.close()
+        greedy.store.close()
+        keep.store.close()
 
 
 def test_an_unwatchable_symbol_is_never_promoted(tmp_path):
@@ -234,10 +329,18 @@ def test_only_the_configured_ranking_types_feed_the_lane(tmp_path):
 
 
 def test_top_n_is_the_cut(tmp_path):
-    ctx = _ctx(tmp_path, ("A1", "A2", "A3", "A4"), ranking_promotion={**ON, "top_n": 2})
+    """**컷이 유일한 제한이라야** 이 단언이 컷을 지킨다.
+
+    좌석 수를 후보 수보다 적게 두면 좌석이 먼저 막아서 컷을 통째로 없애도 같은 답이
+    나온다 — 실제로 그렇게 뚫렸다 (docs/61 §10 의 L7). 그래서 좌석을 **넉넉히**(4) 준다.
+    """
+    ctx = _ctx(tmp_path, ("A1", "A2", "A3", "A4"),
+               ranking_promotion={**ON, "top_n": 2, "tier3_slots": 4})
     try:
+        ctx.tiers.capacity[3] = 10
         loops._ranking_tier3_lane(ctx, _page(["A1", "A2", "A3", "A4"]), DAY0)
-        assert sorted(ctx.tiers.members(3)) == ["A1", "A2"]
+        assert sorted(ctx.tiers.members(3)) == ["A1", "A2"], "컷 밖 종목이 들어왔다"
+        assert len(ctx.ranking_seats_ms) == 2, "좌석이 남아 있는데 2 개만 앉았다 = 컷이 잡았다"
     finally:
         ctx.store.close()
 

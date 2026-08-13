@@ -1,10 +1,12 @@
 # 61. 랭킹 진입을 승격 사유로 — **tier2 로는 테이프가 한 건도 안 는다** (D-21)
 
-> **[현행]** 소유 W4 · 2026-08-13 · ★ **기본값 꺼짐으로 병합한다. 배포는 코디네이터가 한다**
+> **[현행]** 소유 W4 · 2026-08-14 · ★ **기본값 꺼짐으로 병합한다. 배포는 코디네이터가 한다**
+> ★ **§10 이 §6-2 를 정정한다** — 가드 다섯이 비어 있었다. 이제 근거는 테스트 **건수**가
+> 아니라 **`tools/mutation_ranking_promotion.py` 22/22** 다
 > 상태 표기의 뜻과 전수 목록: [`docs/INDEX.md`](INDEX.md)
 
 <details>
-<summary><b>이 문서의 지도 — 절 9 개</b></summary>
+<summary><b>이 문서의 지도 — 절 10 개</b></summary>
 
 - 0. 측정 조건 (먼저 읽을 것)
 - 1. **지금 규칙을 코드에서 읽어 적었다** — 그리고 데이터로 대조했다
@@ -16,6 +18,7 @@
 - 7. 켤 때 확인할 것 (배포는 내 일이 아니다)
 - 8. 이 문서가 **말할 수 없는 것**
 - 9. 회귀 · 재현 명령
+- 10. **가드를 깨봤다 — 다섯 개가 비어 있었다** (2026-08-14). §6-2 정정
 
 </details>
 
@@ -40,7 +43,7 @@
 | 시뮬레이션 창 | `rankings_snap` **정규장만**(09:30~16:00 ET, EDT 고정 −4h). 거래량 2 종 **9 세션**, `TOP_GAINERS` **4 세션**(08-07 22:26 수집 시작) |
 | 텔레메트리 창 | **2026-08-12 22:30 이후 287 줄** — `docs/52` 송신시각 수정 경계 뒤만 본다 |
 | 라이브 설정 | `usage_ratio 0.85` · `tier3_max 10` · `tier3_trades_s 3` · `tier3_orderbook_s 4` · `tier1_sweep_s 45` · `ranking_snap_s 12` (`w5-ops/config/config.yaml`, 텔레메트리 `config_sig` 와 일치) |
-| 회귀 | **2,143 passed · 1 skipped · 4 deselected** (main 2,113 + 신규 30) · 변이 게이트 **19/19** |
+| 회귀 | **2,159 passed · 1 skipped · 4 deselected** (신규 33) · 계상 게이트 **19/19** · **차선 게이트 22/22** (§10) |
 
 > **`docs/59` 와 같은 자료를 보지만 창이 다르다.** 저쪽은 `--until-ms` 로 끝을 못 박았고
 > 이쪽은 안 박았다. 사건 수를 두 문서 사이에서 소수점까지 비교하지 마라.
@@ -344,19 +347,25 @@ C: 여유 **91.66 GB**, DB 지금 **3.56 GiB**. `docs/60` 의 214 일 추정에 
 
 `config/config.yaml` 은 **건드리지 않았다** (gitignore 이고 배포는 내 일이 아니다).
 
-### 6-2. 꺼짐이 기본값이라는 것을 **테스트가 증명한다**
+### 6-2. ~~꺼짐이 기본값이라는 것을 **테스트가 증명한다**~~ → **§10 이 정정한다**
 
-`tests/test_ranking_promotion.py` §A (27 건 중 6 건):
+> **정정 (2026-08-14, §10).** *"테스트 N 건이 증명한다"* 는 근거가 아니었다. 아래 표의
+> **`capacity_fill` 행은 실제로 아무것도 안 지키고 있었다** — 테스트가
+> `fill_to_capacity` 를 직접 불러서, 프로덕션 호출 자리를 바꿔도 안 죽었다 (§10 의 F5).
+> 지금 이 절을 떠받치는 것은 건수가 아니라 **변이 게이트 F1~F6 이 전부 죽는다**는
+> 사실이다. 아래 표는 그 대응을 보여 주는 지도로만 읽어라.
 
-| 테스트 | 무엇을 고정하나 |
-|---|---|
-| `test_the_section_is_absent_by_default_and_that_means_off` | 절이 없으면 `enabled=False` |
-| `test_config_signature_is_byte_identical_while_the_flag_is_off` | **꺼짐에서 `config_sig` 가 한 글자도 안 바뀐다** |
-| `test_config_signature_changes_the_moment_it_is_turned_on` | 켜는 순간은 **반드시** 바뀐다 |
-| `test_the_lane_does_nothing_at_all_while_the_flag_is_off` | 랭킹 스냅을 흘려도 티어가 한 칸도 안 움직인다 |
-| `test_capacity_fill_reserves_nothing_while_the_flag_is_off` | `reserve=0` — 정원을 지금처럼 꽉 채운다 |
-| `test_telemetry_carries_the_lane_fields_and_they_read_zero_when_off` | 키는 있고 값은 0 (0 과 "키 없음" 은 다르다) |
-| `test_a_stale_state_file_cannot_resurrect_seats_while_the_flag_is_off` | 옛 상태파일의 좌석이 **꺼진 채로 살아나지 않는다** |
+`tests/test_ranking_promotion.py` §A:
+
+| 테스트 | 무엇을 고정하나 | 게이트 |
+|---|---|---|
+| `test_the_section_is_absent_by_default_and_that_means_off` | 절이 없으면 `enabled=False` | F3 |
+| `test_config_signature_is_byte_identical_while_the_flag_is_off` | **꺼짐에서 `config_sig` 가 한 글자도 안 바뀐다** | F1 |
+| `test_config_signature_changes_the_moment_it_is_turned_on` | 켜는 순간은 **반드시** 바뀐다 | F2 |
+| `test_the_lane_does_nothing_at_all_while_the_flag_is_off` | 랭킹 스냅을 흘려도 티어가 한 칸도 안 움직인다 | F4 |
+| ~~`test_capacity_fill_reserves_nothing_while_the_flag_is_off`~~ → **`test_the_tier3_loop_reserves_nothing_while_the_flag_is_off`** | **프로덕션 호출 자리**가 `reserve=0` 을 넘긴다 (+ 켜짐 대조군) | **F5** |
+| `test_telemetry_carries_the_lane_fields_and_they_read_zero_when_off` (+ `..._actually_counts_the_seats_...`) | 키는 있고 값은 0 — 그리고 **좌석이 있으면 그 수가 나온다** | L12 |
+| `test_a_stale_state_file_cannot_resurrect_seats_while_the_flag_is_off` | 옛 상태파일의 좌석이 **꺼진 채로 살아나지 않는다** | F6 |
 
 > **`config_sig` 를 꺼짐에서 안 바꾸는 것이 중요하다.** 바꾸면 데이터에 **없는 경계**가
 > 생긴다. `usage_ratio` 가 지문에 없어서 D-8 변경이 데이터에 안 남았던 것의 **반대 실패**다.
@@ -365,6 +374,9 @@ C: 여유 **91.66 GB**, DB 지금 **3.56 GiB**. `docs/60` 의 214 일 추정에 
 
 - **축출 금지**: 차선은 `compete=False` 로만 들어간다.
   `test_the_lane_never_evicts_an_existing_tier3_member` 가 고정한다.
+  ⚠️ **이 테스트는 처음에 비어 있었다** — 점유자 점수가 0.90 이라 `compete` 를 어느 쪽으로
+  둬도 못 밀어냈다. 픽스처를 갈고 대조군(`test_control_this_fixture_can_actually_evict`)을
+  붙여 게이트 **L1** 로 고정했다 (§10).
 - **동결 금지**: 좌석을 놓는 것이 `_ranking_tier3_lane` 의 **첫 일**이다.
   `test_the_lane_keeps_promoting_instead_of_freezing` 이 20 스냅에서 승격 20·반납 19 를 센다.
 - **진동 금지**: 쿨다운 600 초. `test_a_released_symbol_cannot_sit_down_again_inside_the_cooldown`.
@@ -434,12 +446,13 @@ python tools/ranking_promotion_sim.py \
   --slots 1,2 --dwell 300,900 --top 10,20 \
   --out data/ranking_promotion_sim.json
 
-# 이 변경의 테스트 (기본값 꺼짐 증명 6 건 포함)
+# 이 변경의 테스트
 .venv/Scripts/python.exe -m pytest tests/test_ranking_promotion.py -q
 
-# 전체 회귀 · 변이 게이트
+# 전체 회귀 · 변이 게이트 둘
 .venv/Scripts/python.exe -m pytest -q
-python tools/mutation_accounting.py
+python tools/mutation_accounting.py           # 계상 19/19 (기본 인자 그대로)
+python tools/mutation_ranking_promotion.py    # 차선 22/22 (§10, 이 태스크에서 신설)
 ```
 
 출력은 §9-1 에 붙인다.
@@ -466,6 +479,18 @@ $ .venv/Scripts/python.exe -m pytest -q
 
 (병합 후 main 2,126 + 신규 30 = 2,156.)
 
+**§10 의 가드 수리 뒤 (2026-08-14)** — 대조군 3 건이 늘었다:
+
+```
+$ .venv/Scripts/python.exe -m pytest tests/test_ranking_promotion.py -q
+33 passed in 1.89s
+
+$ .venv/Scripts/python.exe -m pytest -q
+2159 passed, 1 skipped, 4 deselected, 23 warnings in 290.91s (0:04:50)
+```
+
+(2,156 + 3 = 2,159. **동작 코드는 안 바뀌었다** — 늘어난 셋은 전부 대조군이다.)
+
 ### 9-2. 변이 게이트
 
 ```
@@ -485,3 +510,161 @@ all planted accounting defects were caught
 - **`tools/poll5s_cost.py` 를 다시 돌리지 않았다.** 디스크 기준선(0.398 GB/일 · C: 여유)은
   `docs/60` 값을 인용했고, 여유만 이 세션에서 다시 읽었다(91.66 GB).
 - **`config/config.yaml` 을 열어 보기만 하고 고치지 않았다.**
+
+---
+
+## 10. 가드를 **깨봤다** — 다섯 개가 비어 있었다 (2026-08-14)
+
+> ### 이 절이 §6-2 를 정정한다
+> §6-2 는 *"테스트 30 건, 그중 7 건이 라이브 불변을 증명한다"* 고 적었다.
+> **테스트가 몇 건인가는 근거가 아니었다.** 코디네이터가 규율대로 직접 깨보니
+> (`COORDINATOR-STATE` §5-3) 둘이 안 죽었고, 같은 축으로 나머지를 훑으니 **셋이 더**
+> 나왔다. 지금 §6-2 를 떠받치는 것은 건수가 아니라 **아래 표**다.
+
+### 10-1. 무엇이 비어 있었나 — 다섯 개가 **같은 모양**이다
+
+> **픽스처가 보호 대상 동작을 도달 불가능하게 만들어, 단언이 실패할 수 없었다.**
+
+이 프로젝트가 네 번 기록한 *"성공을 반환하는 조용한 실패"* 의 **다섯 번째 형태**다
+(`STRATEGY-VERDICTS` §4.4-C·§4.4-D).
+
+| # | 심은 결함 | 왜 안 죽었나 |
+|---|---|---|
+| **L1** | 차선이 `compete=True` 로 **축출한다** | 점유자 `OLD` 의 점수가 **0.90** 이라 `compete` 가 어느 쪽이든 못 밀어낸다. 그 플래그를 **가르지 못하는** 픽스처였다 |
+| **L2** | `fill_to_capacity` 가 `reserve` 를 무시한다 | ② 단계에 tier2 후보가 **하나도 안 남아** 있어, 예약이 0 이든 2 든 채울 것이 없었다 |
+| **F5** | 꺼져 있어도 `reserve` 를 1 넘긴다 | 테스트가 `fill_to_capacity` 를 **직접** 불렀다 — 그 인자는 테스트가 고른 값이지 **프로덕션이 넘기는 값이 아니다.** 호출 자리를 바꿔도 안 지나간다 |
+| **L7** | `top_n` 컷을 없앤다 | 좌석 수(2)가 후보 수(4)보다 적어 **좌석이 먼저 막았다.** 컷이 없어도 같은 답이 나온다 |
+| **L12** | `rk_t3_seats` 를 상수 **0** 으로 박는다 | 두 테스트 다 **0 만** 단언했다. 0 을 박아도 0 이 나온다 |
+
+**L1 이 제일 위험했다.** 2026-08-04 에 수집이 무너진 자리가 정확히 축출이고
+(`STRATEGY-VERDICTS` §4.4-E), §6-3 이 *"`compete=False` 가 그것을 막는다"* 고 적어 둔
+그 문장을 지키는 테스트가 **없었다.**
+
+### 10-2. 어떻게 고쳤나 — **두 값이 갈려야 가드다**
+
+| # | 고친 것 |
+|---|---|
+| L1 | 점유자 점수를 `ACTIVITY_ENTRY_SCORE − EVICTION_MARGIN` **아래**(0.17)로. 그리고 **같은 픽스처에서 `compete=True` 면 실제로 밀어낸다**는 대조군을 신설했다 (`test_control_this_fixture_can_actually_evict`) |
+| L2 | 후보를 정원보다 많이(5) 두고 **`reserve` 만 0/2 로 바꾼 두 실행을 비교**한다. 첫 단언이 *"후보가 모자라면 이 테스트는 공허하다"* 를 직접 막는다 |
+| F5 | `fill_to_capacity` 를 직접 부르지 않는다. `run_tier3_micro` 를 한 사이클 돌리고 **프로덕션이 넘긴 `reserve` 를 잡아** 잰다. 꺼짐 0 / 켜짐 2 **두 값을 다** 고정했다 |
+| L7 | 좌석을 후보보다 **넉넉히**(4) 줘서 **컷이 유일한 제한**이 되게 했다 |
+| L12 | 좌석을 실제로 쥔 상태에서 `rk_t3_seats == 2` 를 단언하는 대조군을 신설했다 |
+
+**동작 코드는 한 줄도 안 고쳤다.** 다섯 개 전부 테스트 결함이었다.
+
+### 10-3. 이제 근거는 게이트다 — `tools/mutation_ranking_promotion.py`
+
+애드혹 사보타주는 다음 사람이 못 돌린다. 그래서 **커밋된 게이트**로 만들었다.
+`tools/mutation_accounting.py` 의 규율(앵커 정확히 1회 · 바이트 변화 검증 · 디스크 일치 ·
+**assert 실패로만 탐지 인정** · 복원 검증)을 그대로 쓰고 변이 목록과 대상 스위트만 다르다.
+
+심은 결함 **22 개** — 라이브 배포 판단이 걸린 성질만:
+
+| 부류 | 개수 | 무엇 |
+|---|---:|---|
+| **F1~F6** | 6 | **꺼짐 불변** — `config_sig` 무변동 / 켜면 변동 / 기본값 꺼짐 / 차선 무동작 / `reserve` 0 / 옛 좌석 부활 금지 |
+| **L1~L12** | 12 | **차선의 계약** — 축출 금지 · 예약 · 좌석 상한 · 반납 · `rotate`/`sticky` · 쿨다운 · `top_n` 컷 · 유니버스 게이트 · 타입 필터 · 가드 이중 강등 · 좌석 영속 · 텔레메트리 |
+| **C1~C4** | 4 | **설정** — 반쯤 켜짐 / `policy` 오타 / 모르는 키 / 느슨한 `enabled` |
+
+**고치기 전 (커밋 `1ade64e` 의 테스트로 같은 게이트를 돌린 것):**
+
+```
+$ git show HEAD:tests/test_ranking_promotion.py > tests/test_ranking_promotion.py
+$ python tools/mutation_ranking_promotion.py
+  F5   SURVIVED  [loops.py] 꺼져 있어도 정원 한 칸을 비워 둔다 — tier3 가 매일 한 칸씩 논다
+  L1   SURVIVED  [loops.py] ★ 차선이 **축출한다** — 2026-08-04 에 수집이 무너진 바로 그 자리
+  L2   SURVIVED  [detector.py] ★ `fill_to_capacity` 가 `reserve` 를 무시한다 — 차선이 영원히 굶는다
+  L7   SURVIVED  [loops.py] `top_n` 컷을 없앤다 — 상위 100 위 전부가 승격 후보가 된다
+  L12  SURVIVED  [loops.py] 차선 좌석 수를 텔레메트리에 **안 싣는다** (배포 후 동결을 못 읽는다)
+
+17/22 mutations killed        (exit 1)
+```
+
+**고친 뒤:**
+
+```
+$ python tools/mutation_ranking_promotion.py
+  F1   KILLED   [config.py] 꺼져 있어도 `config_sig` 에 꼬리를 붙인다 — 데이터에 **없는 경계**를 만든다
+  F2   KILLED   [config.py] 켜져 있는데 지문을 **안** 바꾼다 — 경계가 데이터에 안 남는다 (D-8 의 실패)
+  F3   KILLED   [config.py] 절이 없을 때 **켜진** 기본값을 준다 (기본값 꺼짐이 거짓이 된다)
+  F4   KILLED   [loops.py] 꺼져 있어도 차선을 돌린다 — 머지만으로 라이브 동작이 바뀐다
+  F5   KILLED   [loops.py] 꺼져 있어도 정원 한 칸을 비워 둔다 — tier3 가 매일 한 칸씩 논다
+  F6   KILLED   [loops.py] 꺼진 채 기동했는데 옛 상태파일의 좌석을 되살린다 (아무도 안 놓아 준다)
+  L1   KILLED   [loops.py] ★ 차선이 **축출한다** — 2026-08-04 에 수집이 무너진 바로 그 자리
+  L2   KILLED   [detector.py] ★ `fill_to_capacity` 가 `reserve` 를 무시한다 — 차선이 영원히 굶는다
+  L3   KILLED   [loops.py] 좌석 상한을 안 지킨다 — 예산 산식(좌석당 0.583 req/s)이 무너진다
+  L4   KILLED   [loops.py] 좌석을 **안 놓아 준다** — 전이 0 은 안정화가 아니라 동결이다 (§4.4-E)
+  L5   KILLED   [loops.py] `rotate` 를 `sticky` 처럼 매 스냅 연장한다 (폭이 사라진다)
+  L6   KILLED   [loops.py] 재진입 쿨다운을 무시한다 — 같은 종목이 좌석을 주고받는다 (진동)
+  L7   KILLED   [loops.py] `top_n` 컷을 없앤다 — 상위 100 위 전부가 승격 후보가 된다
+  L8   KILLED   [loops.py] 유니버스 게이트를 우회한다 (감사 F-2) — 메가캡이 tier3 를 먹는다
+  L9   KILLED   [loops.py] 설정에 없는 랭킹 타입도 차선에 들인다
+  L10  KILLED   [loops.py] 가드가 이미 내려놓은 종목을 좌석 만료가 **한 칸 더** 내린다 (tier2 자리까지)
+  L11  KILLED   [loops.py] 좌석을 상태파일에 **안 저장한다** — 재시작마다 고아가 tier3 를 쥔다
+  L12  KILLED   [loops.py] 차선 좌석 수를 텔레메트리에 **안 싣는다** (배포 후 동결을 못 읽는다)
+  C1   KILLED   [config.py] 반쯤 켜진 설정을 **조용히 꺼진 것처럼** 통과시킨다
+  C2   KILLED   [config.py] `policy` 오타를 기동 시점에 안 잡는다 (조용히 rotate 로 돈다)
+  C3   KILLED   [config.py] 모르는 키를 조용히 무시한다 — 오타 하나가 설정 전체를 무력화한다
+  C4   KILLED   [config.py] `enabled` 를 느슨하게 — 좌석이 0 인데 켜진 것으로 본다
+
+22/22 mutations killed
+all planted ranking-lane defects were caught
+```
+
+### 10-4. 어느 테스트가 어느 결함을 죽이나 — **이 표가 이 PR 을 믿을 근거다**
+
+| # | 죽인 테스트 |
+|---|---|
+| F1 | `test_config_signature_is_byte_identical_while_the_flag_is_off` |
+| F2 | `test_config_signature_changes_the_moment_it_is_turned_on` |
+| F3 | `test_the_section_is_absent_by_default_and_that_means_off` |
+| F4 | `test_the_lane_does_nothing_at_all_while_the_flag_is_off` |
+| **F5** | **`test_the_tier3_loop_reserves_nothing_while_the_flag_is_off`** (신설) |
+| F6 | `test_a_stale_state_file_cannot_resurrect_seats_while_the_flag_is_off` |
+| **L1** | **`test_the_lane_never_evicts_an_existing_tier3_member`** (픽스처 교체) |
+| **L2** | **`test_the_reserve_is_what_makes_a_seat_exist_at_all`** (픽스처 교체) |
+| L3 | `test_the_lane_can_never_hold_more_than_its_slots` · `test_a_ranked_symbol_reaches_tier3_not_tier2` |
+| L4 | `test_rotate_releases_the_seat_after_hold_s_even_if_still_ranked` 외 5 건 |
+| L5 | `test_rotate_releases_the_seat_after_hold_s_even_if_still_ranked` |
+| L6 | `test_a_released_symbol_cannot_sit_down_again_inside_the_cooldown` |
+| **L7** | **`test_top_n_is_the_cut`** (좌석을 넉넉히) |
+| L8 | `test_an_unwatchable_symbol_is_never_promoted` |
+| L9 | `test_only_the_configured_ranking_types_feed_the_lane` |
+| L10 | `test_a_seat_that_the_budget_guard_already_took_is_not_charged_twice` |
+| L11 | `test_seats_survive_a_restart_so_no_orphan_holds_a_tier3_slot` |
+| **L12** | **`test_telemetry_actually_counts_the_seats_when_the_lane_holds_them`** (신설) |
+| C1 | `test_a_half_configured_section_is_a_startup_error` (4 파라미터 전부) |
+| C2 | `test_bad_values_fail_at_startup_not_silently[policy]` |
+| C3 | `test_bad_values_fail_at_startup_not_silently[unknown]` |
+| C4 | `test_a_half_configured_section_is_a_startup_error` (2 파라미터) |
+
+**대조군 셋을 새로 심었다.** 셋 다 *"이 단언이 실패할 수 있는 상태인가"* 를 직접 묻는다:
+
+- `test_control_this_fixture_can_actually_evict` — 같은 픽스처에서 `compete=True` 면 **밀어낸다**
+- `test_the_tier3_loop_reserves_exactly_the_configured_slots_when_on` — 켜면 배선이 **2 를 넘긴다**
+- `test_telemetry_actually_counts_the_seats_when_the_lane_holds_them` — 좌석 2 면 **2 가 나온다**
+
+### 10-5. 이 훑기에서 **코드 결함은 안 나왔다**
+
+22 개 전부 심은 결함이 죽었고, 살아남은 다섯은 전부 **테스트 쪽**이었다.
+동작 코드는 한 줄도 안 고쳤다 — `reserve` 기본값 0, 벽시계 ms, 꺼짐에서 `config_sig`
+무변동, `compete=False`, 좌석 해제 우선, 전부 그대로다.
+
+### 10-6. 그래도 게이트가 **증명하지 않는 것**
+
+1. **22 개는 내가 고른 것이다.** 안 심은 결함은 여전히 안 지켜질 수 있다.
+   이 게이트는 *"이 22 가지로는 안 뚫린다"* 만 말한다.
+2. **라이브 거동은 여전히 미관측이다** (§8-1). 게이트는 합성 시험이다.
+3. **`tests/test_ranking_promotion.py` 밖은 안 봤다.** 다른 스위트가 차선을 건드리는지는
+   `SUITES` 에 `test_collector_loops.py`·`test_collector_config.py` 를 같이 넣어
+   *"어느 쪽이 잡든 탐지"* 로만 확인했다.
+
+### 10-7. 재현 명령
+
+```bash
+# 차선 게이트 (22 변이, 하위 pytest 23 회)
+python tools/mutation_ranking_promotion.py
+
+# 계상 게이트는 안 흔들렸다 (기본 인자 그대로)
+python tools/mutation_accounting.py
+```
