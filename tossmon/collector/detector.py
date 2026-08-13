@@ -485,9 +485,23 @@ class TierStateMachine:
                              ignore_dwell=True)
         return list(self.pending[start:])
 
+    def release(self, symbol: str, ts_ms: int, reason: str) -> int | None:
+        """티어를 한 칸 내린다 — **자리를 빌려 준 쪽이 돌려받는 경로** (D-21).
+
+        `_maybe_demote` 와 다르다: 저쪽은 *스코어가 약해졌다*는 판정이고 이쪽은
+        *빌린 기간이 끝났다*는 사실이다. 그래서 dwell 을 무시하고(빌린 기간이 dwell 보다
+        짧을 수 있다) `reentry_block_ms` 도 걸지 않는다 — 약함이 입증된 적이 없으므로
+        재진입 쿨다운은 빌려 준 쪽이 자기 규칙으로 관리한다.
+        """
+        st = self.states.get(symbol)
+        if st is None or st.tier <= 1:
+            return None
+        return self._change(symbol, st, st.tier - 1, reason, ts_ms, ignore_dwell=True)
+
     def fill_to_capacity(self, tier: int, ts_ms: int, *,
                          reason: str = "capacity_fill",
-                         min_score: float | None = None) -> list[TierChange]:
+                         min_score: float | None = None,
+                         reserve: int = 0) -> list[TierChange]:
         """빈 정원을 **바로 아래 티어의 측정된 최고 점수 후보**로 채운다.
 
         왜 필요한가 (2026-08-04 진단): tier3 진입이 **절대 임계(0.60)** 하나에만 걸려
@@ -499,12 +513,16 @@ class TierStateMachine:
         그래서 절대 임계 대신 **상대 순위**로 정원을 채운다: 측정된(`scored`) 후보 중
         점수 상위부터, dwell 을 지킨 것만, 빈자리 수만큼. 임계를 넘는 종목이 있으면
         그 종목이 자연히 1순위이므로 기존 경로를 밀어내지 않는다.
+
+        `reserve` (D-21, 기본 0 = 지금 동작): 이만큼의 자리는 **채우지 않고 비워 둔다.**
+        랭킹 차선이 `compete=False` 로 들어오려면(축출 금지) 빈자리가 있어야 하는데,
+        이 함수가 매 사이클 정원을 꽉 채우므로 예약 없이는 차선이 **영원히 못 들어온다.**
         """
         cap = self.capacity.get(tier)
         if cap is None:
             return []
         floor = _fill_floor(tier) if min_score is None else min_score
-        free = cap - len(self.members(tier))
+        free = cap - len(self.members(tier)) - max(0, int(reserve))
         if free <= 0:
             return []
         cands = [s for s in self.members(tier - 1)

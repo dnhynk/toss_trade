@@ -94,6 +94,62 @@ class PollingConfig:
 
 
 @dataclass(frozen=True)
+class RankingPromotionConfig:
+    """랭킹 진입을 **tier3 승격 사유**로 쓰는 차선 (D-21). **기본값은 전부 꺼짐.**
+
+    왜 tier3 인가: `trades_snap` 을 쓰는 것은 tier3 뿐이다 (`loops._poll_trades` 는
+    `run_tier3_micro` 에서만 불린다. 실측으로도 tier3 를 거친 종목 집합과 체결 행이 있는
+    종목 집합이 **정확히 같다** — docs/61 §1). 랭킹 진입을 tier2 로 올리는 경로는 이미
+    있는데(`loops._ranking_triggers`), tier2 는 1 분봉만 받으므로 **테이프 커버리지를
+    한 건도 늘리지 못한다.** docs/59 가 센 "랭킹 상위의 71~99% 가 테이프에 없다" 는
+    그 사실의 결과다.
+
+    다섯 값이 **전부** 유효해야 켜진다(`enabled`). 어느 하나가 기본값이면 꺼진 것이고,
+    꺼진 상태의 동작은 이 절이 없던 때와 **완전히 같다** — `config_sig` 도 안 바뀐다
+    (`tests/test_ranking_promotion.py` 가 그것을 잰다).
+
+    * `types` — 승격 사유로 볼 랭킹 타입. 빈 목록이면 꺼짐
+    * `top_n` — 그 목록의 몇 위까지를 진입으로 볼 것인가
+    * `tier3_slots` — 차선이 차지할 수 있는 tier3 좌석 수. **정원을 늘리지 않는다** —
+      `tier3_max` 를 같이 올리면 순증, 안 올리면 기존 좌석의 재배분이다 (docs/61 §2)
+    * `hold_s` — 좌석 유지 시간
+    * `policy` — `rotate`(`hold_s` 뒤 무조건 놓아 준다, 폭 우선) 또는
+      `sticky`(상위 N 에 남아 있는 동안 계속 쥔다, 깊이 우선). 둘의 커버리지 차이는
+      실측 4~10 배다 (docs/61 §3)
+    * `cooldown_s` — 좌석을 놓은 종목이 다시 앉기까지의 대기. 진동 방지
+    """
+    types: tuple[str, ...] = ()
+    top_n: int = 0
+    tier3_slots: int = 0
+    hold_s: int = 0
+    policy: str = "rotate"
+    cooldown_s: int = 600
+
+    POLICIES = ("rotate", "sticky")
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.types) and self.top_n > 0 and self.tier3_slots > 0 \
+            and self.hold_s > 0
+
+    def signature(self) -> str:
+        """`config_sig` 꼬리. **꺼져 있으면 빈 문자열** — 지문을 흔들지 않는다.
+
+        꺼진 상태에서 지문이 바뀌면 데이터에 **없는 경계**가 생긴다. 반대로 켜는 순간
+        지문이 바뀌어야 한다 — 그 경계가 이 변경의 앞뒤를 가르는 유일한 표식이고,
+        `usage_ratio` 가 지문에 없어서 D-8 변경이 데이터에 안 남았던 전례가 있다.
+        """
+        if not self.enabled:
+            return ""
+        kinds = "+".join(sorted(
+            t.replace("TOSS_SECURITIES_TRADING_", "T").replace("MARKET_TRADING_", "M")
+            .replace("TOP_GAINERS", "GAIN").replace("TOP_LOSERS", "LOSE")
+            for t in self.types))
+        return (f",rkp{kinds}@{self.top_n}/k{self.tier3_slots}"
+                f"/h{self.hold_s}s/{self.policy}/cd{self.cooldown_s}s")
+
+
+@dataclass(frozen=True)
 class Config:
     api: ApiConfig
     limits: dict[str, float] = field(default_factory=dict)
@@ -101,6 +157,9 @@ class Config:
     universe: UniverseConfig | None = None
     detector: DetectorConfig | None = None
     polling: PollingConfig | None = None
+    #: 절이 없으면 **전부 꺼짐** — 지금 동작 그대로다 (D-21, docs/61).
+    ranking_promotion: RankingPromotionConfig = field(
+        default_factory=RankingPromotionConfig)
 
     # ---- 컬렉터가 필요로 하는 섹션 강제 (기동 시점에 실패시키기 위한 것) ----
 
@@ -304,6 +363,54 @@ def _parse_polling(data: Mapping[str, Any]) -> PollingConfig | None:
     return PollingConfig(**values)
 
 
+def _parse_ranking_promotion(data: Mapping[str, Any]) -> RankingPromotionConfig:
+    """절이 없으면 **기본 인스턴스 = 전부 꺼짐**. 값이 있으면 전부 검증한다.
+
+    되돌릴 수 없는 수집 변경이라(안 받은 체결은 나중에 못 만든다) 오타 하나가 조용히
+    켜지거나 조용히 꺼지면 안 된다. 그래서 없는 키는 기본값으로 두되, **있는 키는
+    타입·범위를 전부 막는다.**
+    """
+    node = _section(data, "ranking_promotion")
+    if node is None:
+        return RankingPromotionConfig()
+    unknown = set(node) - {"types", "top_n", "tier3_slots", "hold_s", "policy",
+                           "cooldown_s"}
+    if unknown:
+        raise ValueError("config: ranking_promotion has unknown keys "
+                         f"{sorted(unknown)} — 임의 키 추가 금지")
+    raw_types = node.get("types") or ()
+    if isinstance(raw_types, str) or not isinstance(raw_types, (list, tuple)):
+        raise ValueError("config: ranking_promotion.types must be a list of ranking "
+                         f"type names, got {raw_types!r}")
+    types = tuple(str(t) for t in raw_types)
+    ints: dict[str, int] = {}
+    for key, default in (("top_n", 0), ("tier3_slots", 0), ("hold_s", 0),
+                         ("cooldown_s", 600)):
+        raw = node.get(key)
+        if raw is None:
+            ints[key] = default
+            continue
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise ValueError(f"config: ranking_promotion.{key} must be an int "
+                             f"(0 disables), got {raw!r}")
+        if raw < 0:
+            raise ValueError(f"config: ranking_promotion.{key} must be >= 0, got {raw}")
+        ints[key] = raw
+    policy = str(node.get("policy") or "rotate")
+    if policy not in RankingPromotionConfig.POLICIES:
+        raise ValueError("config: ranking_promotion.policy must be one of "
+                         f"{list(RankingPromotionConfig.POLICIES)}, got {policy!r}")
+    cfg = RankingPromotionConfig(types=types, policy=policy, **ints)
+    # 반쯤 켜진 설정은 **조용히 꺼진 것처럼** 보인다 — 그게 제일 나쁜 상태다.
+    given = [k for k in ("types", "top_n", "tier3_slots", "hold_s") if node.get(k)]
+    if given and not cfg.enabled:
+        raise ValueError(
+            "config: ranking_promotion is half-configured — "
+            f"{given} 만 설정됐다. types/top_n/tier3_slots/hold_s 는 **넷 다** 있어야 "
+            "켜지고, 하나라도 비면 전체가 꺼진다 (docs/61 §4)")
+    return cfg
+
+
 # --------------------------------------------------------------------------- #
 # 공개 API
 # --------------------------------------------------------------------------- #
@@ -319,6 +426,7 @@ def parse_config(data: Mapping[str, Any], *, env: Mapping[str, str] | None = Non
         universe=_parse_universe(merged),
         detector=_parse_detector(merged),
         polling=_parse_polling(merged),
+        ranking_promotion=_parse_ranking_promotion(merged),
     )
 
 
