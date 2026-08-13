@@ -103,10 +103,21 @@ CADENCE = {
     "gain_arms": [("1s", 1.0, 240.0), ("2s", 2.0, 120.0), ("4s", 4.0, 120.0)],
     "count": 100,
     # 1s 팔을 솎아 같은 현실을 굵은 자로 다시 잰다. 답이 stride 를 따라 움직이면 우리 자다.
-    "strides": (1, 2, 4, 8, 12),
+    #
+    # **5 를 넣은 이유** (2026-08-13, docs/62): 폴 주기 후보가 5 초다. 솎기는 **같은 응답열**
+    # 을 다시 읽는 것이라 콜을 하나도 더 쓰지 않고, 같은 격자 슬롯 위에서 재므로 1s·5s·12s
+    # 비교가 **짝지어진다**(별도 팔은 시간대가 달라 세션 드리프트와 섞인다).
+    # 기존 값(1·2·4·8·12)은 그대로 둔다 — 빼면 프리마켓 표와 대조가 끊긴다.
+    "strides": (1, 2, 4, 5, 8, 12),
     "call_cap": 1000,      # 하드 상한. 넘으면 그 자리에서 중단한다.
     "arm_gap_s": 5.0,      # 팔 사이 숨돌리기
 }
+
+#: 팔 **밖**에서 나가는 콜 수 (`probe_ranking_cadence` 의 단발 + 겹침 구간).
+#: 단발 4 = {TOP_GAINERS, TOP_LOSERS} × {realtime, 1d}
+#: 겹침 3 = 위 두 목록 + 거래량 realtime 을 한 번씩 더
+#: `get_stocks` 2 = 세 목록 합집합 약 260 심볼 / `BATCH_MAX` 200 → 배치 2
+CADENCE_FIXED_CALLS = 9
 CADENCE_PROFILE = "full"
 
 # `--cadence-profile open` — 정규장(22:30 KST 개장) 재측정용 축소판.
@@ -957,9 +968,15 @@ async def probe_ranking_cadence(c: TossClient) -> dict:
         "arms_spec": {"vol": CADENCE["vol_arms"], "gain": CADENCE["gain_arms"]},
         "measured_at_kst": ms_to_iso_kst(now_ms()),
         "measured_at_et": ms_to_iso_et(now_ms()),
+        # **`+6` 은 과소계상이었다** (2026-08-13, docs/62 §1-1). 팔 밖의 콜은 6 이 아니라
+        # 9~10 이다: 단발 4(TOP_GAINERS·TOP_LOSERS × realtime·1d) + 겹침 랭킹 3 +
+        # `get_stocks` 배치(심볼 약 260 → 200 단위로 2). 상한 여유를 읽는 필드가
+        # 실제보다 여유를 크게 보고하면 안 된다. 배치 수는 심볼 수에 달렸으므로
+        # 상한 쪽(2)으로 적는다 — 예산 필드는 과대계상이 안전한 방향이다.
         "budget": {"call_cap": cap, "planned_calls": (
             sum(int(d / g) for _l, g, d in CADENCE["vol_arms"])
-            + sum(int(d / g) for _l, g, d in CADENCE["gain_arms"]) + 6)},
+            + sum(int(d / g) for _l, g, d in CADENCE["gain_arms"])
+            + CADENCE_FIXED_CALLS)},
         "collector_baseline_429": baseline,
         "stop_thresholds": {"our_429": 1, "collector_60s": burst_stop,
                             "collector_480s": total_stop, "call_cap": cap},
