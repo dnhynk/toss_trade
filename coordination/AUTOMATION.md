@@ -84,6 +84,41 @@
 - **`w7-prereg` 는 `.venv` 가 없다** (실측). 그래서 §2-3 의 회귀 게이트를 그 워크트리
   안에서 못 돌린다 → W7 에 코드 태스크를 주려면 venv 를 먼저 만들어야 한다
 
+#### ★ 배정 기전 — **Orca 워크트리 터미널에 띄운다.** 세션 내부 서브에이전트가 아니다
+
+2026-08-14 에 이걸 틀렸다. 코디네이터 세션 안에서 서브에이전트를 띄우고 `cd` 로
+워커 워크트리에 들여보냈다. **git 은 움직였지만 그건 워커가 아니었다** — 사용자 UI 의
+`feat/analyzer` 칸은 비어 있었고, 그 에이전트는 코디네이터 세션의 자식으로 붙어 있었다.
+사용자가 지적해서 알았다.
+
+**왜 모양 문제가 아닌가**: 그 서브에이전트의 작업 디렉터리는 **코디네이터 워크트리**다.
+절대경로를 쓰는 동안만 안전하고, 상대경로를 한 번 쓰면 **코디네이터 브랜치에 쓴다.**
+그리고 사용자가 워커를 보거나 멈출 수단이 없다.
+
+**올바른 절차** (실측으로 확인한 것):
+
+```bash
+orca worktree list --repo id:<repoId> --json          # 워크트리 id 확인
+orca terminal create --worktree id:<repoId>::<path> --title "<제목>" --command "claude" --json
+orca terminal wait   --terminal <handle> --for tui-idle --timeout-ms 90000 --json
+orca terminal send   --terminal <handle> --text "<한 줄 지시>" --enter --json
+orca worktree set    --worktree id:<repoId>::<path> --comment "<지금 뭐 하는지>" --workspace-status in-progress --json
+```
+
+repo id = `12e59c9d-6eff-4602-8e62-802907e489b4`.
+
+> **`tui-idle` 은 "워커가 놀고 있다" 가 아니다.** 입력줄이 입력을 받을 준비가 됐다는
+> 뜻이고, **위에서 에이전트가 일하는 중에도 참이다.** 이걸 "제출 실패" 로 읽어서
+> 멀쩡히 일하는 워커를 죽일 뻔했다 (2026-08-14). **워커가 실제로 일하는지는
+> `orca terminal read` 로 화면을 읽어서만 확인된다.**
+>
+> 읽을 때 콘솔이 cp949 라 한국어가 깨진다. JSON 을 파일로 받아서 UTF-8 로 읽어라.
+
+**명세는 파일로 박고 한 줄만 보낸다.** `terminal send` 는 긴 본문을 자른다
+(`COORDINATOR-STATE` §0). 명세를 `coordination/specs/<워커>_<슬러그>.md` 에 커밋하고,
+워커에게는 *"이 파일을 읽고 그대로 실행해라"* 만 보낸다. 부수 효과로 **무엇을 시켰는지가
+저장소에 남는다** — `archive/specs/` 104 개가 그 관례다.
+
 **명세에 반드시 넣는 여섯**:
 
 1. 워크트리 **절대경로**와 브랜치 (그리고 *다른 워크트리를 건드리지 마라*)
@@ -157,7 +192,7 @@ git checkout main && git pull --ff-only
 
 | # | 무엇 | 워커 | 선행조건 | 상태 |
 |---|---|---|---|---|
-| 1 | **`tools/d21_verdict.py`** — 사전등록 판정 러너 | W3 | 없음 | **진행 중** (2026-08-14 19:4x 배정) |
+| 1 | **`tools/d21_verdict.py`** — 사전등록 판정 러너 | W3 | 없음 | **진행 중** — 명세 `specs/w3_d21_verdict_runner.md`, 20:0x 에 Orca 터미널로 재배정 |
 | 2 | **D-21 커버리지 판정 집행** — `D21-COVERAGE-PREREG` §5 의 넷 | 코디네이터 | 대상 창 종료(**08-15 05:00 KST**) + #1 병합 | 대기 |
 | 3 | `supervisor.stdout.log` 타임스탬프 (한 줄) | W5 | #2 완료 + **휴장 창** | 대기 |
 | 4 | `docs/59` 재실행 (`config_sig` 경계 넘어 뭉치지 말 것) | W3 | #2 완료 | 대기 |
