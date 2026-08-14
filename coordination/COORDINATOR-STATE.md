@@ -296,9 +296,19 @@ G-0 미충족 상태로 G-1 진입 가부).
 >
 > **`coordination/D21-COVERAGE-PREREG.md` §1 정의 그대로 D-21 커버리지를 판정한다.**
 >
-> ```
+> ~~```
 > python tools/d21_coverage.py      # 08-14 행이 새로 붙는다
-> ```
+> ```~~
+>
+> **정정 (2026-08-14 19:4x, 코디네이터 실측)**: **안 붙는다.** `tools/d21_coverage.py:16-17`
+> 의 `SESSIONS` 는 `'2026-08-13'` 에서 끝나는 하드코딩 리스트다. 게다가 그 도구는
+> **`B`(테이프)와 비용만** 세고 사전등록 §1 이 요구하는 **`A`(좌석 커버리지,
+> `promotions.reason='ranking_tier3'`)를 아예 안 센다.** 아래 §5 요구 넷 중 ②③④ 도 없다.
+>
+> **자를 결과 본 뒤에 깎으면 사전등록의 보호를 잃으므로**, 데이터가 생기기 전에
+> 전용 러너 `tools/d21_verdict.py` 를 짓는다 (W3, `feat/analyzer`). `d21_coverage.py` 는
+> **안 건드린다** — 사전등록된 기준선 표를 낸 물건이라 손대면 그 표의 재현성이 흔들린다.
+> 새 러너는 기준선 10 세션을 다시 계산해 §2 표와 **일치하지 않으면 판정을 거부한다.**
 >
 > **완료 판정 — 그 문서 §5 가 요구한 넷을 전부 낸다:**
 > ① top-10·top-100 각각의 **좌석 커버리지(A)·테이프 커버리지(B)·비용(`capacity_fill`)**
@@ -572,6 +582,7 @@ W4 워커 둘이 `loops.py` 를 동시에 편집할 뻔했다(한 명이 멈춰 
 | **Phase 2 착수 관문** | **`docs/58_gate.md`** (초안) |
 | **전략 후보 5 개가 어떻게 죽었나** | **`coordination/STRATEGY-VERDICTS.md`** |
 | 사용자 결정 대기 | `coordination/USER-INPUT-QUEUE.md` |
+| **무인 운영 체계 (배정→PR→게이트→병합→다음)** | **`coordination/AUTOMATION.md`** — 권한 경계는 그 §1 |
 | 그날그날의 기록 | `coordination/daily/<날짜>.md` |
 | Orca 운영법 | `coordination/ORCA-OPERATIONS.md` (정본은 `orca skills get orchestration`) |
 | 데이터 품질 프로그램 | `coordination/DATA-QUALITY-PROGRAM.md` |
