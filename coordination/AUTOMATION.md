@@ -148,9 +148,38 @@ gh pr create --base main --head <브랜치> --title "..." --body "..."
 | 1 | 브랜치가 `main` 을 흡수했는가 — `git merge-base --is-ancestor origin/main <브랜치>` | 안 흡수한 채 통과한 테스트는 병합 후를 대변하지 못한다 |
 | 2 | 소유 위반 — **`git diff main...<브랜치> --stat` (점 셋)** | 점 둘은 main 이 앞서면 오탐이 난다. **merge-base 기준이어야 한다** (§5-3) |
 | 3 | **전체 회귀 재실행** — 워커 워크트리 **안에서 그 워크트리의 `.venv` 로** | *"전체 통과"* 보고가 실제로는 환경 문제로 일부 미실행이었던 적이 있다 |
-| 4 | 콘솔 비 ASCII | cp949 에서 `UnicodeEncodeError` 로 supervisor 가 죽어 collector 가 고아가 될 뻔했다 |
+| 4 | 콘솔 비 ASCII (**아래 명령으로만**) | cp949 에서 `UnicodeEncodeError` 로 supervisor 가 죽어 collector 가 고아가 될 뻔했다 |
 | 5 | 워커가 낸 숫자 중 내가 안 돌린 것 | 인용할 때 **`[미재현]` 병기** (사용자 결정 2026-08-14) |
 
+> ### ★ 게이트 4 는 `grep -P` 로 하지 마라 — **거짓 통과가 난다**
+>
+> 2026-08-14 에 당했다. `grep -nP '[^\x00-\x7F]' <파일>` 을 쳤더니:
+>
+> ```
+> grep: -P supports only unibyte and UTF-8 locales
+> OK - ASCII 전용        <- 내가 붙인 || echo 가 이걸 찍었다
+> ```
+>
+> **grep 이 아예 안 돌았는데 종료코드가 0 이 아니라서 "통과" 로 찍혔다.**
+> 게이트가 자기 자신에 대해 거짓말한 것이고, 이 레포에서 가장 비싼 실패가 전부 그 모양이다.
+>
+> **바이트 단위로 세는 것만 믿어라**:
+>
+> ```bash
+> PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe -c "
+> import io,sys
+> bad=0
+> for p in ['<검사할 파일>']:
+>     raw=io.open(p,'rb').read()
+>     for i,b in enumerate(raw):
+>         if b>127:
+>             print('NON-ASCII 0x%02x at %s:%d' % (b,p,raw[:i].count(b'\n')+1)); bad+=1
+> print('non-ascii bytes =', bad); sys.exit(1 if bad else 0)"
+> ```
+>
+> **일반 규칙**: 게이트 명령에 `|| echo OK` 를 붙이지 마라. 실패와 "검사 못 함" 이
+> 같은 출구로 나온다.
+>
 > ### ★★ 함정 — 임시 워크트리에서 게이트를 돌리면 **엉뚱한 코드를 테스트한다**
 >
 > `tossmon` 은 **editable 설치**다. 각 venv 의 `__editable___tossmon_0_1_0_finder.py` 가
