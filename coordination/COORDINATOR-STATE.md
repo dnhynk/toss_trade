@@ -165,6 +165,10 @@ orca orchestration check --wait --types worker_done,escalation,question,status -
 | **S4U 전환** | 비관리자 → `Access is denied`(무변경) → 승격 후 넷 다 `S4U` → **다음 주기 실행 확인** (`10:00:53 → 10:05:53`, `sup=1 col=1`) |
 | 수집 공백 | DB 직접: **224.5 분**(05:18:55→09:03:26). **08-13 정규장 온전** — 스냅 **5,511**, 2 분 넘는 공백 **0 건** |
 | 커버리지 기준선 | `tools/d21_coverage.py` 직접 실행. top-10 **3.3 / 17.1 / 25.9%**, top-100 **2.6 / 4.7 / 8.0%** |
+| **`main` 회귀 기준선** | `3dbbf68` 에서 직접 실행 — **2,159 passed · 1 skipped · 4 deselected (428.11s, exit 0)** |
+| **PR #19 게이트 전수** | 다섯 + 추가 셋을 직접 재실행. 병합 후 상태 회귀 **2,197 passed (409.88s, exit 0)** = 2,159 + 새 테스트 38. 상세는 `AUTOMATION.md` §3-3 |
+| **판정 러너 직접 실행** | `tools/d21_verdict.py --session 2026-08-13` → 자가검사 **10/10 + 요약 둘 PASS**, 공백>60s **0**, `config_sig` distinct **1**, `rank_peak_1s` max **3**, top-10 A **0.0%** / B **19.0%**, 비용 **202**, 밴드 **판정 보류**. 대상 창(08-14) 부재 시 `exit 3` |
+| **05:10 기동 사슬** | 같은 모양의 스모크 작업을 실제 시간 트리거로 띄워 확인 — `Result=0`, `SMOKE OK`. 확인 뒤 스모크는 제거 |
 
 ### 1-2b. **남의 주장 — 내가 안 돌렸다.** 인용할 때 *"미재현"* 을 병기한다
 
@@ -187,6 +191,14 @@ orca orchestration check --wait --types worker_done,escalation,question,status -
 
 **D-21 이 커버리지를 늘렸는가** — 설계상 지금은 못 잰다. **2026-08-14 정규장이 첫 관측**이고
 판정 규칙은 `coordination/D21-COVERAGE-PREREG.md` 에 **미리** 박혀 있다.
+
+> **2026-08-14 20:3x 갱신 — 자는 준비됐고, 판정은 예약됐다.**
+>
+> - 자: `tools/d21_verdict.py` (PR #19 병합). **기대값이 소스 상수라 문서를 고쳐도 안 움직인다**
+> - 집행: schtasks `tossmon-coord-d21verdict` 가 **08-15 05:10 KST** 에 헤드리스 세션을
+>   띄우고 `coordination/specs/coord_d21_verdict_execution.md` 를 실행한다.
+>   기동 사슬은 스모크로 실측 확인했다
+> - **그래도 결과는 아무도 모른다.** 창은 22:30 에 열린다
 
 ---
 
