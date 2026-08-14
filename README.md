@@ -98,7 +98,7 @@
 
 | | 누가 고칠 수 있나 |
 |---|---|
-| **스케줄러 `LogonType=Interactive`** — 콘솔 피살 **+ 부팅 후 로그인 전까지 수집이 안 산다** | **사용자만** — `Set-ScheduledTask` 가 관리자 권한을 요구한다. **2026-08-14 에 처음 비용이 측정됐다 (아래)** |
+| ~~스케줄러 `LogonType=Interactive`~~ | ✅ **고쳤다 (2026-08-14 10:01)** — 넷을 **S4U** 로 바꿨다. 이제 로그인 없이 돈다. 경위·검증은 아래 |
 | ~~텔레메트리 `limit_header_clamped` 가 로그와 어긋남~~ | ✅ **닫힘 (2026-08-13, `cbc3b08`)** — 어긋난 적이 없었다. 진짜 결함은 `counter_scope` 오선언 (`docs/56` §9) |
 | ~~`srv_s_unknown` 이 0 이 아니다~~ | ✅ **닫힘 (2026-08-13, `7b91ff9`)** — **사각지대는 429 다.** 크기는 프로세스당 최대 23·중앙 12, 정산 서버 초의 0.18%. **0 으로 안 만들었다** — 429 잔량 불신은 옳은 규칙이고 그 대가다. 다만 **무작위가 아니다**: 서버가 우리를 거절한 초에 몰려 있고 그 초에 `foreign` 이 구조적으로 0 이라 경보 넷이 조용해진다 (`docs/52` §13) |
 | `rankings_snap` 보존정책 없음 (단조 증가) | 미결. **DB 바이트의 79.8%** (`docs/60` 실측). `ranking_type`·`duration` 정수화로 41.7% 회수 가능(비가역 아님) |
@@ -150,3 +150,32 @@ ops/           supervisor · healthcheck · watchdog · 스케줄러 등록
 tools/         mock 서버 · 라이브 프로브 · 리플레이 · 각종 계측
 tests/         2,061건
 ```
+
+### → 고쳤다 (2026-08-14 10:01) — **넷을 `S4U` 로 바꿨다**
+
+사용자가 관리자 PowerShell 로 실행했다(UAC). **`Interactive` 로는 비관리자에서
+`Access is denied` 가 나는 것을 먼저 실측**했다 — 가장 덜 중요한 `tossmon-logrotate`
+하나로 시험했고 작업은 안 바뀌었다. 그래서 `COORDINATOR-STATE` §3-1 의
+*"기각이 아니라 막혔다"* 가 실측으로 확인됐다.
+
+| 작업 | 전 | 후 |
+|---|---|---|
+| `tossmon-watchdog` · `tossmon-sentinel` · `tossmon-logrotate` · `tossmon-dailyhealth` | `Interactive` | **`S4U`** |
+| `tossmon-collector-oneshot` | `Interactive` | **그대로** — 수동 일회성이고 워치독 복구 경로가 아니다(`launch_collector.cmd` 직접 호출) |
+
+**바꾸고 끝내지 않았다** — `S4U` 는 *"Log on as batch job"* 권한이 없으면 **조용히 안
+돈다**. 그러면 지금보다 나빠지므로 다음 주기를 실제로 기다려 확인했다:
+
+```
+watchdog LastRun 10:00:53 -> 10:05:53   (정시, 5 분 주기 유지)
+heartbeat mtime  10:00:56 -> 10:05:54
+watchdog.log 10:05:54  sup=1 col=1 session=day col_up=2996s
+sentinel     10:02:54  sentinel OK (watchdog heartbeat fresh)
+```
+
+**종료코드 1 은 실패가 아니다.** `ops/watchdog.ps1:1980-1982` 가 그렇게 정의한다 —
+`exit 2` = 재기동함, `exit 1` = 문제를 **기록**함, `exit 0` = 깨끗함. 지금 1 인 이유는
+08-04 의 `collector-oneshot` 결과가 236 시간 됐다는 노후 항목이고, **전환 전에도 1 이었다.**
+
+**되돌리는 법**: 전환 전 설정을 `coordination/scheduler_principals_backup_20260814.txt`
+에 받아 두었다. 관리자 PowerShell 에서 `-LogonType Interactive` 로 같은 명령을 돌리면 된다.
