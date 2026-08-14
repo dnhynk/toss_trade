@@ -148,9 +148,38 @@ gh pr create --base main --head <브랜치> --title "..." --body "..."
 | 1 | 브랜치가 `main` 을 흡수했는가 — `git merge-base --is-ancestor origin/main <브랜치>` | 안 흡수한 채 통과한 테스트는 병합 후를 대변하지 못한다 |
 | 2 | 소유 위반 — **`git diff main...<브랜치> --stat` (점 셋)** | 점 둘은 main 이 앞서면 오탐이 난다. **merge-base 기준이어야 한다** (§5-3) |
 | 3 | **전체 회귀 재실행** — 워커 워크트리 **안에서 그 워크트리의 `.venv` 로** | *"전체 통과"* 보고가 실제로는 환경 문제로 일부 미실행이었던 적이 있다 |
-| 4 | 콘솔 비 ASCII | cp949 에서 `UnicodeEncodeError` 로 supervisor 가 죽어 collector 가 고아가 될 뻔했다 |
+| 4 | 콘솔 비 ASCII (**아래 명령으로만**) | cp949 에서 `UnicodeEncodeError` 로 supervisor 가 죽어 collector 가 고아가 될 뻔했다 |
 | 5 | 워커가 낸 숫자 중 내가 안 돌린 것 | 인용할 때 **`[미재현]` 병기** (사용자 결정 2026-08-14) |
 
+> ### ★ 게이트 4 는 `grep -P` 로 하지 마라 — **거짓 통과가 난다**
+>
+> 2026-08-14 에 당했다. `grep -nP '[^\x00-\x7F]' <파일>` 을 쳤더니:
+>
+> ```
+> grep: -P supports only unibyte and UTF-8 locales
+> OK - ASCII 전용        <- 내가 붙인 || echo 가 이걸 찍었다
+> ```
+>
+> **grep 이 아예 안 돌았는데 종료코드가 0 이 아니라서 "통과" 로 찍혔다.**
+> 게이트가 자기 자신에 대해 거짓말한 것이고, 이 레포에서 가장 비싼 실패가 전부 그 모양이다.
+>
+> **바이트 단위로 세는 것만 믿어라**:
+>
+> ```bash
+> PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe -c "
+> import io,sys
+> bad=0
+> for p in ['<검사할 파일>']:
+>     raw=io.open(p,'rb').read()
+>     for i,b in enumerate(raw):
+>         if b>127:
+>             print('NON-ASCII 0x%02x at %s:%d' % (b,p,raw[:i].count(b'\n')+1)); bad+=1
+> print('non-ascii bytes =', bad); sys.exit(1 if bad else 0)"
+> ```
+>
+> **일반 규칙**: 게이트 명령에 `|| echo OK` 를 붙이지 마라. 실패와 "검사 못 함" 이
+> 같은 출구로 나온다.
+>
 > ### ★★ 함정 — 임시 워크트리에서 게이트를 돌리면 **엉뚱한 코드를 테스트한다**
 >
 > `tossmon` 은 **editable 설치**다. 각 venv 의 `__editable___tossmon_0_1_0_finder.py` 가
@@ -193,7 +222,7 @@ git checkout main && git pull --ff-only
 | # | 무엇 | 워커 | 선행조건 | 상태 |
 |---|---|---|---|---|
 | 1 | **`tools/d21_verdict.py`** — 사전등록 판정 러너 | W3 | 없음 | **진행 중** — 명세 `specs/w3_d21_verdict_runner.md`, 20:0x 에 Orca 터미널로 재배정 |
-| 2 | **D-21 커버리지 판정 집행** — `D21-COVERAGE-PREREG` §5 의 넷 | 코디네이터 | 대상 창 종료(**08-15 05:00 KST**) + #1 병합 | 대기 |
+| 2 | **D-21 커버리지 판정 집행** — `D21-COVERAGE-PREREG` §5 의 넷 | 코디네이터 | 대상 창 종료(**08-15 05:00 KST**) + #1 병합 | **예약됨** — schtasks `tossmon-coord-d21verdict` 05:10, 명세 `specs/coord_d21_verdict_execution.md` |
 | 3 | `supervisor.stdout.log` 타임스탬프 (한 줄) | W5 | #2 완료 + **휴장 창** | 대기 |
 | 4 | `docs/59` 재실행 (`config_sig` 경계 넘어 뭉치지 말 것) | W3 | #2 완료 | 대기 |
 | 5 | 프로브 D 안 발사 | W1 | #2 의 `RANKING` 정규장 첨두로 **여유 재확인** | 대기 (08-15 밤 후보) |
@@ -233,8 +262,27 @@ git checkout main && git pull --ff-only
 
 ## 6. 이 체계가 **못 하는 것** — 미리 적는다
 
-1. **시각으로 잠들었다 깨는 것을 이 문서는 안 다룬다.** #2 는 08-15 05:00 이후에야
-   가능한데, 그 시각에 세션을 깨우는 장치는 아직 정하지 않았다. **사용자 결정 대기.**
+1. ~~**시각으로 잠들었다 깨는 것을 이 문서는 안 다룬다.**~~ → ✅ **닫혔다 (2026-08-14 19:5x)**
+   — 사용자 결정: **schtasks 로 헤드리스 세션.** 작업 `tossmon-coord-d21verdict` 가
+   `2026-08-15T05:10:00+09:00` 에 `tools/coord_headless.cmd` 를 띄우고, 그 런처가
+   `coordination/specs/coord_d21_verdict_execution.md` 를 읽혀 실행한다.
+
+   > **등록하고 끝내지 않았다.** 진짜 위험은 *"작업 스케줄러가 띄운 비대화형 세션에서
+   > `claude.exe` 가 인증이 되는가"* 였고, 안 되면 05:10 에 **조용히** 실패한다.
+   > 그래서 같은 모양의 스모크 작업을 **실제 시간 트리거로** 띄워 확인했다
+   > (`schtasks /run` 은 이 레포에서 금지다 — Ctrl+C 가 전파돼 두 번 죽었다):
+   >
+   > ```
+   > tossmon-coord-smoke   LastRun=2026-08-14 19:55:37   Result=0
+   > out/coord_smoke2.log  ->  SMOKE OK
+   > ```
+   >
+   > 확인 뒤 스모크 작업은 제거했다. 남은 것은 05:10 하나뿐이다.
+
+   **남은 위험 둘**: (가) `LogonType=Interactive` 라 **재부팅이 끼면 로그인 전까지 안
+   돈다** — S4U 는 등록에 관리자가 필요하고, 비대화형에서 `claude` 인증이 되는지 확인
+   안 됐다. (나) **일회성 트리거라 실패해도 재시도가 없다.** 둘 다 대비책은 같다 —
+   아침에 사용자가 세션을 열면 그 자리에서 집행한다.
 2. **워커가 라이브 API 를 못 쏘게 막는 것은 명세뿐이다.** 강제 장치가 아니다
 3. **`w5-ops` 배정 금지는 규율이지 잠금장치가 아니다.** 라이브 워크트리를 실수로
    건드리는 것을 기계가 막지 않는다
