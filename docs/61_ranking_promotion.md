@@ -668,3 +668,86 @@ python tools/mutation_ranking_promotion.py
 # 계상 게이트는 안 흔들렸다 (기본 인자 그대로)
 python tools/mutation_accounting.py
 ```
+
+---
+
+## 11. 배포 — 2026-08-14 09:16 KST (휴장 창). **코디네이터가 직접 실행하고 확인했다**
+
+### 11-1. 무엇을 켰나
+
+사용자 결정 (2026-08-14): **랭킹 타입 = 토스 거래량 · 좌석 2 석.**
+코디네이터 결정: **안 A(재배분)** · `rotate` · `hold_s` 300 · `cooldown_s` 600 · `top_n` 10.
+
+```yaml
+ranking_promotion:
+  types: ["TOSS_SECURITIES_TRADING_VOLUME"]
+  top_n: 10
+  tier3_slots: 2
+  hold_s: 300
+  policy: "rotate"
+  cooldown_s: 600
+```
+
+**`universe.tier3_max` 는 안 건드렸다 (10 그대로) — 그래서 순증이 아니라 재배분이다.**
+**`polling.ranking_snap_s` 도 12 그대로다** — 폴 주기 5 초는 별개 안건이고 보류 상태다
+(`docs/58` §1-3, `docs/62` §8-2).
+
+### 11-2. 절차 — 확정된 규율 그대로
+
+| 단계 | 한 것 | 확인 |
+|---|---|---|
+| 1 | `config.yaml` **백업** (`config.yaml.bak-20260814-preD21`) | git 에 없는 유일본이라 필수 |
+| 2 | 절 추가 후 **수집기를 건드리기 전에** `load_config` 로 파싱 검증 | `enabled=True`, 서명 `,rkpTVOLUME@10/k2/h300s/rotate/cd600s` |
+| 3 | `w5-ops` 를 `main`(`297f049`)으로 fast-forward | **파일 내용으로 확인** — `_ranking_tier3_lane` 2 건, `RankingPromotionConfig` 1 건, `release` 1 건 |
+| 4 | `PLANNED` + `STOP` 생성 (09:13:12) | 계획 정지 표식 |
+| 5 | **정지를 파일이 아니라 데이터로 확인** | `max(snap_ms)` 가 20 초 간격 두 관측에서 동일(`09:13:12`), 프로세스 0 개 |
+| 6 | `STOP` 제거 (09:14:43) — **직접 띄우지 않았다** | 워치독이 09:15:55 에 `process_dead` 를 잡아 재기동 |
+| 7 | `PLANNED` 제거 (09:21:50) | 경보 정상 복귀 |
+
+**공백 2 분 49 초** (09:13:12 → 09:16:01), **전부 휴장 중**. 미국 개장은 22:30 KST 다.
+
+**워치독이 이 정지를 `PLANNED_` 로 찍었다** — `PLANNED_20260814_091558_watch_process_dead.txt`.
+`docs/53` 이 정한 "계획 표식은 창이 아니라 키를 덮는다" 가 의도대로 작동했다.
+
+### 11-3. 켜졌다는 증거 — 데이터로
+
+```
+09:16:01  COLLECTION-CONFIG start sig=rank3:...,rk12s,rkpTVOLUME@10/k2/h300s/rotate/cd600s
+09:21:04  telemetry session=day tier3=3 tier3_cap=4 rk_t3_seats=2 rk_t3_promotions=2
+          md_peak_1s=5 over_limit_1s=0
+```
+
+| 종목 | 승격 | 그 시각 TVOLUME 순위 | 배포 후 신규 체결 행 |
+|---|---|---|---:|
+| `RCON` | 09:18:51 | **1 위** (09:16:07) | 79 |
+| `GPUS` | 09:19:29 | **2 위** (09:16:07) | 9 |
+
+**사슬이 끝까지 이어진다**: 랭킹 상위 → `ranking_tier3` 승격(`to_tier=3`) → `trades_snap` 적재.
+
+### 11-4. ★ 아직 증명 안 된 것 — 부풀리지 않는다
+
+**이건 "커버리지가 늘었다" 의 증거가 아니다.** `RCON`·`GPUS` 는 배포 직전(09:15~09:16)까지도
+체결이 있던 종목이라 **차선이 없었어도 봤을 종목**일 수 있다.
+
+> **커버리지가 실제로 늘었는지는 정규장을 한 번 돌린 뒤 `docs/59` 러너를 재실행해야 안다.**
+> 비교할 값은 §1 의 것이다 — 랭킹 top100 종목 중 테이프가 있는 비율
+> (`TOSS_..._VOLUME` **28.8%**, 2026-08-14 코디네이터 실측 1,787 중 515).
+
+### 11-5. 세션에 따라 재배분 비율이 다르다 — 인용할 때 병기할 것
+
+`tier3_max` 는 세션마다 스케일된다. 배포 직후 관측: **`day` 세션에서 `tier3_cap=4`** 다.
+
+| 세션 | `tier3_cap` | 좌석 2 석이 차지하는 비율 |
+|---|---:|---:|
+| `day`(휴장) | **4** | **50%** |
+| `regular`(정규장) | 10 | **20%** |
+
+**즉 재배분의 무게는 휴장 때 가장 무겁고 정규장에 가장 가볍다.** 우리가 재고 싶은 것은
+정규장이므로 방향은 유리하지만, **휴장 구간의 tier3 구성이 배포 전후로 크게 다르다**는
+사실은 그 구간을 분석에 쓸 때 반드시 병기해야 한다.
+
+### 11-6. 되돌리는 법
+
+`config.yaml` 의 `ranking_promotion` 절을 지우거나 `tier3_slots: 0` 으로 두면 꺼진다
+(다섯 값 중 하나라도 기본값이면 꺼짐). 백업본이
+`config/config.yaml.bak-20260814-preD21` 에 있다. **끄면 `config_sig` 도 원래대로 돌아온다.**
