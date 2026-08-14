@@ -1,0 +1,39 @@
+﻿
+
+Name      : tossmon-collector-oneshot
+Path      : \
+UserId    : dongh
+LogonType : Interactive
+RunLevel  : Limited
+State     : Ready
+
+Name      : tossmon-dailyhealth
+Path      : \
+UserId    : dongh
+LogonType : Interactive
+RunLevel  : Limited
+State     : Ready
+
+Name      : tossmon-logrotate
+Path      : \
+UserId    : dongh
+LogonType : Interactive
+RunLevel  : Limited
+State     : Ready
+
+Name      : tossmon-sentinel
+Path      : \
+UserId    : dongh
+LogonType : Interactive
+RunLevel  : Limited
+State     : Ready
+
+Name      : tossmon-watchdog
+Path      : \
+UserId    : dongh
+LogonType : Interactive
+RunLevel  : Limited
+State     : Ready
+
+
+
