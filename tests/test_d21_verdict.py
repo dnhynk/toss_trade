@@ -310,6 +310,10 @@ def _seed(db_path: Path, day: str, *, ranked10: int, tape10: int, extra100: int 
                 times = times[:gap_after] + times[gap_after + 5:]
         else:
             times = [lo + 1000 + i * 12 * SEC for i in range(max(ranked10, extra100, 1))]
+        # 스냅 수가 종목 수보다 적으면 모집단이 조용히 깎인다 — 픽스처 실수를 여기서 잡는다.
+        assert len(times) >= max(ranked10, extra100), (
+            "fixture needs >= %d snapshots to seed %d symbols, got %d"
+            % (max(ranked10, extra100), max(ranked10, extra100), len(times)))
         for i, t in enumerate(times):
             rows = [RankingRow(rank=1, symbol=syms10[i % len(syms10)], last_u=1_000_000,
                                base_u=1_000_000, change_rate=0.0, vol_qu=100,
@@ -584,6 +588,41 @@ def test_main_flags_the_boundary_between_frozen_constant_and_exact_baseline_max(
     assert rc == 0
     assert "BOUNDARY" in out
     assert "OPERATOR MUST DECIDE" in out
+
+
+def test_main_flags_the_lower_boundary_at_the_baseline_median(tmp_path, capsys, monkeypatch):
+    """얼린 17.1% 와 정확한 중앙(예: 17.1428%) 사이도 같은 틈이다. 아래쪽도 넘긴다."""
+    db = tmp_path / "t.db"
+    # 기준선 정확한 중앙 = 12/70 = 17.1428%
+    _seed(db, "2026-08-13", ranked10=70, tape10=12)
+    _patch_baseline(monkeypatch, (("2026-08-13", 70, 12, 17.14, 0),),
+                    {10: (1, 17.14, 17.14, 17.14), 100: (1, 17.14, 17.14, 17.14)})
+    # 대상 창: 380 중 65 = 17.1052% -> 얼린 17.1 이상(보류)이지만 17.1428 미만.
+    # (dense 는 60 초 간격 391 스냅이므로 종목 수는 391 을 넘을 수 없다)
+    _seed(db, "2026-08-14", ranked10=380, tape10=65, capfill=200, dense=True)
+    log = tmp_path / "collector.log"
+    log.write_text(_telemetry("2026-08-14 23:00:00,000", "sig1", 9, 3) + "\n", encoding="utf-8")
+    rc = dv.main(["--session", "2026-08-14", "--db", str(db), "--log", str(log)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "VERDICT WITHHELD" in out          # 밴드는 문서 그대로 적용된다
+    assert "BOUNDARY" in out and "baseline median" in out
+    assert "OPERATOR MUST DECIDE" in out
+
+
+def test_no_boundary_note_when_the_value_is_clear_of_both_edges(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "t.db"
+    _seed(db, "2026-08-13", ranked10=70, tape10=12)
+    _patch_baseline(monkeypatch, (("2026-08-13", 70, 12, 17.14, 0),),
+                    {10: (1, 17.14, 17.14, 17.14), 100: (1, 17.14, 17.14, 17.14)})
+    _seed(db, "2026-08-14", ranked10=10, tape10=1, capfill=200, dense=True)   # 10.0%
+    log = tmp_path / "collector.log"
+    log.write_text(_telemetry("2026-08-14 23:00:00,000", "sig1", 9, 3) + "\n", encoding="utf-8")
+    rc = dv.main(["--session", "2026-08-14", "--db", str(db), "--log", str(log)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "NOT INCREASED" in out
+    assert "BOUNDARY" not in out
 
 
 def test_seeded_fixture_never_touches_the_live_worktree(tmp_path):

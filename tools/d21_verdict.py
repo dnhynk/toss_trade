@@ -476,6 +476,7 @@ def main(argv: list[str] | None = None) -> int:
             print("RESULT: NO VERDICT (baseline self-check failed). exit 2")
             return 2
         baseline_max_exact = max(pct10)
+        baseline_med_exact = prereg_median(pct10)
 
         if args.session in BASELINE_DAYS:
             print("*** NOTE: %s is a PREREG 2 BASELINE session. Everything below is a DRY RUN"
@@ -638,12 +639,21 @@ def main(argv: list[str] | None = None) -> int:
             print("[%s] %-18s -> %s" % (clause, name, text))
         print("[3-2] sim prediction for A was %.1f%% %s -- docs/61 3-1, held as a "
               "pre-registered forecast" % (SIM_PRED_A_PCT, SIM_PRED_TAG))
+        # 얼린 상수는 1 자리로 반올림된 값이라 정확한 기준선 통계와 미세하게 다르다
+        # (max 25.9 vs 25.9259, 중앙 17.1 vs 17.1428). 그 틈에 관측이 떨어지면 밴드는
+        # 문서 그대로 적용하되 틈을 숨기지 않는다.
         if B_MAX < b10 <= baseline_max_exact:
             print("[3-1] BOUNDARY: %.4f%% is above the frozen constant %.1f%% but NOT above the"
                   % (b10, B_MAX))
             print("      exact recomputed baseline max %.4f%%. The frozen constant was applied"
                   % baseline_max_exact)
             print("      as written. OPERATOR MUST DECIDE whether that is the intended reading.")
+        if B_MED <= b10 < baseline_med_exact:
+            print("[3-1] BOUNDARY: %.4f%% is at or above the frozen constant %.1f%% (-> withheld)"
+                  % (b10, B_MED))
+            print("      but BELOW the exact recomputed baseline median %.4f%% (-> not increased)."
+                  % baseline_med_exact)
+            print("      The frozen constant was applied as written. OPERATOR MUST DECIDE.")
         print("")
         print("Limits that travel with any number above (PREREG 4):")
         print("  4-1 one session against a 10-session baseline. Do not write 'confirmed'.")
