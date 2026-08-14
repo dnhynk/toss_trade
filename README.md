@@ -98,13 +98,47 @@
 
 | | 누가 고칠 수 있나 |
 |---|---|
-| 스케줄러 `LogonType=Interactive` (콘솔 피살) | **사용자만** — `Set-ScheduledTask` 가 관리자 권한을 요구한다 |
+| **스케줄러 `LogonType=Interactive`** — 콘솔 피살 **+ 부팅 후 로그인 전까지 수집이 안 산다** | **사용자만** — `Set-ScheduledTask` 가 관리자 권한을 요구한다. **2026-08-14 에 처음 비용이 측정됐다 (아래)** |
 | ~~텔레메트리 `limit_header_clamped` 가 로그와 어긋남~~ | ✅ **닫힘 (2026-08-13, `cbc3b08`)** — 어긋난 적이 없었다. 진짜 결함은 `counter_scope` 오선언 (`docs/56` §9) |
 | ~~`srv_s_unknown` 이 0 이 아니다~~ | ✅ **닫힘 (2026-08-13, `7b91ff9`)** — **사각지대는 429 다.** 크기는 프로세스당 최대 23·중앙 12, 정산 서버 초의 0.18%. **0 으로 안 만들었다** — 429 잔량 불신은 옳은 규칙이고 그 대가다. 다만 **무작위가 아니다**: 서버가 우리를 거절한 초에 몰려 있고 그 초에 `foreign` 이 구조적으로 0 이라 경보 넷이 조용해진다 (`docs/52` §13) |
 | `rankings_snap` 보존정책 없음 (단조 증가) | 미결. **DB 바이트의 79.8%** (`docs/60` 실측). `ranking_type`·`duration` 정수화로 41.7% 회수 가능(비가역 아님) |
 | 서버 20/s 의 정체 (사양 상향인가 헤더 의미 변경인가) | 미규명 — 모르면 천장을 못 올린다. **`MARKET_DATA` 도 15>10 으로 잘리는 중**이고 분당 쿼터 가설과 안 맞는다 (`docs/56` §9) |
 | **랭킹 종목의 71~99% 가 테이프에 없다** | **원인 규명됨** — 티어 승격이 랭킹과 연동이 없다 (`docs/59`). 고치는 중 (D-21) |
 | **29% 유실·16.1 초 지연의 원인** | **미규명.** 둘 다 **1 초 팔**에서 잰 값이라 우리 폴 주기의 함수가 아니다 (`docs/58` §1-1 정정). 정규장 재측정 대기 |
+
+## ★ 2026-08-14 — `LogonType=Interactive` 의 값이 처음 측정됐다 (3 시간 38 분)
+
+**윈도우 업데이트가 기계를 재부팅했고, 기계는 살아났는데 수집기는 3 시간 38 분 동안
+죽어 있었다.** 소프트웨어 결함이 아니다 — **작업이 로그인 전에는 안 돈다.**
+
+```
+05:19:06  MoUsoCoreWorker.exe (Windows Update) 가 재시작 개시   [이벤트 1074]
+05:22~25  TrustedInstaller 재시작 3 회
+05:25:06  최종 부팅 — 이후 기계는 계속 켜져 있었다 (uptime 확인)
+05:20~09:03  워치독 주기 0 회.  ← 로그인 전이라 예약작업이 안 돈다
+09:03:03  [sentinel] ALERT[CRIT] watchdog_silent      ← 사용자 로그인 직후
+09:03:07  [watchdog] watch_process_dead → RESTART outcome=OK
+09:03:20  수집기 재개
+```
+
+**자가 복구 3 층은 설계대로 작동했다** — 로그인한 뒤 **1 분 안에** 센티널이 워치독 침묵을
+잡고, 워치독이 죽은 프로세스를 잡아 되살렸다. 문제는 **그 층이 로그인 전에는 안 돈다**는 것.
+
+**오늘은 운이 좋았다.** 재부팅이 **05:19**, 미국 정규장 마감(05:00 KST) **19 분 뒤**였다.
+2026-08-13 정규장은 온전하다 (22:30:04~04:59:51 KST, 랭킹 스냅 5,511 개, **2 분 넘는 공백 0 건**).
+**다음 윈도우 업데이트가 정규장 한가운데 떨어지면 그 세션을 통째로 잃는다.**
+
+**고치는 법 (관리자 PowerShell 필요 — 코디네이터는 실행 불가)**
+
+```powershell
+# 로그인 여부와 무관하게 돌게 한다 (S4U = 비밀번호 저장 없이)
+foreach ($t in 'tossmon-watchdog','tossmon-sentinel','tossmon-logrotate','tossmon-dailyhealth') {
+  Set-ScheduledTask -TaskName $t -Principal (New-ScheduledTaskPrincipal `
+    -UserId $env:USERNAME -LogonType S4U -RunLevel Limited)
+}
+Get-ScheduledTask | ? TaskName -like '*toss*' |
+  % { [PSCustomObject]@{ Name=$_.TaskName; Logon=$_.Principal.LogonType } }
+```
 
 ## 디렉터리
 
