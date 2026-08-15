@@ -4,6 +4,14 @@
 밴드(§3)를 기계적으로 적용해서, 관측값이 어느 밴드에 떨어지는지만 찍는다. 밴드 경계는
 전부 문서를 그대로 미러링한 상수이고 각 줄에 절 번호를 병기한다.
 
+**개정 1 (D-23, 사용자 결정 2026-08-15) 반영** — 문서 §6:
+- 무효 규칙이 §3-4.1(*"60 초 넘는 공백 1 건"*)에서 §6-2(**미관측 총량** `head + tail +
+  Σmax(0, gap−60)` 이 창의 0.5% 초과)로 대체됐다
+- 밴드를 뽑는 기준선 집합이 10 세션 -> **유효 6 세션**으로 줄었다 (§6-6).
+  주 판정 아래 경계가 17.1 -> **19.0%**. **통과선 25.9% 는 안 움직였다** (§6-6a)
+- 08-14 창은 **앞으로만 적용**(§6-4) 원칙에 따라 봉인한다. 새 규칙에서 0.198% 로 유효
+  범위지만 **재판정하지 않는다** (§6-6c)
+
 무엇을 재는가
 ------------
 - **B (테이프 커버리지)** = 그 정규장에 `TOSS_SECURITIES_TRADING_VOLUME` 상위 N 위에
@@ -18,7 +26,8 @@
 - **프로브를 안 쐈다는 것은 이 도구가 증명할 수 없다** (§3-4.3). 기계로 확인 가능한
   증거만 찍고 판단은 운영자에게 넘긴다. 수집기 로그에는 프로브 흔적이 애초에 남지 않는다
   (`tools/live_probe.py` 는 별개 프로세스다) — 그래서 "창 안 0 건"은 정보가 아니다
-- **세션 하나다.** 기준선은 10 세션인데 관측은 1 세션이다 (§4-1)
+- **세션 하나다.** 기준선은 **유효 6 세션**(개정 1 로 10 -> 6)인데 관측은 1 세션이다
+  (§4-1). 교환가능성 논거가 1/11 ≈ 0.09 에서 **1/7 ≈ 0.14** 로 약해졌다 (§6-6b)
 - `md_peak_1s`·`rank_peak_1s` 는 텔레메트리 줄에 5 분마다 남는 **집계값**이다. "실제로
   초당 몇 건을 보냈나"가 아니라 "수집기가 스스로 보고한 첨두의 분포"다
 
@@ -33,8 +42,9 @@ DB 는 `mode=ro` URI 로만 연다. 라이브 API 호출 0 건. 라이브 워크
 --------
 - `0` 판정을 냈다 (밴드까지 적용)
 - `2` 기준선 자가검사 불일치 -> 판정 없음. 사전등록된 기준선을 재현 못 하면 자가 아니다
-- `3` 대상 창 데이터 부재/부분 -> 판정 없음 (§3-4.4: 부분 데이터로 표를 만들지 않는다)
-- `4` §3-4 무효 조건 -> 판정 없음, 밴드 없음
+- `3` 대상 창 데이터 부재 -> 판정 없음 (§3-4.4: 부분 데이터로 표를 만들지 않는다)
+- `4` 무효 조건 -> 판정 없음, 밴드 없음. §6-2(미관측 총량)·§3-4.2(`config_sig`)·
+      §6-4(봉인된 세션) 중 하나라도 걸린 경우다
 """
 from __future__ import annotations
 
@@ -52,16 +62,36 @@ from pathlib import Path
 # --------------------------------------------------------------------------- #
 DEFAULT_DB = "C:/Users/dongh/orca/workspaces/toss_trade/w5-ops/data/tossmon.db"
 DEFAULT_LOG = "C:/Users/dongh/orca/workspaces/toss_trade/w5-ops/data/collector.log"
-DEFAULT_SESSION = "2026-08-14"
+DEFAULT_SESSION = "2026-08-15"
 
 RT = "TOSS_SECURITIES_TRADING_VOLUME"
 KST_OFFSET_H = 9              # 로그 시각은 로컬 벽시계 KST(UTC+9)다
 WIN_START_H, WIN_START_M = 13, 30    # 정규장 = 13:30~20:00 UTC (§1)
 WIN_END_H = 20
 
-GAP_LIMIT_S = 60              # §3-4.1 — 60 초 초과 공백
+GAP_LIMIT_S = 60              # §6-2 — **정상 간격의 상한**. 폴 주기가 rk12s 라 60 초까지의
+                              # 간격은 정상으로 보고 `interior_s` 에서 면제한다.
+                              # **개정 1 에서 역할이 바뀌었다**: 이전에는 §3-4.1 의 *무효
+                              # 문턱*이었다(60 초 초과 공백이 1 건이라도 있으면 무효). 이제
+                              # 이 상수는 아무것도 판정하지 않는다 — 판정은 §6-2 의 미관측
+                              # 총량이 하고, 여기서는 면제분의 크기와 진단용 공백 목록의
+                              # 컷으로만 쓴다. **앞머리·꼬리에는 이 면제를 주지 않는다**
+                              # (§6-2 설계 근거 3)
+WINDOW_S = 23400.0            # §6-2 — 창 길이 (13:30~20:00 UTC = 6.5 시간)
+UNOBS_FRAC_LIMIT = 0.005      # §6-2 — 미관측 총량이 창의 0.5%(117.0 초)를 넘으면 무효.
+                              # 사용자가 0.5 / 1 / 2% 중에서 골랐다
 COOLDOWN_S = 600              # 배포된 구성이 cd600s (§1d)
 PCT_TOL = 0.05                # 자가검사 허용 오차: 백분율 +-0.05pp, 건수는 정확히
+
+# --------------------------------------------------------------------------- #
+# 사전등록 §6-4 — 개정은 **앞으로만** 적용된다. 아래 세션은 옛 규칙으로 이미 판정이 났고
+# 새 자로 다시 재면 *"결과를 보고 자를 바꿔 다시 재기"* 가 된다 (사용자 결정).
+# 러너가 숫자는 찍되 판정을 내지 않도록 여기서 막는다
+# --------------------------------------------------------------------------- #
+SEALED_SESSIONS = {
+    "2026-08-14": "already judged INVALID under 3-4.1 (the pre-revision rule). 6-4 keeps it "
+                  "INVALID and forbids re-judging it with the revised ruler.",
+}
 
 # --------------------------------------------------------------------------- #
 # 사전등록 §2 — 얼린 기준선. **이 상수를 고치면 자가검사가 아니다**
@@ -79,14 +109,43 @@ BASELINE_TOP10 = (
     ("2026-08-12", 52, 11, 21.2, 231),
     ("2026-08-13", 58, 11, 19.0, 202),
 )
-# top-100 은 사전등록에 요약만 있다 -> 요약만 대조한다
-BASELINE_SUMMARY = {10: (10, 3.3, 17.1, 25.9), 100: (10, 2.6, 4.7, 8.0)}
 BASELINE_DAYS = tuple(r[0] for r in BASELINE_TOP10)
+
+# --------------------------------------------------------------------------- #
+# 사전등록 §6-6 — 개정 1 ②, 기준선을 새 규칙으로 재판정한 결과.
+# **§2 와 출처가 다르므로 한 자료구조로 섞지 않는다**: §2 는 데이터가 존재하기 전에 얼렸고,
+# 이 표는 규칙 커밋(`1ac0b61`, 2026-08-15 19:53:05 KST) **뒤** 19:54 에 계산됐다.
+# 그 순서가 개정의 정당성이다 (§6-3). (session, unobserved%, valid)
+# --------------------------------------------------------------------------- #
+BASELINE_UNOBS = (
+    ("2026-07-31", 2.262, False),
+    ("2026-08-03", 0.419, True),
+    ("2026-08-04", 0.637, False),
+    ("2026-08-05", 16.903, False),     # tail 3,929.5s — 창이 닫히기 65 분 전에 수집이 끝났다
+    ("2026-08-06", 0.069, True),
+    ("2026-08-07", 0.876, False),
+    ("2026-08-10", 0.064, True),       # 통과선 25.9% 를 만든 세션. 새 규칙에서도 유효하다
+    ("2026-08-11", 0.026, True),
+    ("2026-08-12", 0.030, True),
+    ("2026-08-13", 0.055, True),
+)
+
+# top-100 은 사전등록에 요약만 있다 -> 요약만 대조한다.
+# **개정 1**: 밴드를 뽑는 집합이 §6-6 의 유효 6 세션으로 줄었다. 아래가 현행 정본이다
+BASELINE_SUMMARY = {10: (6, 8.6, 19.0, 25.9), 100: (6, 4.5, 6.0, 8.0)}
+# 개정 전 (§2 요약, 10 세션 전체). **버리지 않는다** — 무엇이 어떻게 바뀌었는지가 사라진다.
+# 10 행이 전부 맞으면 이 요약은 그 값들의 순수 함수라 여기서 어긋나면 min/median/max 쪽
+# 버그라는 뜻이다. 그래서 계속 검사한다 (밴드는 여기서 뽑지 않는다)
+BASELINE_SUMMARY_PREREV = {10: (10, 3.3, 17.1, 25.9), 100: (10, 2.6, 4.7, 8.0)}
 
 # --------------------------------------------------------------------------- #
 # 사전등록 §3 밴드 경계 — 문서를 그대로 미러링한 상수. 여기서만 끌어온다
 # --------------------------------------------------------------------------- #
-B_MAX, B_MED = 25.9, 17.1              # §3-1 주 판정 (top-10, B)
+B_MAX, B_MED = 25.9, 19.0              # §6-6a 주 판정 (top-10, B). **개정 1 로 갱신**.
+                                       # 통과선 25.9 는 한 톨도 안 움직였다 — 그것을 만든
+                                       # 08-10 이 새 규칙에서도 유효하기 때문이다. 움직인
+                                       # 것은 아래 경계 하나이고 더 엄격해진 방향이다
+B_MED_PREREV = 17.1                    # 개정 전 아래 경계 (n=10). 병기용, 판정에 안 쓴다
 A_SIM_HI, A_SIM_LO, A_WRONG = 65.0, 45.0, 25.0   # §3-2 시뮬 대조 (top-10, A)
 COST_LO, COST_HI = 155, 246            # §3-3 비용 (07-31 의 0 은 제외한 범위)
 
@@ -233,11 +292,42 @@ def scan_log(log: Path, lo_ms: int, hi_ms: int) -> dict:
 # 순수 로직 — 공백·쿨다운·분포
 # --------------------------------------------------------------------------- #
 def find_gaps(sorted_ms: list[int], limit_s: int) -> list[tuple[int, int, float]]:
-    """연속 차가 limit_s 를 **초과**하는 자리. (앞, 뒤, 초) 목록."""
+    """연속 차가 limit_s 를 **초과**하는 자리. (앞, 뒤, 초) 목록.
+
+    **개정 1 이후로 이 함수는 판정하지 않는다** (§6-2). 공백 목록은 여전히 쓸모 있으므로
+    진단 출력에 남긴다 — 어디서 얼마나 놓쳤는지는 총량만으로는 안 보인다.
+    """
     limit_ms = limit_s * 1000
     return [(sorted_ms[i - 1], sorted_ms[i], (sorted_ms[i] - sorted_ms[i - 1]) / 1000.0)
             for i in range(1, len(sorted_ms))
             if sorted_ms[i] - sorted_ms[i - 1] > limit_ms]
+
+
+def unobserved_breakdown(sorted_ms: list[int], lo: int, hi: int,
+                         limit_s: int) -> tuple[float, float, float]:
+    """§6-2 미관측 시간 분해 -> `(head_s, tail_s, interior_s)`.
+
+    ```
+    head_s     = (S[0]  - lo) / 1000
+    tail_s     = (hi - S[-1]) / 1000
+    interior_s = sum over consecutive pairs of  max(0, (S[i+1]-S[i])/1000 - limit_s)
+    ```
+
+    **앞머리·꼬리는 전액 센다** — `limit_s` 면제를 거기 주지 않는다. §6-2 설계 근거 3:
+    사용자가 0.5% 문턱을 고를 때 본 숫자가 전액 계산 기준(08-14 = 0.20%)이었고, 뒤에 식을
+    바꾸면 사용자가 판단한 근거와 다른 자가 된다. (면제를 주는 변형이면 08-14 는 0.144%
+    이고 판정은 둘 다 같다 — 그래도 안 쓴다.)
+
+    스냅이 하나도 없으면 `S[0]` 이 없다. 그때는 **창 전체가 미관측**이다 — 0 을 돌려주면
+    *"완전히 관측했다"* 는 정반대 뜻이 되므로 head 에 창 길이를 싣는다.
+    """
+    if not sorted_ms:
+        return (hi - lo) / 1000.0, 0.0, 0.0
+    head_s = (sorted_ms[0] - lo) / 1000.0
+    tail_s = (hi - sorted_ms[-1]) / 1000.0
+    interior_s = sum(max(0.0, (sorted_ms[i] - sorted_ms[i - 1]) / 1000.0 - limit_s)
+                     for i in range(1, len(sorted_ms)))
+    return head_s, tail_s, interior_s
 
 
 def cooldown_violations(rows: list[tuple[str, int]],
@@ -256,8 +346,9 @@ def cooldown_violations(rows: list[tuple[str, int]],
 def prereg_median(values: list[float]) -> float:
     """사전등록 §2 요약이 쓴 중앙값 정의 — `tools/d21_coverage.py` 와 같은 `sorted[n//2]`.
 
-    n=10 이면 두 가운데 값 중 **위쪽**이다. 이 정의로 17.1% / 4.7% 가 얼려 있으므로
-    통계적 중앙값(두 값의 평균)으로 바꾸면 사전등록 요약을 재현하지 못한다.
+    짝수 n 이면 두 가운데 값 중 **위쪽**이다. 이 정의로 §2 의 17.1% / 4.7% (n=10) 와
+    §6-6 의 19.0% / 6.0% (n=6) 가 얼려 있으므로 통계적 중앙값(두 값의 평균)으로 바꾸면
+    사전등록 요약을 재현하지 못한다.
     """
     vs = sorted(values)
     return vs[len(vs) // 2]
@@ -278,15 +369,15 @@ def histogram(values: list[int]) -> str:
 # 사전등록 §3 밴드 — 판단이 아니라 얼린 규칙의 적용이다
 # --------------------------------------------------------------------------- #
 def band_tape_b(pct: float) -> tuple[str, str]:
-    """§3-1 주 판정 (top-10, 테이프 커버리지 B)."""
+    """§3-1 주 판정 (top-10, 테이프 커버리지 B). **경계는 §6-6a 가 갱신했다.**"""
     if pct > B_MAX:
         return ("INCREASED (above baseline max %.1f%%) -- carry the 3-4 limits with it" % B_MAX,
-                "3-1")
+                "6-6a")
     if pct >= B_MED:
         return ("VERDICT WITHHELD (inside baseline spread %.1f-%.1f%%) -- do NOT write "
-                "'increased'" % (B_MED, B_MAX), "3-1")
+                "'increased'" % (B_MED, B_MAX), "6-6a")
     return ("NOT INCREASED (below baseline median %.1f%%) -- itself demands an explanation "
-            "(3-3)" % B_MED, "3-1")
+            "(3-3)" % B_MED, "6-6a")
 
 
 def band_seat_a(pct: float) -> tuple[str, str]:
@@ -365,7 +456,7 @@ def reason_rows(cur, reason: str, lo: int, hi: int) -> list[tuple[str, int]]:
 
 
 def snap_ms_list(cur, lo: int, hi: int, ranking_type: str | None = None) -> list[int]:
-    """창 안 distinct `snap_ms`. `ranking_type=None` 이면 §3-4.1 이 말하는 전 타입 합집합."""
+    """창 안 distinct `snap_ms`. `ranking_type=None` 이면 §6-2 가 승계한 전 타입 합집합."""
     if ranking_type is None:
         q, args = ("select distinct snap_ms from rankings_snap "
                    "where snap_ms between ? and ? order by snap_ms", (lo, hi))
@@ -375,22 +466,67 @@ def snap_ms_list(cur, lo: int, hi: int, ranking_type: str | None = None) -> list
     return [r[0] for r in cur.execute(q, args).fetchall()]
 
 
+def session_unobserved(cur, day: str) -> tuple[float, float, float, float, float]:
+    """한 세션의 §6-2 값 -> `(head_s, tail_s, interior_s, unobserved_s, unobserved_frac)`.
+
+    자가검사(§6-6 재판정 대조)와 대상 창이 **같은 함수**를 쓰게 해서 정의가 어긋나지
+    않게 한다 — §6-6 의 계산도 이 러너의 함수를 그대로 import 해서 돌렸다.
+    """
+    lo, hi = window_ms(day)
+    head_s, tail_s, interior_s = unobserved_breakdown(
+        snap_ms_list(cur, lo, hi), lo, hi, GAP_LIMIT_S)
+    unobs_s = head_s + tail_s + interior_s
+    return head_s, tail_s, interior_s, unobs_s, unobs_s / WINDOW_S
+
+
 # --------------------------------------------------------------------------- #
 # [0] 기준선 자가검사 — 사전등록된 기준선을 재현 못 하는 자는 자가 아니다
 # --------------------------------------------------------------------------- #
+def _summary_line(label: str, vals: list[float], expected: tuple, note: str) -> bool:
+    """요약 한 줄을 찍고 얼린 값과 맞는지 돌려준다. `vals` 가 비면 무조건 불일치다."""
+    e_n, e_min, e_med, e_max = expected
+    if vals:
+        got = (len(vals), min(vals), prereg_median(vals), max(vals))
+        ok = (got[0] == e_n and abs(got[1] - e_min) <= PCT_TOL
+              and abs(got[2] - e_med) <= PCT_TOL and abs(got[3] - e_max) <= PCT_TOL)
+    else:
+        got, ok = (0, 0.0, 0.0, 0.0), False
+    print("%-28s n=%-2d min=%.1f%% med=%.1f%% max=%.1f%%   expected n=%d/%.1f/%.1f/%.1f   %-8s %s"
+          % (label, got[0], got[1], got[2], got[3], e_n, e_min, e_med, e_max,
+             "OK" if ok else "MISMATCH", note))
+    return ok
+
+
 def run_self_check(cur) -> tuple[bool, list[float], list[float]]:
-    """§2 기준선 재계산 후 얼린 값과 대조. (통과 여부, top-10 %, top-100 %)."""
+    """§2 기준선 + §6-6 재판정을 재계산해 얼린 값과 대조.
+
+    반환하는 백분율 목록은 **유효 세션만**이다 — 밴드를 뽑는 집합이 §6-6 에서 유효 6 세션
+    으로 바뀌었기 때문이다. 표는 10 행을 전부 찍는다: 그건 *"DB 가 안 변했는가"* 를 보는
+    데이터 무결성 검사이고 유효/무효와 무관하다.
+
+    유효/무효는 **얼린 §6-6 의 라벨**로 가른다. 재계산값은 그 라벨과 대조만 하고 덮어쓰지
+    않는다 — 어긋나면 그건 사전등록 값이 틀렸다는 뜻이고, 조용히 고칠 일이 아니라
+    보고할 사건이다 (판정 거부 + 종료 코드 2).
+    """
     print("--- [0] BASELINE SELF-CHECK vs PREREG 2 (frozen before the data existed) ---")
-    print("    tolerance: cover%% +-%.2fpp, counts exact. window bounds inclusive (BETWEEN),"
+    print("    + PREREG 6-6 re-judgement (computed AFTER the rule commit 1ac0b61, 19:53:05)")
+    print("    tolerance: cover%% / unobs%% +-%.2fpp, counts exact. bounds inclusive (BETWEEN),"
           % PCT_TOL)
-    print("    median = sorted[n//2] (upper of the two middles at n=10) -- the definition")
-    print("    that produced the frozen 17.1% / 4.7%.")
+    print("    median = sorted[n//2] (upper of the two middles) -- the definition that froze")
+    print("    17.1%/4.7% at n=10 and 19.0%/6.0% at n=6.")
+    print("    The 10-row table is a DATA-INTEGRITY check and is independent of valid/invalid;")
+    print("    only the SUMMARY is drawn from the valid subset (6-6). That is why 10 rows are")
+    print("    printed but 6 feed the bands -- the valid column below shows which.")
     print("")
-    print("%-12s %7s %7s %8s %10s   %-22s %s"
-          % ("session", "ranked", "w/tape", "cover%", "capfill3", "expected", "check"))
+    print("%-12s %7s %7s %8s %9s %9s %8s   %-24s %s"
+          % ("session", "ranked", "w/tape", "cover%", "capfill3", "unobs%", "valid",
+             "expected cov/cap/unobs", "check"))
+    frozen_unobs = {d: (u, v) for d, u, v in BASELINE_UNOBS}
     bad: list[str] = []
     pct10: list[float] = []
     pct100: list[float] = []
+    valid10: list[float] = []
+    valid100: list[float] = []
     for day, e_ranked, e_tape, e_pct, e_cap in BASELINE_TOP10:
         lo, hi = window_ms(day)
         cap = capacity_fill_count(cur, lo, hi)
@@ -401,7 +537,12 @@ def run_self_check(cur) -> tuple[bool, list[float], list[float]]:
 
         syms100 = population(cur, 100, lo, hi)
         tape100 = tape_covered(cur, syms100, lo, hi)
-        pct100.append(100.0 * tape100 / len(syms100) if syms100 else 0.0)
+        pct100_v = 100.0 * tape100 / len(syms100) if syms100 else 0.0
+        pct100.append(pct100_v)
+
+        head, tail, inter, _unobs_s, frac = session_unobserved(cur, day)
+        unobs_pct = 100.0 * frac
+        got_valid = frac <= UNOBS_FRAC_LIMIT
 
         why = []
         if len(syms) != e_ranked:
@@ -412,23 +553,39 @@ def run_self_check(cur) -> tuple[bool, list[float], list[float]]:
             why.append("cover%% %.2f vs %.1f" % (pct, e_pct))
         if cap != e_cap:
             why.append("capfill3 %d!=%d" % (cap, e_cap))
-        print("%-12s %7d %7d %7.1f%% %10d   %-22s %s"
-              % (day, len(syms), tape, pct, cap, "%.1f%% / %d" % (e_pct, e_cap),
+        e_unobs, e_valid = frozen_unobs.get(day, (None, None))
+        if e_unobs is None:
+            why.append("no 6-6 row for this session")
+        else:
+            if abs(unobs_pct - e_unobs) > PCT_TOL:
+                why.append("unobs%% %.3f vs %.3f (head %.1f tail %.1f interior %.1f)"
+                           % (unobs_pct, e_unobs, head, tail, inter))
+            if got_valid != e_valid:
+                why.append("valid %s!=%s" % (got_valid, e_valid))
+            if e_valid:                       # 집합은 **얼린 라벨**로 고른다
+                valid10.append(pct)
+                valid100.append(pct100_v)
+        print("%-12s %7d %7d %7.1f%% %9d %8.3f%% %8s   %-24s %s"
+              % (day, len(syms), tape, pct, cap, unobs_pct,
+                 "VALID" if got_valid else "INVALID",
+                 "%.1f%%/%d/%s" % (e_pct, e_cap,
+                                   "?" if e_unobs is None else "%.3f%%" % e_unobs),
                  "OK" if not why else "MISMATCH: " + "; ".join(why)))
         if why:
             bad.append(day)
 
-    for topn, vals in ((10, pct10), (100, pct100)):
-        e_n, e_min, e_med, e_max = BASELINE_SUMMARY[topn]
-        got = (len(vals), min(vals), prereg_median(vals), max(vals))
-        ok = (got[0] == e_n and abs(got[1] - e_min) <= PCT_TOL
-              and abs(got[2] - e_med) <= PCT_TOL and abs(got[3] - e_max) <= PCT_TOL)
-        print("summary top-%-3d n=%d min=%.1f%% med=%.1f%% max=%.1f%%   "
-              "expected n=%d/%.1f/%.1f/%.1f   %s"
-              % (topn, got[0], got[1], got[2], got[3], e_n, e_min, e_med, e_max,
-                 "OK" if ok else "MISMATCH"))
-        if not ok:
+    print("")
+    print("valid subset (6-6): %d of %d sessions. invalid ones are excluded from the summary"
+          % (len(valid10), len(BASELINE_TOP10)))
+    print("and therefore from the bands -- that is the whole point of revision 1.")
+    for topn, vals, allvals in ((10, valid10, pct10), (100, valid100, pct100)):
+        if not _summary_line("summary top-%d VALID-only" % topn, vals,
+                             BASELINE_SUMMARY[topn], "<- bands come from here (6-6)"):
             bad.append("summary top-%d" % topn)
+        if not _summary_line("   pre-revision all-session", allvals,
+                             BASELINE_SUMMARY_PREREV[topn],
+                             "[superseded by 6-6a; kept as a check on min/median/max]"):
+            bad.append("pre-revision summary top-%d" % topn)
 
     ok = not bad
     print("")
@@ -437,8 +594,10 @@ def run_self_check(cur) -> tuple[bool, list[float], list[float]]:
     if not ok:
         print("  A runner that cannot reproduce the preregistered baseline is not a ruler.")
         print("  No verdict will be emitted. Fix the runner or explain the DB change first.")
+        print("  If the 6-6 columns are what disagree, do NOT edit the constants: 6-6 is the")
+        print("  authority and a disagreement is itself the finding (W3 spec 3).")
     print("")
-    return ok, pct10, pct100
+    return ok, valid10, valid100
 
 
 # --------------------------------------------------------------------------- #
@@ -471,12 +630,13 @@ def main(argv: list[str] | None = None) -> int:
     con = sqlite3.connect("file:%s?mode=ro" % db_path.as_posix(), uri=True)
     cur = con.cursor()
     try:
-        ok, pct10, _ = run_self_check(cur)
+        ok, pct10_valid, _ = run_self_check(cur)
         if not ok:
             print("RESULT: NO VERDICT (baseline self-check failed). exit 2")
             return 2
-        baseline_max_exact = max(pct10)
-        baseline_med_exact = prereg_median(pct10)
+        # 밴드를 뽑는 집합은 §6-6 의 유효 6 세션이다 (개정 1). 정확값은 그 집합에서 낸다
+        baseline_max_exact = max(pct10_valid)
+        baseline_med_exact = prereg_median(pct10_valid)
 
         if args.session in BASELINE_DAYS:
             print("*** NOTE: %s is a PREREG 2 BASELINE session. Everything below is a DRY RUN"
@@ -484,8 +644,8 @@ def main(argv: list[str] | None = None) -> int:
             print("*** of the target path on real rows -- it is NOT a verdict on D-21.")
             print("")
 
-        # ---- [1] 대상 창 데이터 존재 (§3-4.4) ----
-        print("--- [1] TARGET WINDOW: DATA PRESENCE (3-4.4) ---")
+        # ---- [1] 대상 창 데이터 존재 + §6-2 미관측 시간 ----
+        print("--- [1] TARGET WINDOW: DATA PRESENCE (3-4.4) + UNOBSERVED TIME (6-2) ---")
         snaps = snap_ms_list(cur, lo, hi)
         print("rankings_snap distinct snap_ms in window : %d  (all ranking_type)" % len(snaps))
         if not snaps:
@@ -493,36 +653,92 @@ def main(argv: list[str] | None = None) -> int:
             print("")
             print("The target window has NO rows. 3-4.4 says do not build a table from")
             print("partial data, so no coverage table and no bands are emitted.")
-            print("(The 2026-08-14 window opens at 22:30 KST; before that this is expected.)")
+            print("(The %s window opens at %s KST; before that this is expected.)"
+                  % (args.session, kst_str(lo)[11:16]))
             print("")
             print("RESULT: NO VERDICT (target window data absent). exit 3")
             print("elapsed: %.1fs" % (time.time() - t0))
             return 3
 
-        head_s, tail_s = (snaps[0] - lo) / 1000.0, (hi - snaps[-1]) / 1000.0
+        head_s, tail_s, interior_s = unobserved_breakdown(snaps, lo, hi, GAP_LIMIT_S)
+        unobs_s = head_s + tail_s + interior_s
+        unobs_frac = unobs_s / WINDOW_S
+        unobs_bad = unobs_frac > UNOBS_FRAC_LIMIT
         print("first snap : %sZ   (window_lo + %.1fs)" % (utc_str(snaps[0]), head_s))
         print("last  snap : %sZ   (window_hi - %.1fs)" % (utc_str(snaps[-1]), tail_s))
-        partial = head_s > GAP_LIMIT_S or tail_s > GAP_LIMIT_S
-        print("edge rule  : PARTIAL if either edge offset > %ds." % GAP_LIMIT_S)
-        print("             3-4.4 freezes no number, so the 3-4.1 threshold (%ds) is applied"
+        print("")
+        print("6-2 unobserved-time accounting -- every term is hand-checkable:")
+        print("  window_s        = %10.1f   13:30-20:00 UTC computed; frozen 6-2 value %.1f"
+              % ((hi - lo) / 1000.0, WINDOW_S))
+        print("  head_s          = %10.1f   = (S[0] - lo)/1000        counted in FULL"
+              % head_s)
+        print("  tail_s          = %10.1f   = (hi - S[-1])/1000       counted in FULL"
+              % tail_s)
+        print("  interior_s      = %10.1f   = sum of max(0, gap_s - %d) over %d pairs"
+              % (interior_s, GAP_LIMIT_S, max(0, len(snaps) - 1)))
+        print("  unobserved_s    = %10.1f   = head + tail + interior" % unobs_s)
+        print("  unobserved_frac = %10.6f   = %.1f / %.1f  ->  %.3f%%"
+              % (unobs_frac, unobs_s, WINDOW_S, 100.0 * unobs_frac))
+        print("  rule (6-2)      : INVALID iff unobserved_frac > %.3f  (%.1f%% = %.1fs)"
+              % (UNOBS_FRAC_LIMIT, 100.0 * UNOBS_FRAC_LIMIT, UNOBS_FRAC_LIMIT * WINDOW_S))
+        print("=> %s" % ("OVER BUDGET (6-2 INVALID)" if unobs_bad else "WITHIN BUDGET"))
+        print("   head/tail get NO %ds exemption (6-2 rationale 3): the user chose 0.5%%"
               % GAP_LIMIT_S)
-        print("             to the edges -- a session that starts late IS a collection gap.")
-        print("=> %s" % ("PARTIAL DATA" if partial else "NOT PARTIAL"))
+        print("   against numbers computed that way, and changing the formula afterwards")
+        print("   would make it a different ruler than the one the choice was made on.")
         print("")
 
-        # ---- [2] 무효 조건 (§3-4) ----
-        print("--- [2] INVALIDATION CONDITIONS (3-4) ---")
+        # 3-4.4 가장자리 규칙과의 겹침 — W3 결정 (명세 2-1). 근거를 출력에 남긴다
+        edge_over = head_s > GAP_LIMIT_S or tail_s > GAP_LIMIT_S
+        print("W3 DECISION on the 3-4.4 edge rule (spec 2-1): FOLDED INTO 6-2, KEPT AS A LABEL")
+        print("  Before revision 1 this runner invalidated when head or tail exceeded %ds."
+              % GAP_LIMIT_S)
+        print("  That test was DERIVED, not frozen: 3-4.4 fixes no number, and the runner")
+        print("  borrowed 3-4.1's to close the hole where 3-4.1 saw only interior gaps.")
+        print("  6-2 now closes that same hole directly and by name (6-1 cites the 08-05")
+        print("  tail of 3,929.5s). Keeping both would stack 'and no single edge > %ds' on"
+              % GAP_LIMIT_S)
+        print("  top of the 0.5% the user picked -- a stricter rule nobody wrote: a 100s")
+        print("  late start is 0.427%, inside budget, yet would still be invalidated.")
+        print("  6-5 keeps 3-4.4 unchanged, and 3-4.4 as written is a consequence clause")
+        print("  ('do not build a table from partial data'), which this runner still obeys:")
+        print("  an INVALID window emits no coverage table and no band. See [2](4).")
+        print("  label only, decides nothing: head/tail vs the %ds normal interval -> %s"
+              % (GAP_LIMIT_S, "AN EDGE EXCEEDS IT" if edge_over else "both within it"))
+        print("")
+
+        # ---- [2] 무효 조건 (§3-4, §3-4.1 은 §6-2 로 대체) ----
+        print("--- [2] INVALIDATION CONDITIONS (3-4, with 3-4.1 replaced by 6-2) ---")
+        sealed = SEALED_SESSIONS.get(args.session)
+        print("(0) 6-4 forward-only application : %-26s %s"
+              % ("SEALED SESSION" if sealed else "not a sealed session",
+                 "TRIGGERED" if sealed else "PASS"))
+        if sealed:
+            print("      %s %s" % (args.session, sealed))
+            print("      6-6c records that the revised rule scores this window inside the")
+            print("      valid range. That line exists to CHECK THE RULE'S EFFECT, not to")
+            print("      reverse the verdict. Numbers are printed above; NO verdict follows.")
+
+        print("(1) unobserved time (6-2) : %.3f%% of window vs %.1f%% limit   %s"
+              % (100.0 * unobs_frac, 100.0 * UNOBS_FRAC_LIMIT,
+                 "PASS" if not unobs_bad else "TRIGGERED"))
         gaps = find_gaps(snaps, GAP_LIMIT_S)
-        print("(1) collection gaps > %ds : %d gap(s)                       %s"
-              % (GAP_LIMIT_S, len(gaps), "PASS" if not gaps else "TRIGGERED"))
+        print("      gap list (DIAGNOSTIC, decides nothing): %d gap(s) over %ds"
+              % (len(gaps), GAP_LIMIT_S))
         for a, b, secs in sorted(gaps, key=lambda g: -g[2])[:5]:
-            print("      %sZ -> %sZ   %.1fs" % (utc_str(a), utc_str(b), secs))
+            print("        %sZ -> %sZ   %.1fs   charged %.1fs"
+                  % (utc_str(a), utc_str(b), secs, secs - GAP_LIMIT_S))
+        print("      the struck 3-4.1 invalidated on ANY single gap here; 6-2 charges each")
+        print("      max(0, gap_s - %d) and judges the total instead. 6-1: a single-gap"
+              % GAP_LIMIT_S)
+        print("      ruler catches 61s in a 6.5h window but misses a 65-minute early stop.")
         tv = snap_ms_list(cur, lo, hi, RT)
         tv_gaps = find_gaps(tv, GAP_LIMIT_S)
         print("      diagnostic (does NOT decide): %s snaps=%d, gaps>%ds=%d."
               % (RT, len(tv), GAP_LIMIT_S, len(tv_gaps)))
-        print("      3-4.1 counts all ranking_type together, which can mask a gap in the one")
-        print("      type the population is drawn from. The line above is that check.")
+        print("      6-2 inherits 3-4.1's population (all ranking_type together), which can")
+        print("      mask a gap in the one type the population is drawn from. Above is that")
+        print("      check.")
 
         scan = scan_log(log_path, lo, hi)
         sigs = scan["sigs"]
@@ -564,15 +780,20 @@ def main(argv: list[str] | None = None) -> int:
         print("      no probe was fired. OPERATOR MUST CONFIRM (3-4.3; docs/62 8-2 says")
         print("      tonight is a no-probe night).")
 
-        print("(4) not partial data : see [1]                                %s"
-              % ("PASS" if not partial else "TRIGGERED"))
+        print("(4) not partial data : CONSEQUENCE CLAUSE, not an independent test")
+        print("      3-4.4 reads 'if any of the above trigger, do not build a table from")
+        print("      partial data'. It freezes no threshold of its own. This runner honours")
+        print("      it by emitting no coverage table and no band whenever (0)/(1)/(2) fire,")
+        print("      and by exiting 3 when the window has no rows at all. The 60s edge test")
+        print("      it used before revision 1 is folded into (1) -- rationale in [1].")
         triggered = []
-        if gaps:
-            triggered.append("3-4.1 gaps>%ds (%d)" % (GAP_LIMIT_S, len(gaps)))
+        if sealed:
+            triggered.append("6-4 sealed session (kept INVALID, not re-judged)")
+        if unobs_bad:
+            triggered.append("6-2 unobserved %.3f%% > %.1f%%"
+                             % (100.0 * unobs_frac, 100.0 * UNOBS_FRAC_LIMIT))
         if sig_bad:
             triggered.append("3-4.2 config_sig distinct=%d" % len(sigs))
-        if partial:
-            triggered.append("3-4.4 partial data")
         print("INVALIDATION: %s"
               % ("none triggered by machine checks (still subject to (3) operator confirmation)"
                  if not triggered else "TRIGGERED -- " + "; ".join(triggered)))
@@ -607,12 +828,12 @@ def main(argv: list[str] | None = None) -> int:
             print("  3-4.4: no table is built from partial data, and no band is applied.")
             print("  Defer the primary verdict to the next regular session.")
             print("")
-            print("RESULT: NO VERDICT (INVALID by 3-4). exit 4")
+            print("RESULT: NO VERDICT (INVALID). exit 4")
             print("elapsed: %.1fs" % (time.time() - t0))
             return 4
 
-        # ---- [4] 커버리지 (§1) + 밴딩 (§3) ----
-        print("--- [4] COVERAGE (PREREG 1) + BANDING (PREREG 3) ---")
+        # ---- [4] 커버리지 (§1) + 밴딩 (§3, 경계는 §6-6a) ----
+        print("--- [4] COVERAGE (PREREG 1) + BANDING (PREREG 3, edges from 6-6a) ---")
         cost = capacity_fill_count(cur, lo, hi)
         result: dict[int, tuple[int, int, float, int, float]] = {}
         print("%-8s %8s %8s %9s %8s %9s" % ("topN", "ranked", "A seats", "A cover%",
@@ -639,24 +860,39 @@ def main(argv: list[str] | None = None) -> int:
             print("[%s] %-18s -> %s" % (clause, name, text))
         print("[3-2] sim prediction for A was %.1f%% %s -- docs/61 3-1, held as a "
               "pre-registered forecast" % (SIM_PRED_A_PCT, SIM_PRED_TAG))
-        # 얼린 상수는 1 자리로 반올림된 값이라 정확한 기준선 통계와 미세하게 다르다
-        # (max 25.9 vs 25.9259, 중앙 17.1 vs 17.1428). 그 틈에 관측이 떨어지면 밴드는
-        # 문서 그대로 적용하되 틈을 숨기지 않는다.
-        if B_MAX < b10 <= baseline_max_exact:
-            print("[3-1] BOUNDARY: %.4f%% is above the frozen constant %.1f%% but NOT above the"
-                  % (b10, B_MAX))
-            print("      exact recomputed baseline max %.4f%%. The frozen constant was applied"
-                  % baseline_max_exact)
-            print("      as written. OPERATOR MUST DECIDE whether that is the intended reading.")
-        if B_MED <= b10 < baseline_med_exact:
-            print("[3-1] BOUNDARY: %.4f%% is at or above the frozen constant %.1f%% (-> withheld)"
-                  % (b10, B_MED))
-            print("      but BELOW the exact recomputed baseline median %.4f%% (-> not increased)."
-                  % baseline_med_exact)
-            print("      The frozen constant was applied as written. OPERATOR MUST DECIDE.")
+        print("[6-6a] band edges come from the VALID-6 baseline. The pass line %.1f%% did not"
+              % B_MAX)
+        print("       move in revision 1; only the lower edge did, %.1f%% -> %.1f%%, i.e. it"
+              % (B_MED_PREREV, B_MED))
+        print("       got STRICTER. Do not quote the pre-revision %.1f%% (6-5)." % B_MED_PREREV)
+        # 얼린 상수는 1 자리로 반올림된 값이라 정확한 기준선 통계와 미세하게 다르다.
+        # 그 틈에 관측이 떨어지면 밴드는 문서 그대로 적용하되 틈을 숨기지 않는다.
+        # 정확값은 **유효 6 세션**에서 낸다 (개정 1).
+        #
+        # **개정 1 에서 틈의 방향이 뒤집혔다.** 개정 전 중앙은 얼린 17.1 < 정확 17.1428
+        # 이었는데 새 중앙은 얼린 19.0 > 정확 18.9655 (= 11/58, 08-13) 다. 방향을 하나로
+        # 가정한 옛 비교는 이제 영영 발화하지 않으므로 **양방향**으로 바꾼다. 판정 구조는
+        # 그대로다 — "얼린 자와 정확한 자가 서로 다른 밴드를 주는 구간이면 운영자에게
+        # 넘긴다". 경계의 열림/닫힘은 밴드 정의를 따라간다 (`> max`, `>= median`).
+        for what, frozen, exact, in_gap in (
+                ("max", B_MAX, baseline_max_exact,
+                 min(B_MAX, baseline_max_exact) < b10 <= max(B_MAX, baseline_max_exact)),
+                ("median", B_MED, baseline_med_exact,
+                 min(B_MED, baseline_med_exact) <= b10 < max(B_MED, baseline_med_exact))):
+            if not in_gap:
+                continue
+            print("[6-6a] BOUNDARY at the baseline %s: %.4f%% falls between the frozen"
+                  % (what, b10))
+            print("      constant %.1f%% and the exact recomputed value %.4f%% (the frozen one"
+                  % (frozen, exact))
+            print("      is the %s of the two). The two rulers give different bands here; the"
+                  % ("higher" if frozen > exact else "lower"))
+            print("      frozen constant was applied as written above. OPERATOR MUST DECIDE.")
         print("")
         print("Limits that travel with any number above (PREREG 4):")
-        print("  4-1 one session against a 10-session baseline. Do not write 'confirmed'.")
+        print("  4-1 one session against a 6-session baseline (revision 1 dropped 4 of the 10).")
+        print("      Do not write 'confirmed'. 6-6b: the exchangeability argument weakens from")
+        print("      1/11 ~ 0.09 to 1/7 ~ 0.14. Do NOT cite either as a CI.")
         print("  4-2 coverage rising does not mean alpha exists (docs/58 G-2/G-3 is separate).")
         print("  4-3 tonight is D-21's first regular session; the holiday tier3_cap=4 reading")
         print("      (docs/61 11-5, 50%) does not stand in for regular (tier3_cap=10, 20%).")
