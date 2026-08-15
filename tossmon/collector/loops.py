@@ -245,6 +245,10 @@ PROC_SCOPED_COUNTERS: tuple[str, ...] = (
     # 계측기 고장이 아니다. 실제로 그것을 고장으로 보고한 적이 있다 (docs/56 §9).
     # `groups` 는 카운터가 아니라 문자열이지만 같은 수명이고 같은 오독을 만든다("-").
     "limit_header_clamped", "limit_header_lowered", "limit_header_clamped_groups",
+    # 전송 재시도 3종도 `client.counters` 라 프로세스 수명이다 (`__main__.py` 가 기동마다
+    # TossClient 를 새로 만든다). 여기 안 적으면 `retries=0` 이 "재시도가 없었다" 로
+    # 읽히는데 실제로는 "이 프로세스가 뜬 뒤로 없었다" 이고, 그 오독이 docs/56 §9 다.
+    "retries", "http_5xx", "auth_refresh",
 )
 PROC_SCOPE_FIELD = "proc:" + ",".join(PROC_SCOPED_COUNTERS) + ";rest:install"
 
@@ -1092,6 +1096,18 @@ class CollectorContext:
             "budget_shrinks": int(self.counters.get("budget_shrinks", 0)),
             "budget_restores": int(self.counters.get("budget_restores", 0)),
             "http_429": int(getattr(self.client, "counters", {}).get("http_429", 0)),
+            # 전송 계층 재시도 3종. **한 줄도 밖으로 안 나가던 값들이다** — `client.counters`
+            # 에만 있고 텔레메트리에도 상태파일에도 없었다. 2026-08-14 개장에 세 그룹
+            # (MARKET_DATA·CHART·RANKING)이 **동시에** 60초 넘게 한 건도 못 보낸 창이 두 번
+            # 났는데(`docs/63` §2), 그 창을 설명할 수 있는 유일한 코드 경로가 이 셋이 세는
+            # 자리다: `_request` 의 TransientHTTP 재시도(최대 3회, 백오프 0.5/1/2초)와
+            # 토큰 재발급이다. 토큰 재발급은 `TokenManager._alock` 을 **쥔 채** 15초 타임아웃
+            # POST 를 하므로(`tokens.py:170-182,381`) 그룹과 무관하게 전부를 세운다.
+            # 이 셋이 없으면 그 창이 "재시도였나 아니었나"를 사후에 못 가른다 — 실제로
+            # 못 갈랐다. 값이 아니라 **분모**를 만드는 필드다.
+            "retries": int(getattr(self.client, "counters", {}).get("retries", 0)),
+            "http_5xx": int(getattr(self.client, "counters", {}).get("http_5xx", 0)),
+            "auth_refresh": int(getattr(self.client, "counters", {}).get("auth_refresh", 0)),
             "events": int(self.counters.get("events", 0)),
             "promotions": int(self.counters.get("promotions", 0)),
             "tape_gaps": int(self.counters.get("tape_gaps", 0)),
