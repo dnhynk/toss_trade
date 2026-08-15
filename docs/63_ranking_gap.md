@@ -452,13 +452,24 @@ new keys present     = True
 RESULT: console-emitted telemetry line is pure ASCII
 ```
 
-**소유 위반 검사 (점 셋)**
+**소유 위반 검사 (점 셋)** — 로컬 `main` 은 낡을 수 있으므로 `origin/main` 기준으로 잰다.
 
 ```
-$ git diff main...feat/collector --stat
- docs/63_ranking_gap.md                   | (신규)
- tests/test_transport_retry_visibility.py | (신규)
- tossmon/collector/loops.py               | +16
+$ git diff origin/main...HEAD --stat
+ docs/63_ranking_gap.md                   | 464 +++++
+ docs/INDEX.md                            |   1 +
+ tests/test_transport_retry_visibility.py | 127 +++++
+ tossmon/collector/loops.py               |  16 ++
+ 4 files changed, 608 insertions(+)
 ```
 
-셋 다 명세 §4 의 "네 것" 안이다.
+**삭제 0 줄.** 셋은 명세 §4 의 "네 것" 안이다(`tossmon/collector/**` · `tests/**` 중
+내가 만든 것 · `docs/63`).
+
+> **네 번째 `docs/INDEX.md` 한 줄은 명세 §4 의 두 목록 어디에도 없다.** 그래서 왜
+> 건드렸는지 적는다: 그 파일은 **`docs/` 의 유일한 전수 목록**이고 스스로
+> *"여기 없는 문서는 `docs/` 에 없다"* 고 선언한다. `docs/63` 을 넣고 행을 안 더하면
+> 그 선언이 **거짓이 되고**, 색인 자신의 대조 스크립트가 `MISSING: ['63_ranking_gap.md']`
+> 를 낸다(실제로 냈다). 더한 뒤 다시 돌려 `MISSING: []` 를 확인했다.
+> **더한 것은 내 문서의 행 하나뿐이고 다른 행은 안 건드렸다.** 이게 월권이면 되돌려라 —
+> 되돌리는 쪽이 색인을 거짓으로 만든다는 것만 함께 적어 둔다.
