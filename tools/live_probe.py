@@ -134,6 +134,21 @@ CADENCE_PROFILES: dict[str, dict] = {
         "gain_arms": [("1s", 1.0, 120.0)],
         "call_cap": 550,
     },
+    # `--cadence-profile d` — docs/62 §8-1 의 **D 안** (사용자 결정 2026-08-13).
+    # `open` 은 두 팔 다 300 초라 각각 30 슬롯뿐이고, 그 표본으로는 분해가 안 된다
+    # (§2-2: 최소 격차 약 25pp). **슬롯은 폴 간격이 아니라 지속시간이 정하므로**
+    # 싼 팔(5s·12s)을 길게 끌어 슬롯을 산다:
+    #   - `1s` 180콜 / 18 슬롯 : 솎기(stride 1·5·12)의 대상. 짝지은 비교의 본체
+    #   - `5s` 240콜 / 120 슬롯: 폴 주기 후보를 **진짜 팔**로 돌린다
+    #   - `12s` 100콜 / 120 슬롯: 수집기가 실제로 쓰는 주기
+    # 등락률 팔은 **버린다** — 그래서 `TOP_GAINERS` 세션 의존성은 이번에도 안 갈린다
+    # (§8-1 이 감수한다고 적은 것). 총 520 + 팔 밖 9 = **529콜**, 상한 550 (여유 21).
+    # 상한은 `open` 과 같은 사전 고정값이고 **올리지 않았다**.
+    "d": {
+        "vol_arms": [("1s", 1.0, 180.0), ("5s", 5.0, 1200.0), ("12s", 12.0, 1200.0)],
+        "gain_arms": [],
+        "call_cap": 550,
+    },
 }
 
 # 마스킹 대상 필드 (계약 C-11 §5)
@@ -2279,7 +2294,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cadence-profile", default="full",
                     choices=["full", *CADENCE_PROFILES],
                     help="ranking_cadence 팔 구성. full=프리마켓 본편(876콜), "
-                         "open=정규장 축소판(453콜)")
+                         "open=정규장 축소판(454콜), d=정규장 D안(529콜/약 44분, docs/62 §8-1)")
     args = ap.parse_args(argv)
 
     global CADENCE_PROFILE
