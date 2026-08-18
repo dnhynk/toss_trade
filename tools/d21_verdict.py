@@ -213,12 +213,27 @@ def _ascii(s: str) -> str:
 # 로그 — 창이 로컬 자정(00:10 KST logrotate)을 지나가므로 회전본도 함께 읽는다
 # --------------------------------------------------------------------------- #
 def log_sources(log: Path, lo_ms: int) -> list[Path]:
-    """`collector.log` + 그 회전본 `collector.<stamp>.log.gz` 를 시간순으로.
+    """`collector.log` + 회전본(`collector.<stamp>.log.gz`, `collector.log.N`)을 시간순으로.
 
-    `ops/rotate_logs.py` 는 회전 시각의 **로컬** 스탬프(`%Y%m%d-%H%M%S`)를 붙이고, 그 파일은
-    그 시각까지의 줄만 담는다. 그러므로 stamp < 창 시작이면 창 밖이라 건너뛴다.
-    스탬프 형식을 강제해야 `collector.stdout.<stamp>.log.gz` 같은 **다른 논리 파일**이
-    섞이지 않는다 (같은 디렉터리에 실제로 있다).
+    **회전 방식이 둘이고, 둘 다 봐야 한다.** `ops/rotate_logs.py` 는 스탬프 + `.gz` 를
+    만들지만 Windows 에서 수집기가 파일을 잡고 있어 `rename` 이 거의 항상
+    `PermissionError` 로 죽는다 (성공한 단 한 번은 프로세스가 죽어 있던 2026-08-04).
+    **실제로 일어나는 회전**은 수집기 자신의 `RotatingFileHandler`
+    (`tossmon/collector/notifier.py`, 32 MiB · backupCount=3) 이고 그 산출물은
+    `collector.log.1` · `.2` · `.3` 이다. 번호 백업을 빼면 창이 회전 경계를 넘었을 때
+    조용히 `telemetry=0` 이 되어 유효한 창이 무효로 나온다 (2026-08-17 창이 그랬다).
+
+    `.gz` 는 회전 시각의 **로컬** 스탬프(`%Y%m%d-%H%M%S`)를 이름에 달고 그 시각까지의
+    줄만 담으므로, stamp < 창 시작이면 창 밖이라 건너뛴다. **번호 백업은 이름에 시각이
+    없다** — 건너뛰기를 흉내내지 않고 그냥 읽는다 (최대 3 개, 비용 무시 가능).
+    mtime 으로 거르면 회전 뒤 mtime 이 바뀌는 환경에서 또 조용히 틀린다.
+
+    두 경우 다 이름을 강제해야 `collector.stdout.log` · `collector.stdout.<stamp>.log.gz`
+    같은 **다른 논리 파일**이 섞이지 않는다 (같은 디렉터리에 실제로 있다).
+
+    순서: 오래된 것부터. `.gz`(스탬프 오름차순) -> 번호 백업(`.3`,`.2`,`.1`) -> 살아 있는
+    로그. `RotatingFileHandler` 는 회전마다 번호를 밀어올리므로 **`.1` 이 `.2` 보다 새 것**
+    이고, 번호 백업은 살아 있는 로그 바로 앞 구간이다.
     """
     pat = re.compile(r"^" + re.escape(log.stem) + r"\.(\d{8}-\d{6})"
                      + re.escape(log.suffix) + r"\.gz$")
@@ -237,6 +252,16 @@ def log_sources(log: Path, lo_ms: int) -> list[Path]:
             continue
         rotated.append((stamp, p))
     out = [p for _, p in sorted(rotated)]
+
+    # 번호 백업 `collector.log.N` — `log.name` 전체를 강제해 `collector.stdout.log.N` 배제.
+    num = re.compile(r"^" + re.escape(log.name) + r"\.(\d+)$")
+    backups: list[tuple[int, Path]] = []
+    for p in log.parent.glob(log.name + ".*"):
+        m = num.match(p.name)
+        if m:
+            backups.append((int(m.group(1)), p))
+    out += [p for _, p in sorted(backups, reverse=True)]   # .3 -> .2 -> .1 = 오래된 것부터
+
     if log.exists():
         out.append(log)
     return out
@@ -610,8 +635,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--session", default=DEFAULT_SESSION,
                     help="target session YYYY-MM-DD (UTC date; default %s)" % DEFAULT_SESSION)
     ap.add_argument("--db", default=DEFAULT_DB, help="sqlite db (opened mode=ro)")
-    ap.add_argument("--log", default=DEFAULT_LOG, help="collector.log (rotated .gz siblings "
-                                                       "are merged in)")
+    ap.add_argument("--log", default=DEFAULT_LOG, help="collector.log (rotated siblings -- "
+                                                       ".gz stamps and .1/.2/.3 -- are merged in)")
     args = ap.parse_args(argv)
 
     t0 = time.time()
