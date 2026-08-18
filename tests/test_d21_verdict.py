@@ -99,6 +99,50 @@ def test_log_sources_takes_rotated_gz_skips_old_and_foreign(tmp_path):
     assert older not in got and foreign not in got
 
 
+def test_log_sources_takes_numbered_backups_newest_last_and_skips_stdout(tmp_path):
+    """`RotatingFileHandler` 번호 백업(`collector.log.N`)도 창에 들어와야 한다.
+
+    2026-08-17 창이 통째로 `collector.log.1` 에 들어가 있었는데 러너가 그 이름을 몰라
+    `telemetry=0` -> `3-4.2 config_sig distinct=0` 으로 유효한 창이 무효가 났다.
+    `.1` 이 `.2` 보다 **새 것**이므로 순서는 `.2` -> `.1` -> 살아 있는 로그다.
+    """
+    lo, _ = dv.window_ms("2026-08-14")
+    log = tmp_path / "collector.log"
+    log.write_text("live\n", encoding="utf-8")
+    b1 = tmp_path / "collector.log.1"          # 살아 있는 로그 바로 앞 구간
+    b2 = tmp_path / "collector.log.2"          # 그보다 앞
+    for q in (b1, b2):
+        q.write_text("x\n", encoding="utf-8")
+    gz = tmp_path / "collector.20260815-001000.log.gz"     # 창 안 .gz 회전
+    _write_gz(gz, ["x"])
+    stdout = tmp_path / "collector.stdout.log"             # 다른 논리 파일
+    stdout_b1 = tmp_path / "collector.stdout.log.1"        # 그 번호 백업
+    for q in (stdout, stdout_b1):
+        q.write_text("x\n", encoding="utf-8")
+
+    got = dv.log_sources(log, lo)
+    assert got == [gz, b2, b1, log]
+    assert stdout not in got and stdout_b1 not in got
+
+
+def test_scan_log_merges_telemetry_from_a_numbered_backup(tmp_path):
+    """창 전체가 `collector.log.1` 에 있어도 `config_sig` 가 한 종으로 잡혀야 한다."""
+    lo, hi = dv.window_ms("2026-08-14")
+    sig = "rank3:TVOLUME@100,t3max10,rkpTVOLUME@10/k2/h300s/rotate/cd600s"
+    log = tmp_path / "collector.log"
+    log.write_text("", encoding="utf-8")       # 회전 직후: 살아 있는 로그는 비어 있다
+    (tmp_path / "collector.log.1").write_text("\n".join([
+        _telemetry("2026-08-14 23:00:00,000", sig, 7, 3),
+        _telemetry("2026-08-15 01:00:00,000", sig, 10, 3),
+        _telemetry("2026-08-15 06:00:00,000", sig, 99, 99),   # 창 밖 (05:00 KST 이후)
+    ]) + "\n", encoding="utf-8")
+
+    got = dv.scan_log(log, lo, hi)
+    assert got["telemetry"] == 2
+    assert list(got["sigs"]) == [sig] and got["sigs"][sig] == 2
+    assert got["md"] == [7, 10]
+
+
 def test_scan_log_merges_telemetry_across_the_0010_kst_rotation(tmp_path):
     lo, hi = dv.window_ms("2026-08-14")
     sig = "rank3:TVOLUME@100,t3max10,rkpTVOLUME@10/k2/h300s/rotate/cd600s"
