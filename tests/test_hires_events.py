@@ -479,3 +479,50 @@ def test_pct_table_refuses_to_invent_a_median_from_nothing():
 def test_iso_ms_round_trips_the_boundary_constants():
     for b in HE.CONFIG_BOUNDARIES:
         assert HE.ms_iso(HE.iso_ms(b["utc"])) == b["utc"]
+
+
+# --------------------------------------------------------------------------- #
+# 9. D-21 경계 — 두 시대를 뭉치지 않는다 (§11)
+# --------------------------------------------------------------------------- #
+def test_the_d21_boundary_is_a_registered_config_boundary():
+    """경계를 상수 하나로 두지 않으면 두 실행이 조용히 어긋난다."""
+    keys = {b["key"]: b["utc"] for b in HE.CONFIG_BOUNDARIES}
+    assert keys["d21_ranking_tier3"] == HE.D21_BOUNDARY_UTC
+    ev = [b["evidence"] for b in HE.CONFIG_BOUNDARIES
+          if b["key"] == "d21_ranking_tier3"][0]
+    assert ev.startswith("docs/61")
+
+
+def test_since_ms_can_never_open_the_sealed_window(db):
+    """`--since-ms` 는 창의 왼쪽 끝을 **올리기만** 한다. 바닥을 낮추면 봉인이 뚫린다."""
+    floor = HE.holdout_floor_ms()
+    res = HE.run(db, since_ms=floor - 30 * 86_400_000)
+    assert res["since_ms"] == floor
+
+
+def test_the_two_d21_windows_are_disjoint_and_leave_no_gap():
+    """`--until-d21` 은 경계 1ms 앞까지, `--since-d21` 은 경계 포함이다."""
+    b = HE.iso_ms(HE.D21_BOUNDARY_UTC)
+    assert (b - 1) + 1 == b
+
+
+def test_the_report_says_which_era_it_is(db, tmp_path):
+    """산출물 자체가 시대를 말해야 두 JSON 을 나중에 섞을 수 없다."""
+    b = HE.iso_ms(HE.D21_BOUNDARY_UTC)
+    before = HE.build_report(HE.run(db, until_ms=b - 1))
+    after = HE.build_report(HE.run(db, since_ms=b))
+    assert before["era"] == "d21_before" and after["era"] == "d21_after"
+    assert before["d21_boundary_utc"] == after["d21_boundary_utc"]
+
+
+def test_a_window_that_straddles_the_boundary_is_labelled_as_such(db):
+    """뭉친 창을 조용히 한쪽 시대로 부르지 않는다 - 그 자체를 이름으로 말한다."""
+    res = HE.run(db)
+    assert res["era"] in ("d21_before", "spans_d21_boundary")
+
+
+def test_console_names_the_era_and_forbids_merging(report, capsys):
+    rep, _out = report
+    HE.print_report(rep)
+    out = capsys.readouterr().out
+    assert "D-21 era" in out and "DO NOT merge two eras" in out

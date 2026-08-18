@@ -56,6 +56,7 @@ from tossmon.analysis import shots as S
 from tossmon.analysis.measure import decel_entry as DE
 from tossmon.analysis.measure import design_b as D
 from tossmon.analysis.measure import exit_value as V
+from tossmon.analysis.measure import ranking_forward_path as RFP
 from tossmon.analysis.measure import rotation_q1 as RQ
 from tossmon.analysis.measure import tape_cost as TC
 from tossmon.analysis.measure import tick_instrument as TI
@@ -75,7 +76,7 @@ ENTRY = "main"
 #: 열거일 수밖에 없지만(모듈은 저장소 어디에나 있을 수 있다), 모듈 **안쪽**은
 #: 전부 발견 기반이다. 목록에 넣는 것을 잊어도 새 모듈의 `main()` 이 문서 수치를
 #: 만들지 않으면 그 모듈 자체 테스트가 먼저 깨진다.
-GUARDED_MODULES = (D, V, TC, RQ, DE, TI, TT, HE)
+GUARDED_MODULES = (D, V, TC, RQ, DE, TI, TT, HE, RFP)
 
 
 def _module_source(mod=D) -> str:

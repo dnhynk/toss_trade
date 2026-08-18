@@ -136,6 +136,12 @@ MEASUREMENT_CONDITIONS = {
     "poll_5s_deployed": False,
 }
 
+#: **D-21 경계** — 랭킹 진입이 tier3 승격 사유가 된 배포 시각(`docs/61` §11).
+#: 미국 정규장은 13:30~20:00 UTC 이므로 이 경계는 **어느 정규장 안도 가르지 않는다** —
+#: 08-13 세션은 통째로 이전, 08-14 세션은 통째로 이후다. 그래서 `--since-ms` 하나로
+#: 두 구간을 갈라 **따로** 돌릴 수 있다.
+D21_BOUNDARY_UTC = "2026-08-14T00:16:01Z"
+
 #: **구성 경계.** 앞뒤로 표본을 따로 센다 — 넘어 뭉치면 표본 구성 변화를 시장 변화로
 #: 오독한다(`session.py` 의 `collector_era` 가 같은 이유로 존재한다).
 CONFIG_BOUNDARIES = (
@@ -153,6 +159,10 @@ CONFIG_BOUNDARIES = (
      "what": "accounting moved from completion time to send time; collector restarted",
      "evidence": "docs/52 section 5.5 (19:11:02 KST restart) / "
                  "coordination/daily/2026-08-12.md section 4.16"},
+    {"key": "d21_ranking_tier3", "utc": D21_BOUNDARY_UTC,
+     "what": "D-21: ranking entry becomes a tier3 promotion reason (config_sig rank3:...)",
+     "evidence": "docs/61 section 11 (09:16:01 KST deploy) / "
+                 "coordination/daily/2026-08-14.md section on the 09:13-09:16 window"},
 )
 
 #: 백분위 표에 쓰는 눈금.
@@ -731,16 +741,24 @@ def tape_gap_census(conn: sqlite3.Connection, until_ms: int) -> dict:
 # --------------------------------------------------------------------------- #
 # 러너
 # --------------------------------------------------------------------------- #
-def run(db: Path, *, until_ms: int | None = None, progress: bool = False) -> dict:
+def run(db: Path, *, since_ms: int | None = None, until_ms: int | None = None,
+        progress: bool = False) -> dict:
     """전 랭킹 타입 x 전 UTC 세션을 돌며 사건을 세고 테이프를 붙인다.
 
     `progress` 는 청크마다 한 줄을 찍는다. 러너가 수 분을 도는데 아무 말이 없으면
     다음 사람이 멈춘 줄 알고 죽인다 — 그리고 진행 줄이 **어느 청크가 비었는지**를
     표에 나오기 전에 보여 준다.
+
+    `since_ms` 는 창의 **왼쪽 끝**이다. 홀드아웃 바닥과 `max` 로 묶으므로 봉인 구간을
+    여는 데 쓸 수 없다 — 바닥을 **낮추지 못한다**. 이것을 넣은 이유는 하나다:
+    `D21_BOUNDARY_UTC` 앞뒤를 **한 실행 안에서 뭉치지 않고 두 실행으로 갈라 내기
+    위해서다**(`docs/59` §4 의 규칙을 D-21 경계까지 확장한다).
     """
     conn = open_ro(db)
     try:
         floor_ms = holdout_floor_ms()
+        if since_ms is not None:
+            floor_ms = max(floor_ms, int(since_ms))
         db_max = int(conn.execute("SELECT MAX(snap_ms) FROM rankings_snap").fetchone()[0])
         until = int(until_ms) if until_ms is not None else db_max
         meta = load_symbol_meta(conn)
@@ -810,6 +828,10 @@ def run(db: Path, *, until_ms: int | None = None, progress: bool = False) -> dic
         agg = (pd.concat(agg_parts, ignore_index=True) if agg_parts
                else pd.DataFrame(columns=list(GROUP_KEYS) + ["n"]))
         return {"db": str(db), "until_ms": until, "until_utc": ms_iso(until),
+                "since_ms": int(floor_ms), "since_utc": ms_iso(floor_ms),
+                "era": ("d21_after" if floor_ms >= iso_ms(D21_BOUNDARY_UTC)
+                        else ("d21_before" if until < iso_ms(D21_BOUNDARY_UTC)
+                              else "spans_d21_boundary")),
                 "db_max_snap_utc": ms_iso(db_max),
                 "holdout_floor_ms": floor_ms, "holdout_floor_utc": ms_iso(floor_ms),
                 "holdout_dropped": int(holdout_dropped),
@@ -909,6 +931,8 @@ def build_report(res: dict) -> dict:
     return {
         "conditions": MEASUREMENT_CONDITIONS,
         "db": res["db"], "until_utc": res["until_utc"],
+        "since_utc": res["since_utc"], "era": res["era"],
+        "d21_boundary_utc": D21_BOUNDARY_UTC,
         "db_max_snap_utc": res["db_max_snap_utc"],
         "holdout": {"floor_utc": res["holdout_floor_utc"],
                     "window": [SS.HOLDOUT_START, SS.HOLDOUT_END],
@@ -953,7 +977,10 @@ def print_report(rep: dict) -> None:
     print("hires ranking event inventory - SAMPLE COUNTS ONLY (no forward return/MFE)")
     print("=" * 78)
     print(f"db                 : {rep['db']}")
-    print(f"observed until     : {rep['until_utc']}  (db max snap {rep['db_max_snap_utc']})")
+    print(f"observed window    : {rep['since_utc']} .. {rep['until_utc']}  "
+          f"(db max snap {rep['db_max_snap_utc']})")
+    print(f"D-21 era           : {rep['era']}  (boundary {rep['d21_boundary_utc']}, "
+          f"docs/61 section 11) - DO NOT merge two eras into one number")
     print(f"holdout floor      : {rep['holdout']['floor_utc']}  "
           f"window {rep['holdout']['window'][0]}..{rep['holdout']['window'][1]}  "
           f"dropped events {rep['holdout']['dropped_events']}")
@@ -1073,6 +1100,7 @@ def print_report(rep: dict) -> None:
 
 def main(argv: list[str]) -> int:
     db = DB
+    since_ms = None
     until_ms = None
     out_dir = OUT_DIR
     args = list(argv[1:])
@@ -1081,12 +1109,20 @@ def main(argv: list[str]) -> int:
         a = args[i]
         if a == "--until-ms":
             until_ms = int(args[i + 1]); i += 2
+        elif a == "--since-ms":
+            since_ms = int(args[i + 1]); i += 2
+        elif a == "--since-d21":
+            # D-21 이후만. 경계 상수를 명령줄에 손으로 옮기지 않게 한다.
+            since_ms = iso_ms(D21_BOUNDARY_UTC); i += 1
+        elif a == "--until-d21":
+            # D-21 이전만. 경계 자신은 뒤 구간에 준다(`--since-d21` 과 겹치지 않는다).
+            until_ms = iso_ms(D21_BOUNDARY_UTC) - 1; i += 1
         elif a == "--out":
             out_dir = Path(args[i + 1]); i += 2
         else:
             db = Path(a); i += 1
     print("scanning chunks (ranking type x UTC session) ...", flush=True)
-    res = run(db, until_ms=until_ms, progress=True)
+    res = run(db, since_ms=since_ms, until_ms=until_ms, progress=True)
     rep = build_report(res)
     out_dir.mkdir(parents=True, exist_ok=True)
     p = out_dir / "hires_events.json"
