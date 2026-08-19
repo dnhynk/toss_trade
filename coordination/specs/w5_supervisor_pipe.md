@@ -46,6 +46,39 @@
 **다른 후보도 열어 둬라**: 콘솔/핸들 상속, `creationflags`, cp949 인코딩 예외,
 로그 핸들러 충돌, 파일 잠금.
 
+## 2-1. ★ 파이프 가설은 **죽었다** (코디네이터, 2026-08-20 01:1x — 코드 정독)
+
+**§2 가 "가장 유력" 이라고 적은 파이프 교착은 성립하지 않는다.** `ops/supervisor.py:79-88`:
+
+```python
+log_fh = open(self.log_path, "ab", buffering=0)
+return subprocess.Popen(
+    self.cfg.collector_cmd,
+    stdout=log_fh or subprocess.DEVNULL,
+    stderr=subprocess.STDOUT if log_fh else subprocess.DEVNULL,
+)
+```
+
+**자식 출력이 파이프가 아니라 파일 핸들로 간다.** 채울 파이프가 없으므로 자식이
+write 에서 막힐 수 없다. **§2 를 쫓지 마라.**
+
+### 대신 정독에서 나온 것 둘 — **둘 다 아직 가설이다**
+
+1. **`log_fh` 를 열고 안 닫는다.** `_spawn` 이 매 기동마다 새로 열고 어디서도 닫지 않는다.
+   재기동이 쌓이면 핸들이 샌다. **그 자체로 먹통을 설명하지는 못한다** — 다만 대상 파일이
+   **204.5 MB** 이고, `"ab"` + `buffering=0` 으로 연다
+2. **환경·cwd 는 용의자가 아니다.** `launch_collector.cmd` 가 `TOSS_BASE_URL`·`TOSS_LIVE=1`
+   을 set 하고 `cd /d "%~dp0.."` 하며, 코디네이터의 앞단 실행도 같은 값으로 했는데
+   **그쪽은 18 초 만에 정상**이었다. `collector_cmd` 도 절대경로 venv 로 올바르다(실측)
+
+### 관측 하나 더 — 먹통일 때 **stdout 에도 한 줄이 없었다**
+
+`collector.stdout.log` 의 마지막 쓰기가 **2026-08-19 21:19** 이고, 22:08 재기동으로 뜬
+프로세스 넷은 **그 파일에도 아무것도 안 썼다.** 즉 자식이 **로깅 설정 전에** 멈춘다.
+
+> **그러니 가르는 관측은 하나다: 휴장 창에서 `launch_collector.cmd` 로 실제로 띄워
+> 어디까지 가는지 보는 것.** 코디네이터는 라이브라 그것을 못 했다. 그게 네 게이트 3 이다.
+
 ## 3. 함께 볼 것 둘 (같은 사고의 다른 얼굴)
 
 1. **워치독이 자기 restart 에서 10 분을 멈춘다.** `ExecutionTimeLimit=PT10M` +
