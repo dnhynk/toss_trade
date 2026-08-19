@@ -994,14 +994,21 @@ Get-WinEvent -FilterHashtable @{LogName='System'; Id=1,41,42,107,129,153,157; ..
 
 ## 12-9. 게이트 출력 (2026-08-18)
 
+**작업 중 `origin/main` 이 세 번 움직였다.** 매번 다시 맞추고 게이트를 다시 돌렸다.
+아래가 **PR 이 실제로 올라간 base(`a358cbc`)에서의 재실행분**이다.
+
 ```
 $ git fetch origin && git merge --ff-only origin/main
-Updating b6696c7..91accee        # 1차 (명세를 읽은 리비전)
-Updating 91accee..a1cdbc2        # 2차 — 작업 중 코디네이터가 PR #33 을 병합했다.
-                                 #      충돌 없음(겹치는 파일 0), 이 base 에서 다시 돌렸다.
+Updating b6696c7..91accee        # 1차 — 명세를 읽은 리비전
+Updating 91accee..a1cdbc2        # 2차 — PR #33 병합. 겹치는 파일 0
+   (rebase onto a358cbc)         # 3차 — PR #34~#38 병합. docs/INDEX.md 충돌 1건:
+                                 #      62 행은 W1, 64 행은 W3, 63 행만 내 것으로 풀었다.
+                                 #      색인 자기 대조 재실행 -> MISSING: []
 
 $ .venv/Scripts/python.exe -m pytest -q
-2236 passed, 1 skipped, 4 deselected, 23 warnings in 355.12s (0:05:55)
+2287 passed, 1 skipped, 4 deselected, 23 warnings in 291.46s (0:04:51)
+$ echo $?
+0
 ```
 
 **명세 §5 의 기준선 "2,202 passed" 는 08-15 값이라 이 base 와 안 맞는다.**
@@ -1009,15 +1016,21 @@ $ .venv/Scripts/python.exe -m pytest -q
 옳았고 내 명세가 틀렸다"*.) 그래서 **수집 개수로 직접** 쟀다:
 
 ```
-a1cdbc2 만 (내 변경 stash + 새 테스트 파일 치움) : 2222/2226 collected
-내 변경 포함                                      : 2237/2241 collected
-                                                    차이 = +15 = 이번 추가분 전부
+origin/main (a358cbc) 만 : 2273/2277 collected (4 deselected)
+이 브랜치                : 2288/2292 collected (4 deselected)
+                           차이 = +15 = 이번 추가분 전부
 ```
 
-2,237 = 2,236 passed + 1 skipped. **줄어든 것 없음.**
+2,288 = 2,287 passed + 1 skipped. **줄어든 것 없음.**
 
-> 91accee base 에서도 한 번 돌렸다 (`2234 passed, 1 skipped`, 기준선 2,220 collected,
-> 역시 +15). **두 base 모두 +15 이고 실패 0 이다.**
+> 앞선 두 base 에서도 같은 결과였다: `91accee` 에서 2,234 passed(기준선 2,220 collected),
+> `a1cdbc2` 에서 2,236 passed(기준선 2,222 collected). **셋 다 +15 이고 실패 0 이다.**
+
+> ⚠️ **한 번 버린 실행이 있다.** `a358cbc` 게이트가 도는 중에 기준선을 재려고
+> 워크트리를 잠깐 `HEAD~1` 로 돌렸다 — 코디네이터가 `daily/2026-08-18.md` 에 적은
+> 것과 **같은 실수**다(*"테스트가 읽는 파일이 실행 중에 바뀐 셈이라 그 실행 결과는
+> 못 믿는다"*). 그 실행은 죽이고 **트리를 고정한 채 처음부터 다시 돌렸다.**
+> 위 숫자는 재실행분이고, 도는 동안 `git status` 가 `.cache/` 하나뿐임을 확인했다.
 
 **콘솔 출력 비 ASCII 검사 (바이트 단위)** — §11 과 같은 방법으로 실제 방출 줄을 만들어 셌다:
 
