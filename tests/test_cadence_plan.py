@@ -146,3 +146,69 @@ def test_docs62_quotes_the_same_call_total_as_the_code():
 def test_cadence_power_runs_and_reports_zero_live_calls():
     """계획 숫자는 재현 가능해야 한다 — 애드혹 계산이면 다음 사람이 못 검산한다."""
     assert cp.main([]) == 0
+
+
+# ============================================================ 5. D 안 (docs/62 §8-1)
+#
+# 발사하는 팔 구성이 문서와 갈라지면 "무엇을 쐈는지" 를 사후에 못 말한다.
+# 아래는 `docs/62` §8-1 이 적은 숫자를 **코드에서** 뽑아 대조한다.
+
+
+def _planned(profile: dict) -> int:
+    return (sum(int(d / g) for _l, g, d in profile["vol_arms"])
+            + sum(int(d / g) for _l, g, d in profile["gain_arms"])
+            + lp.CADENCE_FIXED_CALLS)
+
+
+def test_d_profile_is_the_arm_set_the_user_chose():
+    """§8-1: `1s×180 · 5s×1200 · 12s×1200`, `gain_arms` 제거."""
+    d = lp.CADENCE_PROFILES["d"]
+    assert d["vol_arms"] == [("1s", 1.0, 180.0), ("5s", 5.0, 1200.0),
+                             ("12s", 12.0, 1200.0)]
+    assert d["gain_arms"] == [], "§8-1 은 등락률 팔을 버린다고 적었다"
+
+
+def test_d_profile_costs_the_529_calls_the_document_pre_registered():
+    """콜 수는 **사전 등록된 숫자**다. 조용히 늘면 상한 여유가 거짓이 된다."""
+    d = lp.CADENCE_PROFILES["d"]
+    assert _planned(d) == 529, "docs/62 §4·§8-1 의 529 와 갈라졌다"
+    assert d["call_cap"] == lp.CADENCE_PROFILES["open"]["call_cap"], (
+        "상한은 사전 고정값이다 — D 안 때문에 올리지 않는다")
+    assert d["call_cap"] - _planned(d) == 21, "§4 표의 상한 여유 21 과 갈라졌다"
+
+
+def test_d_profile_buys_slots_with_duration_not_with_poll_rate():
+    """D 를 고른 **이유**가 이 표다 (§2-1). 슬롯 18/120/120."""
+    slots = {label: int(dur_s / 10.0)
+             for label, _gap, dur_s in lp.CADENCE_PROFILES["d"]["vol_arms"]}
+    assert slots == {"1s": 18, "5s": 120, "12s": 120}
+    # 싼 팔이 비싼 팔보다 슬롯을 **더** 산다 — 이것이 §2-1 의 요점이다.
+    assert slots["12s"] > slots["1s"]
+
+
+def test_d_profile_fits_the_window_the_plan_announced():
+    """§8-1 '약 44 분'. 팔 지속시간 합 + 팔 사이 숨돌리기 (§5-0 의 계산식)."""
+    d = lp.CADENCE_PROFILES["d"]
+    dur = sum(s for _l, _g, s in d["vol_arms"]) + sum(s for _l, _g, s in d["gain_arms"])
+    elapsed = dur + lp.CADENCE["arm_gap_s"] * len(d["vol_arms"])
+    assert 2400.0 <= elapsed <= 2700.0, f"약 44 분이 아니다: {elapsed}s"
+
+
+def test_d_profile_only_decimates_where_the_code_actually_decimates():
+    """솎기는 `label == "1s"` 인 팔에만 붙는다 (`probe_ranking_cadence`).
+
+    D 의 1s 팔이 180 초뿐이라 **짝지은 비교는 18 슬롯**이다 — 120 슬롯은 진짜 팔에서
+    온다. 이 둘을 섞어 적으면 검정력을 과대보고한다.
+    """
+    labels = [l for l, _g, _d in lp.CADENCE_PROFILES["d"]["vol_arms"]]
+    assert labels[0] == "1s", "솎기 대상 팔이 사라지면 표 1 이 안 나온다"
+    assert {5, 12} <= set(lp.CADENCE["strides"]), (
+        "진짜 팔과 짝지어 비교할 stride 가 없다")
+
+
+def test_docs62_quotes_the_d_arm_totals_as_the_code():
+    """문서와 코드가 갈라지면 문서가 조용히 거짓이 된다 — open 과 같은 규율."""
+    doc = (ROOT / "docs" / "62_open_cadence_plan.md").read_text(encoding="utf-8")
+    assert str(_planned(lp.CADENCE_PROFILES["d"])) in doc
+    assert "18 / 120 / 120" in doc or "18/120/120" in doc, (
+        "docs/62 가 D 의 슬롯 수를 안 적었다")
