@@ -134,6 +134,12 @@ class Clock:
         #: False 면 서버 시각을 따라가지 않는다 (가상 시계·오프라인 리플레이).
         self.sync = bool(sync)
         self._skew_alerted = False
+        #: `sleep(x)` 가 실제로 x 보다 얼마나 더 걸렸는지의 **창 최대치(ms)**.
+        #: 모든 수집 루프의 쉬는 시간이 이 한 곳을 지나므로, 이벤트 루프가 통째로 멈추면
+        #: 그 순간 자고 있던 모든 태스크의 초과분에 그 길이가 그대로 찍힌다.
+        #: `docs/63` §8-5 가 못 갈랐던 것 — *"송신만 막혔나, 루프가 통째로 막혔나"* —
+        #: 을 가르는 유일한 관측치다. 읽는 쪽(`report_telemetry`)이 창마다 0 으로 되돌린다.
+        self.sleep_lag_max_ms = 0
 
     # ---- 시각 ----------------------------------------------------------
 
@@ -145,7 +151,19 @@ class Clock:
         return self.local_now_ms() + self.offset_ms
 
     async def sleep(self, seconds: float) -> None:
-        await asyncio.sleep(max(float(seconds), 0.0))
+        want = max(float(seconds), 0.0)
+        t0 = time.monotonic()
+        await asyncio.sleep(want)
+        # 벽시계가 아니라 monotonic 이다 — NTP 보정·서버 오프셋이 섞이면 안 된다.
+        lag_ms = int((time.monotonic() - t0 - want) * 1000)
+        if lag_ms > self.sleep_lag_max_ms:
+            self.sleep_lag_max_ms = lag_ms
+
+    def take_sleep_lag_max_ms(self) -> int:
+        """창 최대치를 읽고 0 으로 되돌린다 (누적이 아니라 **창** 값이다)."""
+        value = self.sleep_lag_max_ms
+        self.sleep_lag_max_ms = 0
+        return value
 
     async def sleep_until(self, deadline_ms: int) -> None:
         await self.sleep(max(deadline_ms - self.now_ms(), 0) / 1000.0)

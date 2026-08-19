@@ -36,6 +36,7 @@ import json
 import math
 import os
 import tempfile
+import time
 from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -250,7 +251,18 @@ PROC_SCOPED_COUNTERS: tuple[str, ...] = (
     # 읽히는데 실제로는 "이 프로세스가 뜬 뒤로 없었다" 이고, 그 오독이 docs/56 §9 다.
     "retries", "http_5xx", "auth_refresh",
 )
-PROC_SCOPE_FIELD = "proc:" + ",".join(PROC_SCOPED_COUNTERS) + ";rest:install"
+#: 텔레메트리의 **창 값** — 누적이 아니라 "직전 창 안의" 값이고 읽을 때 0 으로 돌아간다.
+#:
+#: `rest:install` 은 나머지가 전부 설치 수명 누적이라고 말한다. `promotions_delta`·
+#: `demotions_delta` 는 그 말이 처음부터 틀렸고(창 델타다), 아래 두 게이지도 마찬가지다.
+#: 이름만으로는 안 갈린다 — `loop_lag_max_ms=0` 은 "지금까지 한 번도 안 밀렸다" 가
+#: 아니라 "직전 창에 안 밀렸다" 이며, 그 오독이 정확히 docs/56 §9 가 당한 것이다.
+WINDOW_SCOPED_GAUGES: tuple[str, ...] = (
+    "promotions_delta", "demotions_delta", "loop_lag_max_ms", "db_write_max_ms",
+)
+PROC_SCOPE_FIELD = ("proc:" + ",".join(PROC_SCOPED_COUNTERS)
+                    + ";window:" + ",".join(WINDOW_SCOPED_GAUGES)
+                    + ";rest:install")
 
 
 #: 이벤트 alert 를 낼 최대 검출 지연(분). 이보다 오래된 이벤트는 지금 행동할 대상이 아니라
@@ -474,6 +486,10 @@ class CollectorContext:
     #: 프로세스 수명 카운터(`http_429` 등)의 분모를 사람이 볼 수 있게 하려고.
     _started_ms: int = 0
     _max_digits_seen: int = 0
+    #: 동기 `store.*` 호출 1건의 소요 **창 최대치(ms)**. `_timed` 만 올리고
+    #: `report_telemetry` 만 읽고 0 으로 되돌린다. `loop_lag_max_ms` 와 **짝**이다:
+    #: 루프가 멈춘 것은 보이는데 이 값이 작으면 원인은 sqlite 가 아니다 (docs/63 §12).
+    _db_write_max_ms: int = 0
     _http429: int = 0
     #: client.sent_by_group 의 **그룹별** 고수위 — 재시도·실패까지 포함한 실제 HTTP
     #: 송신을 BudgetGuard 에 계상하기 위한 기준점. 전역 고수위였을 때는 동시에 도는
@@ -1204,6 +1220,18 @@ class CollectorContext:
         data["promotions_delta"] = promo - self._last_promotions
         data["demotions_delta"] = demo - self._last_demotions
         self._last_promotions, self._last_demotions = promo, demo
+        # ★ 창 게이지 둘. `telemetry()` 가 아니라 **여기서** 읽는다 — 읽으면 0 으로
+        # 돌아가므로 순수 함수인 `telemetry()` 안에 두면 부르는 횟수가 값을 바꾼다
+        # (`promotions_delta` 가 여기 있는 것과 같은 이유다).
+        #
+        # 이 둘이 짝으로 답하는 질문: **멈춘 것이 이벤트 루프인가, 아닌가.**
+        #   lag 큼 + db 큼  -> 동기 sqlite 호출이 루프를 세웠다
+        #   lag 큼 + db 작음 -> 루프는 섰는데 sqlite 가 아니다 (상태파일 쓰기·로깅·GC·
+        #                      OS 레벨 정지 — docs/63 §12 의 후보표가 남은 순서다)
+        #   lag 작음        -> 루프는 돌았다. 폴이 멈췄다면 그건 대기지 정지가 아니다
+        data["loop_lag_max_ms"] = self.clock.take_sleep_lag_max_ms()
+        data["db_write_max_ms"] = self._db_write_max_ms
+        self._db_write_max_ms = 0
         self.notifier.info("telemetry " + " ".join(f"{k}={v}" for k, v in data.items())
                            + " | " + self.budget.describe())
         self._report_repeat_not_found()
@@ -1254,8 +1282,9 @@ class CollectorContext:
 
     def _record_change(self, ch: TierChange) -> None:
         try:
-            self.store.record_promotion(ch.symbol, ch.ts_ms, ch.from_tier, ch.to_tier,
-                                        ch.reason, float(ch.score))
+            _timed(self, self.store.record_promotion,
+                   ch.symbol, ch.ts_ms, ch.from_tier, ch.to_tier,
+                   ch.reason, float(ch.score))
         except Exception as exc:
             self.bump("promotion_write_failures")      # 삼켜지던 사각 승격
             self.notifier.warn(f"record_promotion failed for {ch.symbol}: "
@@ -1460,6 +1489,27 @@ def _wire_clamp_log(ctx: CollectorContext) -> None:
                 f"clamped_total={st.get('count')}")
 
     limiter.on_clamp_change = _on_change
+
+
+def _timed(ctx: CollectorContext, fn, *args, **kwargs):
+    """동기 `store.*` 호출 1건을 재고 **창 최대치**만 남긴다. 반환값·예외는 그대로 통과.
+
+    왜 여기냐: `Store` 의 모든 쓰기는 `sqlite3` 직접 호출이고 **스레드로 넘기지 않는다**
+    (`store/writer.py` 전체에 `to_thread`/`run_in_executor` 가 없다). 그러므로 한 번의
+    `INSERT`/`COMMIT` 이 오래 걸리면 그동안 **이벤트 루프 전체가 선다** — 그룹도 락도
+    상관없이 랭킹·호가·캔들·텔레메트리가 같이 멈춘다. 그것이 2026-08-14·08-17 에
+    실제로 관측된 모양이고(docs/63 §4·§12), 그 모양을 낼 수 있는 후보 중 이 경로만
+    관측이 없었다.
+
+    `Store` 는 W2 소유라 손대지 않는다 — 호출측에서만 잰다.
+    """
+    t0 = time.monotonic()
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        ms = int((time.monotonic() - t0) * 1000)
+        if ms > ctx._db_write_max_ms:
+            ctx._db_write_max_ms = ms
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
@@ -1722,7 +1772,7 @@ async def rankings_once(ctx: CollectorContext) -> int:
                 "타입→duration 단일 출처(api/models.RANKING_DURATIONS)가 서버와 어긋났다. "
                 "이 전제가 분석의 duration 분리 근거다")
         try:
-            stored += ctx.store.insert_rankings(snap_ms, page)
+            stored += _timed(ctx, ctx.store.insert_rankings, snap_ms, page)
         except Exception as exc:                # 저장 실패가 이 폴의 나머지를 죽이면 안 된다
             # 랭킹은 과거 조회가 불가능한 유일한 데이터 — 유실은 카운터로 반드시 드러낸다
             # (docs/11 §11-1: 이번 사고는 api_errors=0 인 채 110분을 조용히 샜다).
@@ -2041,7 +2091,7 @@ async def tier2_symbol_once(ctx: CollectorContext, symbol: str) -> int:
     ctx.after_call(GROUP_CHART)
     if not page.candles:
         return 0
-    ctx.store.upsert_candles_1m(page.candles)
+    _timed(ctx, ctx.store.upsert_candles_1m, page.candles)
     new = ctx.buffer(symbol).upsert(page.candles)
     ctx.bump("candles_1m", new)
     _detect(ctx, symbol)
@@ -2075,7 +2125,7 @@ def _detect(ctx: CollectorContext, symbol: str) -> None:
     ctx.flush_changes()
     for emission in result.events:
         try:
-            ctx.store.record_event(emission.record)
+            _timed(ctx, ctx.store.record_event, emission.record)
         except Exception as exc:
             # 삼켜지던 사각 승격 (사고 분류): 이벤트 쓰기 실패도 카운터로 드러낸다.
             ctx.bump("event_write_failures")
@@ -2207,7 +2257,7 @@ async def _backfill_1m(ctx: CollectorContext, symbol: str,
         ctx.after_call(GROUP_CHART)
         if not page.candles:
             break
-        ctx.store.upsert_candles_1m(page.candles)
+        _timed(ctx, ctx.store.upsert_candles_1m, page.candles)
         total += buf.upsert(page.candles)
         oldest = int(page.candles[0].ts_ms)             # client 가 오름차순 정규화
         if stop_at_ms is not None and oldest <= int(stop_at_ms):
@@ -2275,7 +2325,7 @@ async def _refresh_baseline(ctx: CollectorContext, symbol: str, now_ms: int) -> 
     ctx.after_call(GROUP_CHART)
     if not page.candles:
         return
-    ctx.store.upsert_candles_1d(page.candles)
+    _timed(ctx, ctx.store.upsert_candles_1d, page.candles)
     today = ctx.scheduler.market_day_at(now_ms) or ctx.scheduler.today()
     cutoff = exclude_today_1d_cutoff(today)
     rows = [c for c in page.candles if cutoff is None or int(c.ts_ms) <= cutoff]
@@ -2382,7 +2432,7 @@ async def _poll_trades(ctx: CollectorContext, symbol: str) -> int:
     # (2)가 (1)보다 훨씬 크므로 `n - stored` 만 보면 (1)은 그 안에 묻힌다.
     n_raw = len(trades)
     n_distinct = len({(t.symbol, t.ts_ms, t.price_u, t.qty_u) for t in trades})
-    stored = ctx.store.insert_trades(trades)
+    stored = _timed(ctx, ctx.store.insert_trades, trades)
     stats = tape_stats(trades)
     ctx.bump("trades_rows", stored)
     ctx.bump("trades_raw_rows", n_raw)
@@ -2423,9 +2473,10 @@ def _record_tape_gap(ctx: CollectorContext, symbol: str, poll_ms: int,
     """결손 한 건을 DB 에 남긴다. **쓰기 실패가 폴을 죽이면 안 된다** — 관측용 부산물이
     수집 자체를 멈추는 것은 거꾸로다. 실패는 카운터로 드러낸다(`record_promotion` 과 같은 형)."""
     try:
-        ctx.store.record_tape_gap(symbol, poll_ms, prev_poll_ms, prev_max,
-                                  int(stats["min_ts_ms"]), int(stats["max_ts_ms"]),
-                                  n_raw, stored)
+        _timed(ctx, ctx.store.record_tape_gap,
+               symbol, poll_ms, prev_poll_ms, prev_max,
+               int(stats["min_ts_ms"]), int(stats["max_ts_ms"]),
+               n_raw, stored)
     except Exception as exc:
         ctx.bump("tape_gap_write_failures")
         ctx.notifier.warn(f"record_tape_gap failed for {symbol}: "
@@ -2478,7 +2529,7 @@ async def _poll_orderbook(ctx: CollectorContext, symbol: str, *,
     ob = await ctx.client.get_orderbook(symbol)
     ctx.after_call(GROUP_MARKET_DATA)
     snap_ms = ctx.clock.now_ms()
-    ctx.store.insert_orderbook(snap_ms, ob)
+    _timed(ctx, ctx.store.insert_orderbook, snap_ms, ob)
     ctx.bump("orderbook_snaps")
     if tier2:
         ctx.bump("tier2_orderbook_snaps")
