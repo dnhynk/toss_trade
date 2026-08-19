@@ -1,0 +1,4005 @@
+{
+  "meta": {
+    "started_ms": 1787059861485,
+    "started_kst": "2026-08-18T22:31:01.485+09:00",
+    "started_et": "2026-08-18T09:31:01.485-04:00",
+    "base_url": "https://openapi.tossinvest.com",
+    "probes": [
+      "ranking_cadence"
+    ],
+    "usage_ratio": 0.7,
+    "counters": {
+      "requests": 529,
+      "retries": 0,
+      "http_429": 0,
+      "http_5xx": 0,
+      "auth_refresh": 0,
+      "precision_rounded": 0,
+      "http_429_no_retry_after": 0,
+      "http_429_under_own_limit": 0,
+      "server_seconds": 515,
+      "server_second_foreign": 25,
+      "server_second_unknown": 0
+    },
+    "finished_kst": "2026-08-18T23:14:02.635+09:00"
+  },
+  "ranking_cadence": {
+    "profile": "d",
+    "arms_spec": {
+      "vol": [
+        [
+          "1s",
+          1.0,
+          180.0
+        ],
+        [
+          "5s",
+          5.0,
+          1200.0
+        ],
+        [
+          "12s",
+          12.0,
+          1200.0
+        ]
+      ],
+      "gain": []
+    },
+    "measured_at_kst": "2026-08-18T22:31:01.493+09:00",
+    "measured_at_et": "2026-08-18T09:31:01.493-04:00",
+    "budget": {
+      "call_cap": 550,
+      "planned_calls": 529
+    },
+    "collector_baseline_429": {
+      "window_min": 180.0,
+      "n": 0,
+      "rate_per_min": 0.0,
+      "first_kst": null,
+      "last_kst": null,
+      "observed_span_min": 180.0,
+      "groups": [],
+      "max_in_60s": 0,
+      "max_in_480s": 0
+    },
+    "stop_thresholds": {
+      "our_429": 1,
+      "collector_60s": 3,
+      "collector_480s": 5,
+      "call_cap": 550
+    },
+    "telemetry_at_start": {
+      "at_kst": "2026-08-18 22:30:03",
+      "age_s": 57.8,
+      "md_peak_1s": 10,
+      "chart_peak_1s": 4,
+      "http_429": 1,
+      "over_limit_1s": 0,
+      "tier2": 240,
+      "tier3": 8
+    },
+    "oneshot": {
+      "TOP_GAINERS_realtime": {
+        "http": 400,
+        "error": "SchemaMismatch: http-400 code=unsupported-ranking-duration message=지원하지 않는 랭킹 기간입니다."
+      },
+      "TOP_GAINERS_1d": {
+        "http": 200,
+        "rows": 100,
+        "rankedAt": "2026-08-18T22:30:41.450+09:00",
+        "evidence": "{\"result\": {\"rankedAt\": \"2026-08-18T22:30:41.450+09:00\", \"rankings\": [{\"rank\": 1, \"symbol\": \"SLE\", \"currency\": \"USD\", \"price\": {\"lastPrice\": \"6.85\", \"basePrice\": \"3.02\", \"changeRate\": \"1.2682\"}, \"tradingVolume\": \"6538506\", \"tradingAmount\": \"51221829466\"}, {\"rank\": 2, \"symbol\": \"XOS\", \"currency\": \"USD\", \"price\": {\"lastPrice\": \"4.49\", \"basePrice\": \"2.09\", \"changeRate\": \"1.1483\"}, \"tradingVolume\": \"16094256\", \"tradingAmount\": \"102099898361\"}, {\"rank\": 3, \"symbol\": \"PFSA\", \"currency\": \"USD\", \"price\": {\"lastPrice\": \"9.27\", \"basePrice\": \"4.53\", \"changeRate\": \"1.0463\"}, \"tradingVolume\": \"2332984\", \"tradingAmount\": \"33800976448\"}], \"_rankings_len\": 100}}"
+      },
+      "TOP_LOSERS_realtime": {
+        "http": 400,
+        "error": "SchemaMismatch: http-400 code=unsupported-ranking-duration message=지원하지 않는 랭킹 기간입니다."
+      },
+      "TOP_LOSERS_1d": {
+        "http": 200,
+        "rows": 99,
+        "rankedAt": "2026-08-18T22:30:56.463+09:00",
+        "evidence": "{\"result\": {\"rankedAt\": \"2026-08-18T22:30:56.463+09:00\", \"rankings\": [{\"rank\": 1, \"symbol\": \"NCPL\", \"currency\": \"USD\", \"price\": {\"lastPrice\": \"0.213\", \"basePrice\": \"0.3194\", \"changeRate\": \"-0.3331\"}, \"tradingVolume\": \"382915\", \"tradingAmount\": \"117484243\"}, {\"rank\": 2, \"symbol\": \"FNG\", \"currency\": \"USD\", \"price\": {\"lastPrice\": \"8.43\", \"basePrice\": \"11.7\", \"changeRate\": \"-0.2794\"}, \"tradingVolume\": \"11488\", \"tradingAmount\": \"145399063\"}, {\"rank\": 3, \"symbol\": \"LGCL\", \"currency\": \"USD\", \"price\": {\"lastPrice\": \"1.01\", \"basePrice\": \"1.41\", \"changeRate\": \"-0.2836\"}, \"tradingVolume\": \"49581\", \"tradingAmount\": \"84536972\"}], \"_rankings_len\": 99}}"
+      }
+    },
+    "volume_realtime": {
+      "params": {
+        "type": "TOSS_SECURITIES_TRADING_VOLUME",
+        "marketCountry": "US",
+        "duration": "realtime",
+        "count": 100
+      },
+      "arms": {
+        "1s": {
+          "polls": 180,
+          "stride": 1,
+          "span_s": 179.0,
+          "actual_gap_s": {
+            "n": 179,
+            "min": 0.905,
+            "p50": 0.999,
+            "max": 1.093,
+            "mean": 1.0
+          },
+          "rankedAt": {
+            "distinct": 13,
+            "changes": 12,
+            "changes_per_min": 4.02,
+            "observed_interval_s": {
+              "n": 11,
+              "min": 10.01,
+              "p50": 15.01,
+              "max": 16.01,
+              "mean": 14.73
+            },
+            "server_stamp_delta_s": {
+              "n": 11,
+              "min": 10.0,
+              "p50": 10.0,
+              "max": 20.0,
+              "mean": 14.55
+            },
+            "server_stamp_delta_hist": {
+              "10.0": 6,
+              "20.0": 5
+            },
+            "stamp_lag_s": {
+              "n": 180,
+              "min": 6.8,
+              "p50": 16.8,
+              "max": 27.8,
+              "mean": 16.58
+            }
+          },
+          "order": {
+            "distinct": 13,
+            "changes": 12,
+            "changes_per_min": 4.02,
+            "observed_interval_s": {
+              "n": 11,
+              "min": 10.01,
+              "p50": 15.01,
+              "max": 16.01,
+              "mean": 14.73
+            }
+          },
+          "volume": {
+            "distinct": 13,
+            "changes": 12,
+            "changes_per_min": 4.02,
+            "observed_interval_s": {
+              "n": 11,
+              "min": 10.01,
+              "p50": 15.01,
+              "max": 16.01,
+              "mean": 14.73
+            }
+          },
+          "last": {
+            "distinct": 180,
+            "changes": 179,
+            "changes_per_min": 60.0,
+            "observed_interval_s": {
+              "n": 178,
+              "min": 0.9,
+              "p50": 1.0,
+              "max": 1.09,
+              "mean": 1.0
+            }
+          },
+          "rate": {
+            "distinct": 180,
+            "changes": 179,
+            "changes_per_min": 60.0,
+            "observed_interval_s": {
+              "n": 178,
+              "min": 0.9,
+              "p50": 1.0,
+              "max": 1.09,
+              "mean": 1.0
+            }
+          },
+          "all": {
+            "distinct": 180,
+            "changes": 179,
+            "changes_per_min": 60.0,
+            "observed_interval_s": {
+              "n": 178,
+              "min": 0.9,
+              "p50": 1.0,
+              "max": 1.09,
+              "mean": 1.0
+            }
+          },
+          "stamp_vs_content": {
+            "both": 12,
+            "stamp_only": 0,
+            "content_only": 167,
+            "neither": 0
+          },
+          "nominal_gap_s": 1.0,
+          "start_kst": "2026-08-18T22:31:02.782+09:00",
+          "errors": 0,
+          "collector_429_during": 0,
+          "decimated": {
+            "stride_1": {
+              "polls": 180,
+              "stride": 1,
+              "span_s": 179.0,
+              "actual_gap_s": {
+                "n": 179,
+                "min": 0.905,
+                "p50": 0.999,
+                "max": 1.093,
+                "mean": 1.0
+              },
+              "rankedAt": {
+                "distinct": 13,
+                "changes": 12,
+                "changes_per_min": 4.02,
+                "observed_interval_s": {
+                  "n": 11,
+                  "min": 10.01,
+                  "p50": 15.01,
+                  "max": 16.01,
+                  "mean": 14.73
+                },
+                "server_stamp_delta_s": {
+                  "n": 11,
+                  "min": 10.0,
+                  "p50": 10.0,
+                  "max": 20.0,
+                  "mean": 14.55
+                },
+                "server_stamp_delta_hist": {
+                  "10.0": 6,
+                  "20.0": 5
+                },
+                "stamp_lag_s": {
+                  "n": 180,
+                  "min": 6.8,
+                  "p50": 16.8,
+                  "max": 27.8,
+                  "mean": 16.58
+                }
+              },
+              "order": {
+                "distinct": 13,
+                "changes": 12,
+                "changes_per_min": 4.02,
+                "observed_interval_s": {
+                  "n": 11,
+                  "min": 10.01,
+                  "p50": 15.01,
+                  "max": 16.01,
+                  "mean": 14.73
+                }
+              },
+              "volume": {
+                "distinct": 13,
+                "changes": 12,
+                "changes_per_min": 4.02,
+                "observed_interval_s": {
+                  "n": 11,
+                  "min": 10.01,
+                  "p50": 15.01,
+                  "max": 16.01,
+                  "mean": 14.73
+                }
+              },
+              "last": {
+                "distinct": 180,
+                "changes": 179,
+                "changes_per_min": 60.0,
+                "observed_interval_s": {
+                  "n": 178,
+                  "min": 0.9,
+                  "p50": 1.0,
+                  "max": 1.09,
+                  "mean": 1.0
+                }
+              },
+              "rate": {
+                "distinct": 180,
+                "changes": 179,
+                "changes_per_min": 60.0,
+                "observed_interval_s": {
+                  "n": 178,
+                  "min": 0.9,
+                  "p50": 1.0,
+                  "max": 1.09,
+                  "mean": 1.0
+                }
+              },
+              "all": {
+                "distinct": 180,
+                "changes": 179,
+                "changes_per_min": 60.0,
+                "observed_interval_s": {
+                  "n": 178,
+                  "min": 0.9,
+                  "p50": 1.0,
+                  "max": 1.09,
+                  "mean": 1.0
+                }
+              },
+              "stamp_vs_content": {
+                "both": 12,
+                "stamp_only": 0,
+                "content_only": 167,
+                "neither": 0
+              }
+            },
+            "stride_2": {
+              "polls": 90,
+              "stride": 2,
+              "span_s": 178.0,
+              "actual_gap_s": {
+                "n": 89,
+                "min": 1.915,
+                "p50": 2.001,
+                "max": 2.092,
+                "mean": 2.0
+              },
+              "rankedAt": {
+                "distinct": 13,
+                "changes": 12,
+                "changes_per_min": 4.04,
+                "observed_interval_s": {
+                  "n": 11,
+                  "min": 10.01,
+                  "p50": 15.99,
+                  "max": 16.01,
+                  "mean": 14.73
+                },
+                "server_stamp_delta_s": {
+                  "n": 11,
+                  "min": 10.0,
+                  "p50": 10.0,
+                  "max": 20.0,
+                  "mean": 14.55
+                },
+                "server_stamp_delta_hist": {
+                  "10.0": 6,
+                  "20.0": 5
+                },
+                "stamp_lag_s": {
+                  "n": 90,
+                  "min": 7.8,
+                  "p50": 15.8,
+                  "max": 27.8,
+                  "mean": 16.8
+                }
+              },
+              "order": {
+                "distinct": 13,
+                "changes": 12,
+                "changes_per_min": 4.04,
+                "observed_interval_s": {
+                  "n": 11,
+                  "min": 10.01,
+                  "p50": 15.99,
+                  "max": 16.01,
+                  "mean": 14.73
+                }
+              },
+              "volume": {
+                "distinct": 13,
+                "changes": 12,
+                "changes_per_min": 4.04,
+                "observed_interval_s": {
+                  "n": 11,
+                  "min": 10.01,
+                  "p50": 15.99,
+                  "max": 16.01,
+                  "mean": 14.73
+                }
+              },
+              "last": {
+                "distinct": 90,
+                "changes": 89,
+                "changes_per_min": 30.0,
+                "observed_interval_s": {
+                  "n": 88,
+                  "min": 1.91,
+                  "p50": 2.0,
+                  "max": 2.09,
+                  "mean": 2.0
+                }
+              },
+              "rate": {
+                "distinct": 90,
+                "changes": 89,
+                "changes_per_min": 30.0,
+                "observed_interval_s": {
+                  "n": 88,
+                  "min": 1.91,
+                  "p50": 2.0,
+                  "max": 2.09,
+                  "mean": 2.0
+                }
+              },
+              "all": {
+                "distinct": 90,
+                "changes": 89,
+                "changes_per_min": 30.0,
+                "observed_interval_s": {
+                  "n": 88,
+                  "min": 1.91,
+                  "p50": 2.0,
+                  "max": 2.09,
+                  "mean": 2.0
+                }
+              },
+              "stamp_vs_content": {
+                "both": 12,
+                "stamp_only": 0,
+                "content_only": 77,
+                "neither": 0
+              }
+            },
+            "stride_4": {
+              "polls": 45,
+              "stride": 4,
+              "span_s": 176.0,
+              "actual_gap_s": {
+                "n": 44,
+                "min": 3.986,
+                "p50": 4.001,
+                "max": 4.016,
+                "mean": 4.0
+              },
+              "rankedAt": {
+                "distinct": 13,
+                "changes": 12,
+                "changes_per_min": 4.09,
+                "observed_interval_s": {
+                  "n": 11,
+                  "min": 8.01,
+                  "p50": 16.0,
+                  "max": 16.01,
+                  "mean": 14.55
+                },
+                "server_stamp_delta_s": {
+                  "n": 11,
+                  "min": 10.0,
+                  "p50": 10.0,
+                  "max": 20.0,
+                  "mean": 14.55
+                },
+                "server_stamp_delta_hist": {
+                  "10.0": 6,
+                  "20.0": 5
+                },
+                "stamp_lag_s": {
+                  "n": 45,
+                  "min": 7.8,
+                  "p50": 17.8,
+                  "max": 27.8,
+                  "mean": 17.13
+                }
+              },
+              "order": {
+                "distinct": 13,
+                "changes": 12,
+                "changes_per_min": 4.09,
+                "observed_interval_s": {
+                  "n": 11,
+                  "min": 8.01,
+                  "p50": 16.0,
+                  "max": 16.01,
+                  "mean": 14.55
+                }
+              },
+              "volume": {
+                "distinct": 13,
+                "changes": 12,
+                "changes_per_min": 4.09,
+                "observed_interval_s": {
+                  "n": 11,
+                  "min": 8.01,
+                  "p50": 16.0,
+                  "max": 16.01,
+                  "mean": 14.55
+                }
+              },
+              "last": {
+                "distinct": 45,
+                "changes": 44,
+                "changes_per_min": 15.0,
+                "observed_interval_s": {
+                  "n": 43,
+                  "min": 3.99,
+                  "p50": 4.0,
+                  "max": 4.01,
+                  "mean": 4.0
+                }
+              },
+              "rate": {
+                "distinct": 45,
+                "changes": 44,
+                "changes_per_min": 15.0,
+                "observed_interval_s": {
+                  "n": 43,
+                  "min": 3.99,
+                  "p50": 4.0,
+                  "max": 4.01,
+                  "mean": 4.0
+                }
+              },
+              "all": {
+                "distinct": 45,
+                "changes": 44,
+                "changes_per_min": 15.0,
+                "observed_interval_s": {
+                  "n": 43,
+                  "min": 3.99,
+                  "p50": 4.0,
+                  "max": 4.01,
+                  "mean": 4.0
+                }
+              },
+              "stamp_vs_content": {
+                "both": 12,
+                "stamp_only": 0,
+                "content_only": 32,
+                "neither": 0
+              }
+            },
+            "stride_5": {
+              "polls": 36,
+              "stride": 5,
+              "span_s": 175.0,
+              "actual_gap_s": {
+                "n": 35,
+                "min": 4.924,
+                "p50": 5.001,
+                "max": 5.07,
+                "mean": 5.0
+              },
+              "rankedAt": {
+                "distinct": 13,
+                "changes": 12,
+                "changes_per_min": 4.11,
+                "observed_interval_s": {
+                  "n": 11,
+                  "min": 10.01,
+                  "p50": 15.0,
+                  "max": 15.02,
+                  "mean": 14.55
+                },
+                "server_stamp_delta_s": {
+                  "n": 11,
+                  "min": 10.0,
+                  "p50": 10.0,
+                  "max": 20.0,
+                  "mean": 14.55
+                },
+                "server_stamp_delta_hist": {
+                  "10.0": 6,
+                  "20.0": 5
+                },
+                "stamp_lag_s": {
+                  "n": 36,
+                  "min": 8.8,
+                  "p50": 13.8,
+                  "max": 23.8,
+                  "mean": 16.02
+                }
+              },
+              "order": {
+                "distinct": 13,
+                "changes": 12,
+                "changes_per_min": 4.11,
+                "observed_interval_s": {
+                  "n": 11,
+                  "min": 10.01,
+                  "p50": 15.0,
+                  "max": 15.02,
+                  "mean": 14.55
+                }
+              },
+              "volume": {
+                "distinct": 13,
+                "changes": 12,
+                "changes_per_min": 4.11,
+                "observed_interval_s": {
+                  "n": 11,
+                  "min": 10.01,
+                  "p50": 15.0,
+                  "max": 15.02,
+                  "mean": 14.55
+                }
+              },
+              "last": {
+                "distinct": 36,
+                "changes": 35,
+                "changes_per_min": 12.0,
+                "observed_interval_s": {
+                  "n": 34,
+                  "min": 4.92,
+                  "p50": 5.0,
+                  "max": 5.07,
+                  "mean": 5.0
+                }
+              },
+              "rate": {
+                "distinct": 36,
+                "changes": 35,
+                "changes_per_min": 12.0,
+                "observed_interval_s": {
+                  "n": 34,
+                  "min": 4.92,
+                  "p50": 5.0,
+                  "max": 5.07,
+                  "mean": 5.0
+                }
+              },
+              "all": {
+                "distinct": 36,
+                "changes": 35,
+                "changes_per_min": 12.0,
+                "observed_interval_s": {
+                  "n": 34,
+                  "min": 4.92,
+                  "p50": 5.0,
+                  "max": 5.07,
+                  "mean": 5.0
+                }
+              },
+              "stamp_vs_content": {
+                "both": 12,
+                "stamp_only": 0,
+                "content_only": 23,
+                "neither": 0
+              }
+            },
+            "stride_8": {
+              "polls": 23,
+              "stride": 8,
+              "span_s": 176.0,
+              "actual_gap_s": {
+                "n": 22,
+                "min": 7.985,
+                "p50": 8.002,
+                "max": 8.02,
+                "mean": 8.0
+              },
+              "rankedAt": {
+                "distinct": 13,
+                "changes": 12,
+                "changes_per_min": 4.09,
+                "observed_interval_s": {
+                  "n": 11,
+                  "min": 8.0,
+                  "p50": 16.0,
+                  "max": 16.01,
+                  "mean": 14.55
+                },
+                "server_stamp_delta_s": {
+                  "n": 11,
+                  "min": 10.0,
+                  "p50": 10.0,
+                  "max": 20.0,
+                  "mean": 14.55
+                },
+                "server_stamp_delta_hist": {
+                  "10.0": 6,
+                  "20.0": 5
+                },
+                "stamp_lag_s": {
+                  "n": 23,
+                  "min": 7.8,
+                  "p50": 15.8,
+                  "max": 25.8,
+                  "mean": 16.58
+                }
+              },
+              "order": {
+                "distinct": 13,
+                "changes": 12,
+                "changes_per_min": 4.09,
+                "observed_interval_s": {
+                  "n": 11,
+                  "min": 8.0,
+                  "p50": 16.0,
+                  "max": 16.01,
+                  "mean": 14.55
+                }
+              },
+              "volume": {
+                "distinct": 13,
+                "changes": 12,
+                "changes_per_min": 4.09,
+                "observed_interval_s": {
+                  "n": 11,
+                  "min": 8.0,
+                  "p50": 16.0,
+                  "max": 16.01,
+                  "mean": 14.55
+                }
+              },
+              "last": {
+                "distinct": 23,
+                "changes": 22,
+                "changes_per_min": 7.5,
+                "observed_interval_s": {
+                  "n": 21,
+                  "min": 7.98,
+                  "p50": 8.0,
+                  "max": 8.02,
+                  "mean": 8.0
+                }
+              },
+              "rate": {
+                "distinct": 23,
+                "changes": 22,
+                "changes_per_min": 7.5,
+                "observed_interval_s": {
+                  "n": 21,
+                  "min": 7.98,
+                  "p50": 8.0,
+                  "max": 8.02,
+                  "mean": 8.0
+                }
+              },
+              "all": {
+                "distinct": 23,
+                "changes": 22,
+                "changes_per_min": 7.5,
+                "observed_interval_s": {
+                  "n": 21,
+                  "min": 7.98,
+                  "p50": 8.0,
+                  "max": 8.02,
+                  "mean": 8.0
+                }
+              },
+              "stamp_vs_content": {
+                "both": 12,
+                "stamp_only": 0,
+                "content_only": 10,
+                "neither": 0
+              }
+            },
+            "stride_12": {
+              "polls": 15,
+              "stride": 12,
+              "span_s": 168.0,
+              "actual_gap_s": {
+                "n": 14,
+                "min": 11.991,
+                "p50": 12.001,
+                "max": 12.013,
+                "mean": 12.0
+              },
+              "rankedAt": {
+                "distinct": 12,
+                "changes": 11,
+                "changes_per_min": 3.93,
+                "observed_interval_s": {
+                  "n": 10,
+                  "min": 11.99,
+                  "p50": 12.0,
+                  "max": 24.01,
+                  "mean": 14.4
+                },
+                "server_stamp_delta_s": {
+                  "n": 10,
+                  "min": 10.0,
+                  "p50": 20.0,
+                  "max": 20.0,
+                  "mean": 15.0
+                },
+                "server_stamp_delta_hist": {
+                  "10.0": 5,
+                  "20.0": 5
+                },
+                "stamp_lag_s": {
+                  "n": 15,
+                  "min": 11.8,
+                  "p50": 17.8,
+                  "max": 25.8,
+                  "mean": 17.8
+                }
+              },
+              "order": {
+                "distinct": 12,
+                "changes": 11,
+                "changes_per_min": 3.93,
+                "observed_interval_s": {
+                  "n": 10,
+                  "min": 11.99,
+                  "p50": 12.0,
+                  "max": 24.01,
+                  "mean": 14.4
+                }
+              },
+              "volume": {
+                "distinct": 12,
+                "changes": 11,
+                "changes_per_min": 3.93,
+                "observed_interval_s": {
+                  "n": 10,
+                  "min": 11.99,
+                  "p50": 12.0,
+                  "max": 24.01,
+                  "mean": 14.4
+                }
+              },
+              "last": {
+                "distinct": 15,
+                "changes": 14,
+                "changes_per_min": 5.0,
+                "observed_interval_s": {
+                  "n": 13,
+                  "min": 11.99,
+                  "p50": 12.0,
+                  "max": 12.01,
+                  "mean": 12.0
+                }
+              },
+              "rate": {
+                "distinct": 15,
+                "changes": 14,
+                "changes_per_min": 5.0,
+                "observed_interval_s": {
+                  "n": 13,
+                  "min": 11.99,
+                  "p50": 12.0,
+                  "max": 12.01,
+                  "mean": 12.0
+                }
+              },
+              "all": {
+                "distinct": 15,
+                "changes": 14,
+                "changes_per_min": 5.0,
+                "observed_interval_s": {
+                  "n": 13,
+                  "min": 11.99,
+                  "p50": 12.0,
+                  "max": 12.01,
+                  "mean": 12.0
+                }
+              },
+              "stamp_vs_content": {
+                "both": 11,
+                "stamp_only": 0,
+                "content_only": 3,
+                "neither": 0
+              }
+            }
+          },
+          "raw_polls": [
+            {
+              "i": 0,
+              "sent_epoch": 1787059862.786,
+              "rankedAt": "2026-08-18T22:30:49.000+09:00",
+              "order": "bf22c77c8fc9",
+              "volume": "38c8878cfdc8",
+              "all": "dd8f2e74de4d",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 1,
+              "sent_epoch": 1787059863.797,
+              "rankedAt": "2026-08-18T22:30:49.000+09:00",
+              "order": "bf22c77c8fc9",
+              "volume": "38c8878cfdc8",
+              "all": "14514dfa3055",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 2,
+              "sent_epoch": 1787059864.807,
+              "rankedAt": "2026-08-18T22:30:49.000+09:00",
+              "order": "bf22c77c8fc9",
+              "volume": "38c8878cfdc8",
+              "all": "6975430225ec",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 3,
+              "sent_epoch": 1787059865.795,
+              "rankedAt": "2026-08-18T22:30:49.000+09:00",
+              "order": "bf22c77c8fc9",
+              "volume": "38c8878cfdc8",
+              "all": "10e7e1cf5209",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 4,
+              "sent_epoch": 1787059866.802,
+              "rankedAt": "2026-08-18T22:30:49.000+09:00",
+              "order": "bf22c77c8fc9",
+              "volume": "38c8878cfdc8",
+              "all": "1994fdd4248f",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 5,
+              "sent_epoch": 1787059867.795,
+              "rankedAt": "2026-08-18T22:30:49.000+09:00",
+              "order": "bf22c77c8fc9",
+              "volume": "38c8878cfdc8",
+              "all": "4cb35fb2782c",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 6,
+              "sent_epoch": 1787059868.802,
+              "rankedAt": "2026-08-18T22:30:49.000+09:00",
+              "order": "bf22c77c8fc9",
+              "volume": "38c8878cfdc8",
+              "all": "efba146a172d",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 7,
+              "sent_epoch": 1787059869.799,
+              "rankedAt": "2026-08-18T22:30:49.000+09:00",
+              "order": "bf22c77c8fc9",
+              "volume": "38c8878cfdc8",
+              "all": "1a7b396c9d9a",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 8,
+              "sent_epoch": 1787059870.806,
+              "rankedAt": "2026-08-18T22:30:49.000+09:00",
+              "order": "bf22c77c8fc9",
+              "volume": "38c8878cfdc8",
+              "all": "14628bce8829",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 9,
+              "sent_epoch": 1787059871.794,
+              "rankedAt": "2026-08-18T22:30:49.000+09:00",
+              "order": "bf22c77c8fc9",
+              "volume": "38c8878cfdc8",
+              "all": "41b0df64d231",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 10,
+              "sent_epoch": 1787059872.8,
+              "rankedAt": "2026-08-18T22:30:49.000+09:00",
+              "order": "bf22c77c8fc9",
+              "volume": "38c8878cfdc8",
+              "all": "9f1591b98279",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 11,
+              "sent_epoch": 1787059873.796,
+              "rankedAt": "2026-08-18T22:30:49.000+09:00",
+              "order": "bf22c77c8fc9",
+              "volume": "38c8878cfdc8",
+              "all": "ab5d9e07d7ef",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 12,
+              "sent_epoch": 1787059874.793,
+              "rankedAt": "2026-08-18T22:30:49.000+09:00",
+              "order": "bf22c77c8fc9",
+              "volume": "38c8878cfdc8",
+              "all": "ec7831a862aa",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 13,
+              "sent_epoch": 1787059875.792,
+              "rankedAt": "2026-08-18T22:31:09.000+09:00",
+              "order": "6586c66caab9",
+              "volume": "d3df3110527d",
+              "all": "920c203b35d9",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 14,
+              "sent_epoch": 1787059876.802,
+              "rankedAt": "2026-08-18T22:31:09.000+09:00",
+              "order": "6586c66caab9",
+              "volume": "d3df3110527d",
+              "all": "50c1479d0308",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 15,
+              "sent_epoch": 1787059877.794,
+              "rankedAt": "2026-08-18T22:31:09.000+09:00",
+              "order": "6586c66caab9",
+              "volume": "d3df3110527d",
+              "all": "639b61d97518",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 16,
+              "sent_epoch": 1787059878.791,
+              "rankedAt": "2026-08-18T22:31:09.000+09:00",
+              "order": "6586c66caab9",
+              "volume": "d3df3110527d",
+              "all": "a49c3e18cebd",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 17,
+              "sent_epoch": 1787059879.794,
+              "rankedAt": "2026-08-18T22:31:09.000+09:00",
+              "order": "6586c66caab9",
+              "volume": "d3df3110527d",
+              "all": "faa4aa5c07a2",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 18,
+              "sent_epoch": 1787059880.794,
+              "rankedAt": "2026-08-18T22:31:09.000+09:00",
+              "order": "6586c66caab9",
+              "volume": "d3df3110527d",
+              "all": "1548b8804b2c",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 19,
+              "sent_epoch": 1787059881.811,
+              "rankedAt": "2026-08-18T22:31:09.000+09:00",
+              "order": "6586c66caab9",
+              "volume": "d3df3110527d",
+              "all": "4b0ae9894b57",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 20,
+              "sent_epoch": 1787059882.802,
+              "rankedAt": "2026-08-18T22:31:09.000+09:00",
+              "order": "6586c66caab9",
+              "volume": "d3df3110527d",
+              "all": "74fd9690b009",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 21,
+              "sent_epoch": 1787059883.803,
+              "rankedAt": "2026-08-18T22:31:09.000+09:00",
+              "order": "6586c66caab9",
+              "volume": "d3df3110527d",
+              "all": "eade47af9de0",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 22,
+              "sent_epoch": 1787059884.803,
+              "rankedAt": "2026-08-18T22:31:09.000+09:00",
+              "order": "6586c66caab9",
+              "volume": "d3df3110527d",
+              "all": "255551dce079",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 23,
+              "sent_epoch": 1787059885.8,
+              "rankedAt": "2026-08-18T22:31:09.000+09:00",
+              "order": "6586c66caab9",
+              "volume": "d3df3110527d",
+              "all": "ee8305819c0d",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 24,
+              "sent_epoch": 1787059886.806,
+              "rankedAt": "2026-08-18T22:31:09.000+09:00",
+              "order": "6586c66caab9",
+              "volume": "d3df3110527d",
+              "all": "64d4465ad092",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 25,
+              "sent_epoch": 1787059887.79,
+              "rankedAt": "2026-08-18T22:31:09.000+09:00",
+              "order": "6586c66caab9",
+              "volume": "d3df3110527d",
+              "all": "370099bf1d7c",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 26,
+              "sent_epoch": 1787059888.805,
+              "rankedAt": "2026-08-18T22:31:09.000+09:00",
+              "order": "6586c66caab9",
+              "volume": "d3df3110527d",
+              "all": "5a376360912d",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 27,
+              "sent_epoch": 1787059889.804,
+              "rankedAt": "2026-08-18T22:31:09.000+09:00",
+              "order": "6586c66caab9",
+              "volume": "d3df3110527d",
+              "all": "3f7f7cccb9c5",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 28,
+              "sent_epoch": 1787059890.799,
+              "rankedAt": "2026-08-18T22:31:19.000+09:00",
+              "order": "1f89b993bc2f",
+              "volume": "b948eae8bfc3",
+              "all": "48694339b994",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 29,
+              "sent_epoch": 1787059891.794,
+              "rankedAt": "2026-08-18T22:31:19.000+09:00",
+              "order": "1f89b993bc2f",
+              "volume": "b948eae8bfc3",
+              "all": "8862c4abac46",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 30,
+              "sent_epoch": 1787059892.79,
+              "rankedAt": "2026-08-18T22:31:19.000+09:00",
+              "order": "1f89b993bc2f",
+              "volume": "b948eae8bfc3",
+              "all": "b79c87ab84c2",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 31,
+              "sent_epoch": 1787059893.796,
+              "rankedAt": "2026-08-18T22:31:19.000+09:00",
+              "order": "1f89b993bc2f",
+              "volume": "b948eae8bfc3",
+              "all": "243ba01954b8",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 32,
+              "sent_epoch": 1787059894.792,
+              "rankedAt": "2026-08-18T22:31:19.000+09:00",
+              "order": "1f89b993bc2f",
+              "volume": "b948eae8bfc3",
+              "all": "7353d1a84652",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 33,
+              "sent_epoch": 1787059895.797,
+              "rankedAt": "2026-08-18T22:31:19.000+09:00",
+              "order": "1f89b993bc2f",
+              "volume": "b948eae8bfc3",
+              "all": "1927556240c8",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 34,
+              "sent_epoch": 1787059896.796,
+              "rankedAt": "2026-08-18T22:31:19.000+09:00",
+              "order": "1f89b993bc2f",
+              "volume": "b948eae8bfc3",
+              "all": "ebb7534df8c8",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 35,
+              "sent_epoch": 1787059897.794,
+              "rankedAt": "2026-08-18T22:31:19.000+09:00",
+              "order": "1f89b993bc2f",
+              "volume": "b948eae8bfc3",
+              "all": "937f29753fed",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 36,
+              "sent_epoch": 1787059898.802,
+              "rankedAt": "2026-08-18T22:31:19.000+09:00",
+              "order": "1f89b993bc2f",
+              "volume": "b948eae8bfc3",
+              "all": "a08cf744736f",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 37,
+              "sent_epoch": 1787059899.804,
+              "rankedAt": "2026-08-18T22:31:19.000+09:00",
+              "order": "1f89b993bc2f",
+              "volume": "b948eae8bfc3",
+              "all": "29a3de7c15d4",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 38,
+              "sent_epoch": 1787059900.806,
+              "rankedAt": "2026-08-18T22:31:19.000+09:00",
+              "order": "1f89b993bc2f",
+              "volume": "b948eae8bfc3",
+              "all": "300e2ebc4b82",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 39,
+              "sent_epoch": 1787059901.802,
+              "rankedAt": "2026-08-18T22:31:19.000+09:00",
+              "order": "1f89b993bc2f",
+              "volume": "b948eae8bfc3",
+              "all": "3ed43dbed781",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 40,
+              "sent_epoch": 1787059902.799,
+              "rankedAt": "2026-08-18T22:31:19.000+09:00",
+              "order": "1f89b993bc2f",
+              "volume": "b948eae8bfc3",
+              "all": "218bb3996d73",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 41,
+              "sent_epoch": 1787059903.805,
+              "rankedAt": "2026-08-18T22:31:19.000+09:00",
+              "order": "1f89b993bc2f",
+              "volume": "b948eae8bfc3",
+              "all": "77c23e25126a",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 42,
+              "sent_epoch": 1787059904.806,
+              "rankedAt": "2026-08-18T22:31:19.000+09:00",
+              "order": "1f89b993bc2f",
+              "volume": "b948eae8bfc3",
+              "all": "64b93825924f",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 43,
+              "sent_epoch": 1787059905.807,
+              "rankedAt": "2026-08-18T22:31:39.000+09:00",
+              "order": "5d9986e9f78e",
+              "volume": "0f7c1a8af4bc",
+              "all": "e1caf5bd1229",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 44,
+              "sent_epoch": 1787059906.795,
+              "rankedAt": "2026-08-18T22:31:39.000+09:00",
+              "order": "5d9986e9f78e",
+              "volume": "0f7c1a8af4bc",
+              "all": "00c0b38b9d05",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 45,
+              "sent_epoch": 1787059907.795,
+              "rankedAt": "2026-08-18T22:31:39.000+09:00",
+              "order": "5d9986e9f78e",
+              "volume": "0f7c1a8af4bc",
+              "all": "4a931dc2c2e2",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 46,
+              "sent_epoch": 1787059908.797,
+              "rankedAt": "2026-08-18T22:31:39.000+09:00",
+              "order": "5d9986e9f78e",
+              "volume": "0f7c1a8af4bc",
+              "all": "82024f334288",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 47,
+              "sent_epoch": 1787059909.801,
+              "rankedAt": "2026-08-18T22:31:39.000+09:00",
+              "order": "5d9986e9f78e",
+              "volume": "0f7c1a8af4bc",
+              "all": "a8e7c41c4b70",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 48,
+              "sent_epoch": 1787059910.793,
+              "rankedAt": "2026-08-18T22:31:39.000+09:00",
+              "order": "5d9986e9f78e",
+              "volume": "0f7c1a8af4bc",
+              "all": "2ee0220a25de",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 49,
+              "sent_epoch": 1787059911.797,
+              "rankedAt": "2026-08-18T22:31:39.000+09:00",
+              "order": "5d9986e9f78e",
+              "volume": "0f7c1a8af4bc",
+              "all": "4866a3ba3332",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 50,
+              "sent_epoch": 1787059912.798,
+              "rankedAt": "2026-08-18T22:31:39.000+09:00",
+              "order": "5d9986e9f78e",
+              "volume": "0f7c1a8af4bc",
+              "all": "46058639069a",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 51,
+              "sent_epoch": 1787059913.801,
+              "rankedAt": "2026-08-18T22:31:39.000+09:00",
+              "order": "5d9986e9f78e",
+              "volume": "0f7c1a8af4bc",
+              "all": "814dd265d543",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 52,
+              "sent_epoch": 1787059914.799,
+              "rankedAt": "2026-08-18T22:31:39.000+09:00",
+              "order": "5d9986e9f78e",
+              "volume": "0f7c1a8af4bc",
+              "all": "a0794652aec7",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 53,
+              "sent_epoch": 1787059915.798,
+              "rankedAt": "2026-08-18T22:31:39.000+09:00",
+              "order": "5d9986e9f78e",
+              "volume": "0f7c1a8af4bc",
+              "all": "563c91a2d668",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 54,
+              "sent_epoch": 1787059916.891,
+              "rankedAt": "2026-08-18T22:31:39.000+09:00",
+              "order": "5d9986e9f78e",
+              "volume": "0f7c1a8af4bc",
+              "all": "a44cf986444f",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 55,
+              "sent_epoch": 1787059917.796,
+              "rankedAt": "2026-08-18T22:31:39.000+09:00",
+              "order": "5d9986e9f78e",
+              "volume": "0f7c1a8af4bc",
+              "all": "1fed8a7c73a4",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 56,
+              "sent_epoch": 1787059918.806,
+              "rankedAt": "2026-08-18T22:31:39.000+09:00",
+              "order": "5d9986e9f78e",
+              "volume": "0f7c1a8af4bc",
+              "all": "b783828c9172",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 57,
+              "sent_epoch": 1787059919.796,
+              "rankedAt": "2026-08-18T22:31:39.000+09:00",
+              "order": "5d9986e9f78e",
+              "volume": "0f7c1a8af4bc",
+              "all": "1e14403e41e8",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 58,
+              "sent_epoch": 1787059920.799,
+              "rankedAt": "2026-08-18T22:31:49.000+09:00",
+              "order": "9d319c859a80",
+              "volume": "0661025fef03",
+              "all": "368dd1312168",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 59,
+              "sent_epoch": 1787059921.805,
+              "rankedAt": "2026-08-18T22:31:49.000+09:00",
+              "order": "9d319c859a80",
+              "volume": "0661025fef03",
+              "all": "ddf214a666d5",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 60,
+              "sent_epoch": 1787059922.798,
+              "rankedAt": "2026-08-18T22:31:49.000+09:00",
+              "order": "9d319c859a80",
+              "volume": "0661025fef03",
+              "all": "63b42fefa919",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 61,
+              "sent_epoch": 1787059923.798,
+              "rankedAt": "2026-08-18T22:31:49.000+09:00",
+              "order": "9d319c859a80",
+              "volume": "0661025fef03",
+              "all": "1f21af81079c",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 62,
+              "sent_epoch": 1787059924.798,
+              "rankedAt": "2026-08-18T22:31:49.000+09:00",
+              "order": "9d319c859a80",
+              "volume": "0661025fef03",
+              "all": "55dfe955247f",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 63,
+              "sent_epoch": 1787059925.795,
+              "rankedAt": "2026-08-18T22:31:49.000+09:00",
+              "order": "9d319c859a80",
+              "volume": "0661025fef03",
+              "all": "e265d4d8f989",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 64,
+              "sent_epoch": 1787059926.793,
+              "rankedAt": "2026-08-18T22:31:49.000+09:00",
+              "order": "9d319c859a80",
+              "volume": "0661025fef03",
+              "all": "398fbaa2f5f5",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 65,
+              "sent_epoch": 1787059927.795,
+              "rankedAt": "2026-08-18T22:31:49.000+09:00",
+              "order": "9d319c859a80",
+              "volume": "0661025fef03",
+              "all": "9032a34432e4",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 66,
+              "sent_epoch": 1787059928.794,
+              "rankedAt": "2026-08-18T22:31:49.000+09:00",
+              "order": "9d319c859a80",
+              "volume": "0661025fef03",
+              "all": "e544ff60d2cd",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 67,
+              "sent_epoch": 1787059929.792,
+              "rankedAt": "2026-08-18T22:31:49.000+09:00",
+              "order": "9d319c859a80",
+              "volume": "0661025fef03",
+              "all": "6f7edbf9af96",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 68,
+              "sent_epoch": 1787059930.798,
+              "rankedAt": "2026-08-18T22:31:49.000+09:00",
+              "order": "9d319c859a80",
+              "volume": "0661025fef03",
+              "all": "a815a4cb03df",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 69,
+              "sent_epoch": 1787059931.804,
+              "rankedAt": "2026-08-18T22:31:49.000+09:00",
+              "order": "9d319c859a80",
+              "volume": "0661025fef03",
+              "all": "cde7b99f5ce0",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 70,
+              "sent_epoch": 1787059932.797,
+              "rankedAt": "2026-08-18T22:31:49.000+09:00",
+              "order": "9d319c859a80",
+              "volume": "0661025fef03",
+              "all": "9d88796e5d39",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 71,
+              "sent_epoch": 1787059933.803,
+              "rankedAt": "2026-08-18T22:31:49.000+09:00",
+              "order": "9d319c859a80",
+              "volume": "0661025fef03",
+              "all": "550a75157ef5",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 72,
+              "sent_epoch": 1787059934.797,
+              "rankedAt": "2026-08-18T22:31:49.000+09:00",
+              "order": "9d319c859a80",
+              "volume": "0661025fef03",
+              "all": "ff27d90d2243",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 73,
+              "sent_epoch": 1787059935.804,
+              "rankedAt": "2026-08-18T22:32:09.000+09:00",
+              "order": "5d90cf6b9d89",
+              "volume": "5cce3c57c413",
+              "all": "27af92eaf213",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 74,
+              "sent_epoch": 1787059936.809,
+              "rankedAt": "2026-08-18T22:32:09.000+09:00",
+              "order": "5d90cf6b9d89",
+              "volume": "5cce3c57c413",
+              "all": "fc2b8d7eb276",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 75,
+              "sent_epoch": 1787059937.795,
+              "rankedAt": "2026-08-18T22:32:09.000+09:00",
+              "order": "5d90cf6b9d89",
+              "volume": "5cce3c57c413",
+              "all": "29a6ca46935d",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 76,
+              "sent_epoch": 1787059938.797,
+              "rankedAt": "2026-08-18T22:32:09.000+09:00",
+              "order": "5d90cf6b9d89",
+              "volume": "5cce3c57c413",
+              "all": "9e1f249e4a67",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 77,
+              "sent_epoch": 1787059939.796,
+              "rankedAt": "2026-08-18T22:32:09.000+09:00",
+              "order": "5d90cf6b9d89",
+              "volume": "5cce3c57c413",
+              "all": "146b6a070fde",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 78,
+              "sent_epoch": 1787059940.807,
+              "rankedAt": "2026-08-18T22:32:09.000+09:00",
+              "order": "5d90cf6b9d89",
+              "volume": "5cce3c57c413",
+              "all": "13f85d93e972",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 79,
+              "sent_epoch": 1787059941.803,
+              "rankedAt": "2026-08-18T22:32:09.000+09:00",
+              "order": "5d90cf6b9d89",
+              "volume": "5cce3c57c413",
+              "all": "89a1b1aed70b",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 80,
+              "sent_epoch": 1787059942.792,
+              "rankedAt": "2026-08-18T22:32:09.000+09:00",
+              "order": "5d90cf6b9d89",
+              "volume": "5cce3c57c413",
+              "all": "e20637f02c0b",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 81,
+              "sent_epoch": 1787059943.794,
+              "rankedAt": "2026-08-18T22:32:09.000+09:00",
+              "order": "5d90cf6b9d89",
+              "volume": "5cce3c57c413",
+              "all": "eff2f42dd78e",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 82,
+              "sent_epoch": 1787059944.799,
+              "rankedAt": "2026-08-18T22:32:09.000+09:00",
+              "order": "5d90cf6b9d89",
+              "volume": "5cce3c57c413",
+              "all": "31fafb479911",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 83,
+              "sent_epoch": 1787059945.798,
+              "rankedAt": "2026-08-18T22:32:09.000+09:00",
+              "order": "5d90cf6b9d89",
+              "volume": "5cce3c57c413",
+              "all": "0e63864c6df8",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 84,
+              "sent_epoch": 1787059946.795,
+              "rankedAt": "2026-08-18T22:32:09.000+09:00",
+              "order": "5d90cf6b9d89",
+              "volume": "5cce3c57c413",
+              "all": "f9fb5d21fd05",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 85,
+              "sent_epoch": 1787059947.803,
+              "rankedAt": "2026-08-18T22:32:09.000+09:00",
+              "order": "5d90cf6b9d89",
+              "volume": "5cce3c57c413",
+              "all": "5552bd4f82c9",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 86,
+              "sent_epoch": 1787059948.796,
+              "rankedAt": "2026-08-18T22:32:09.000+09:00",
+              "order": "5d90cf6b9d89",
+              "volume": "5cce3c57c413",
+              "all": "c5bbb819a039",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 87,
+              "sent_epoch": 1787059949.794,
+              "rankedAt": "2026-08-18T22:32:09.000+09:00",
+              "order": "5d90cf6b9d89",
+              "volume": "5cce3c57c413",
+              "all": "98abc710bcb7",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 88,
+              "sent_epoch": 1787059950.807,
+              "rankedAt": "2026-08-18T22:32:09.000+09:00",
+              "order": "5d90cf6b9d89",
+              "volume": "5cce3c57c413",
+              "all": "b0516dd3de03",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 89,
+              "sent_epoch": 1787059951.796,
+              "rankedAt": "2026-08-18T22:32:19.000+09:00",
+              "order": "21fb82e07cbb",
+              "volume": "e3baa396757b",
+              "all": "2ca1a1230f73",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 90,
+              "sent_epoch": 1787059952.804,
+              "rankedAt": "2026-08-18T22:32:19.000+09:00",
+              "order": "21fb82e07cbb",
+              "volume": "e3baa396757b",
+              "all": "a9195f255938",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 91,
+              "sent_epoch": 1787059953.789,
+              "rankedAt": "2026-08-18T22:32:19.000+09:00",
+              "order": "21fb82e07cbb",
+              "volume": "e3baa396757b",
+              "all": "3a591366cd21",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 92,
+              "sent_epoch": 1787059954.793,
+              "rankedAt": "2026-08-18T22:32:19.000+09:00",
+              "order": "21fb82e07cbb",
+              "volume": "e3baa396757b",
+              "all": "aeea06a5f535",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 93,
+              "sent_epoch": 1787059955.804,
+              "rankedAt": "2026-08-18T22:32:19.000+09:00",
+              "order": "21fb82e07cbb",
+              "volume": "e3baa396757b",
+              "all": "1411eab16afa",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 94,
+              "sent_epoch": 1787059956.802,
+              "rankedAt": "2026-08-18T22:32:19.000+09:00",
+              "order": "21fb82e07cbb",
+              "volume": "e3baa396757b",
+              "all": "e7cd83d05628",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 95,
+              "sent_epoch": 1787059957.799,
+              "rankedAt": "2026-08-18T22:32:19.000+09:00",
+              "order": "21fb82e07cbb",
+              "volume": "e3baa396757b",
+              "all": "840a4239ccca",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 96,
+              "sent_epoch": 1787059958.797,
+              "rankedAt": "2026-08-18T22:32:19.000+09:00",
+              "order": "21fb82e07cbb",
+              "volume": "e3baa396757b",
+              "all": "990c8c5d8890",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 97,
+              "sent_epoch": 1787059959.805,
+              "rankedAt": "2026-08-18T22:32:19.000+09:00",
+              "order": "21fb82e07cbb",
+              "volume": "e3baa396757b",
+              "all": "7cdfa0af3d34",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 98,
+              "sent_epoch": 1787059960.798,
+              "rankedAt": "2026-08-18T22:32:19.000+09:00",
+              "order": "21fb82e07cbb",
+              "volume": "e3baa396757b",
+              "all": "362f965298aa",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 99,
+              "sent_epoch": 1787059961.795,
+              "rankedAt": "2026-08-18T22:32:19.000+09:00",
+              "order": "21fb82e07cbb",
+              "volume": "e3baa396757b",
+              "all": "824f629abd0b",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 100,
+              "sent_epoch": 1787059962.799,
+              "rankedAt": "2026-08-18T22:32:19.000+09:00",
+              "order": "21fb82e07cbb",
+              "volume": "e3baa396757b",
+              "all": "846440205c64",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 101,
+              "sent_epoch": 1787059963.795,
+              "rankedAt": "2026-08-18T22:32:19.000+09:00",
+              "order": "21fb82e07cbb",
+              "volume": "e3baa396757b",
+              "all": "8779b9d55f36",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 102,
+              "sent_epoch": 1787059964.795,
+              "rankedAt": "2026-08-18T22:32:19.000+09:00",
+              "order": "21fb82e07cbb",
+              "volume": "e3baa396757b",
+              "all": "d6d59ee1898f",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 103,
+              "sent_epoch": 1787059965.802,
+              "rankedAt": "2026-08-18T22:32:19.000+09:00",
+              "order": "21fb82e07cbb",
+              "volume": "e3baa396757b",
+              "all": "7c8d49345799",
+              "top3": [
+                "BIAF",
+                "SLE",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 104,
+              "sent_epoch": 1787059966.799,
+              "rankedAt": "2026-08-18T22:32:39.000+09:00",
+              "order": "0f1e92df6d01",
+              "volume": "52dfe00c9e8c",
+              "all": "c0fe710c6eb8",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "SLE"
+              ],
+              "error": null
+            },
+            {
+              "i": 105,
+              "sent_epoch": 1787059967.819,
+              "rankedAt": "2026-08-18T22:32:39.000+09:00",
+              "order": "0f1e92df6d01",
+              "volume": "52dfe00c9e8c",
+              "all": "306702a865c9",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "SLE"
+              ],
+              "error": null
+            },
+            {
+              "i": 106,
+              "sent_epoch": 1787059968.802,
+              "rankedAt": "2026-08-18T22:32:39.000+09:00",
+              "order": "0f1e92df6d01",
+              "volume": "52dfe00c9e8c",
+              "all": "670eb4aa7e4a",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "SLE"
+              ],
+              "error": null
+            },
+            {
+              "i": 107,
+              "sent_epoch": 1787059969.801,
+              "rankedAt": "2026-08-18T22:32:39.000+09:00",
+              "order": "0f1e92df6d01",
+              "volume": "52dfe00c9e8c",
+              "all": "8a04999c17eb",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "SLE"
+              ],
+              "error": null
+            },
+            {
+              "i": 108,
+              "sent_epoch": 1787059970.798,
+              "rankedAt": "2026-08-18T22:32:39.000+09:00",
+              "order": "0f1e92df6d01",
+              "volume": "52dfe00c9e8c",
+              "all": "0122f3073608",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "SLE"
+              ],
+              "error": null
+            },
+            {
+              "i": 109,
+              "sent_epoch": 1787059971.795,
+              "rankedAt": "2026-08-18T22:32:39.000+09:00",
+              "order": "0f1e92df6d01",
+              "volume": "52dfe00c9e8c",
+              "all": "c093b796679d",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "SLE"
+              ],
+              "error": null
+            },
+            {
+              "i": 110,
+              "sent_epoch": 1787059972.79,
+              "rankedAt": "2026-08-18T22:32:39.000+09:00",
+              "order": "0f1e92df6d01",
+              "volume": "52dfe00c9e8c",
+              "all": "5325eb90fd4c",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "SLE"
+              ],
+              "error": null
+            },
+            {
+              "i": 111,
+              "sent_epoch": 1787059973.798,
+              "rankedAt": "2026-08-18T22:32:39.000+09:00",
+              "order": "0f1e92df6d01",
+              "volume": "52dfe00c9e8c",
+              "all": "3571fec10e29",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "SLE"
+              ],
+              "error": null
+            },
+            {
+              "i": 112,
+              "sent_epoch": 1787059974.802,
+              "rankedAt": "2026-08-18T22:32:39.000+09:00",
+              "order": "0f1e92df6d01",
+              "volume": "52dfe00c9e8c",
+              "all": "b2ba2f2ee34d",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "SLE"
+              ],
+              "error": null
+            },
+            {
+              "i": 113,
+              "sent_epoch": 1787059975.799,
+              "rankedAt": "2026-08-18T22:32:39.000+09:00",
+              "order": "0f1e92df6d01",
+              "volume": "52dfe00c9e8c",
+              "all": "0dbe19f62549",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "SLE"
+              ],
+              "error": null
+            },
+            {
+              "i": 114,
+              "sent_epoch": 1787059976.798,
+              "rankedAt": "2026-08-18T22:32:39.000+09:00",
+              "order": "0f1e92df6d01",
+              "volume": "52dfe00c9e8c",
+              "all": "17c0898719cd",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "SLE"
+              ],
+              "error": null
+            },
+            {
+              "i": 115,
+              "sent_epoch": 1787059977.803,
+              "rankedAt": "2026-08-18T22:32:39.000+09:00",
+              "order": "0f1e92df6d01",
+              "volume": "52dfe00c9e8c",
+              "all": "5ecccb5c3dc7",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "SLE"
+              ],
+              "error": null
+            },
+            {
+              "i": 116,
+              "sent_epoch": 1787059978.803,
+              "rankedAt": "2026-08-18T22:32:39.000+09:00",
+              "order": "0f1e92df6d01",
+              "volume": "52dfe00c9e8c",
+              "all": "e7927ca602f6",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "SLE"
+              ],
+              "error": null
+            },
+            {
+              "i": 117,
+              "sent_epoch": 1787059979.8,
+              "rankedAt": "2026-08-18T22:32:39.000+09:00",
+              "order": "0f1e92df6d01",
+              "volume": "52dfe00c9e8c",
+              "all": "ea8984d2950e",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "SLE"
+              ],
+              "error": null
+            },
+            {
+              "i": 118,
+              "sent_epoch": 1787059980.796,
+              "rankedAt": "2026-08-18T22:32:49.000+09:00",
+              "order": "22775c07e8af",
+              "volume": "5b8073ac6eec",
+              "all": "3aba391de575",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 119,
+              "sent_epoch": 1787059981.791,
+              "rankedAt": "2026-08-18T22:32:49.000+09:00",
+              "order": "22775c07e8af",
+              "volume": "5b8073ac6eec",
+              "all": "fb0156dff582",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 120,
+              "sent_epoch": 1787059982.794,
+              "rankedAt": "2026-08-18T22:32:49.000+09:00",
+              "order": "22775c07e8af",
+              "volume": "5b8073ac6eec",
+              "all": "521ef6ede423",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 121,
+              "sent_epoch": 1787059983.795,
+              "rankedAt": "2026-08-18T22:32:49.000+09:00",
+              "order": "22775c07e8af",
+              "volume": "5b8073ac6eec",
+              "all": "06e24a83f7da",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 122,
+              "sent_epoch": 1787059984.802,
+              "rankedAt": "2026-08-18T22:32:49.000+09:00",
+              "order": "22775c07e8af",
+              "volume": "5b8073ac6eec",
+              "all": "78b3074a876e",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 123,
+              "sent_epoch": 1787059985.804,
+              "rankedAt": "2026-08-18T22:32:49.000+09:00",
+              "order": "22775c07e8af",
+              "volume": "5b8073ac6eec",
+              "all": "116f5ccc0e68",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 124,
+              "sent_epoch": 1787059986.799,
+              "rankedAt": "2026-08-18T22:32:49.000+09:00",
+              "order": "22775c07e8af",
+              "volume": "5b8073ac6eec",
+              "all": "491825aaa79f",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 125,
+              "sent_epoch": 1787059987.794,
+              "rankedAt": "2026-08-18T22:32:49.000+09:00",
+              "order": "22775c07e8af",
+              "volume": "5b8073ac6eec",
+              "all": "1a967c29fdc7",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 126,
+              "sent_epoch": 1787059988.804,
+              "rankedAt": "2026-08-18T22:32:49.000+09:00",
+              "order": "22775c07e8af",
+              "volume": "5b8073ac6eec",
+              "all": "a93702dae17e",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 127,
+              "sent_epoch": 1787059989.794,
+              "rankedAt": "2026-08-18T22:32:49.000+09:00",
+              "order": "22775c07e8af",
+              "volume": "5b8073ac6eec",
+              "all": "c73f32fbd1e2",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 128,
+              "sent_epoch": 1787059990.806,
+              "rankedAt": "2026-08-18T22:32:49.000+09:00",
+              "order": "22775c07e8af",
+              "volume": "5b8073ac6eec",
+              "all": "99af8fcf70bc",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 129,
+              "sent_epoch": 1787059991.802,
+              "rankedAt": "2026-08-18T22:32:49.000+09:00",
+              "order": "22775c07e8af",
+              "volume": "5b8073ac6eec",
+              "all": "a7deaaa53ce2",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 130,
+              "sent_epoch": 1787059992.804,
+              "rankedAt": "2026-08-18T22:32:49.000+09:00",
+              "order": "22775c07e8af",
+              "volume": "5b8073ac6eec",
+              "all": "482807452ad6",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 131,
+              "sent_epoch": 1787059993.796,
+              "rankedAt": "2026-08-18T22:32:49.000+09:00",
+              "order": "22775c07e8af",
+              "volume": "5b8073ac6eec",
+              "all": "19ef097c6a89",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 132,
+              "sent_epoch": 1787059994.795,
+              "rankedAt": "2026-08-18T22:32:49.000+09:00",
+              "order": "22775c07e8af",
+              "volume": "5b8073ac6eec",
+              "all": "9d32178b8bc2",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 133,
+              "sent_epoch": 1787059995.802,
+              "rankedAt": "2026-08-18T22:33:09.000+09:00",
+              "order": "f81df55232bc",
+              "volume": "fe006dd573fb",
+              "all": "3d8fc380933b",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 134,
+              "sent_epoch": 1787059996.796,
+              "rankedAt": "2026-08-18T22:33:09.000+09:00",
+              "order": "f81df55232bc",
+              "volume": "fe006dd573fb",
+              "all": "3b840c6c935c",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 135,
+              "sent_epoch": 1787059997.806,
+              "rankedAt": "2026-08-18T22:33:09.000+09:00",
+              "order": "f81df55232bc",
+              "volume": "fe006dd573fb",
+              "all": "78b8aecda297",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 136,
+              "sent_epoch": 1787059998.797,
+              "rankedAt": "2026-08-18T22:33:09.000+09:00",
+              "order": "f81df55232bc",
+              "volume": "fe006dd573fb",
+              "all": "1b2f4f1033f1",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 137,
+              "sent_epoch": 1787059999.805,
+              "rankedAt": "2026-08-18T22:33:09.000+09:00",
+              "order": "f81df55232bc",
+              "volume": "fe006dd573fb",
+              "all": "75c39a713649",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 138,
+              "sent_epoch": 1787060000.803,
+              "rankedAt": "2026-08-18T22:33:09.000+09:00",
+              "order": "f81df55232bc",
+              "volume": "fe006dd573fb",
+              "all": "ceb498f5a5b2",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 139,
+              "sent_epoch": 1787060001.79,
+              "rankedAt": "2026-08-18T22:33:09.000+09:00",
+              "order": "f81df55232bc",
+              "volume": "fe006dd573fb",
+              "all": "9436b1c437ef",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 140,
+              "sent_epoch": 1787060002.802,
+              "rankedAt": "2026-08-18T22:33:09.000+09:00",
+              "order": "f81df55232bc",
+              "volume": "fe006dd573fb",
+              "all": "c63a29d5662f",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 141,
+              "sent_epoch": 1787060003.792,
+              "rankedAt": "2026-08-18T22:33:09.000+09:00",
+              "order": "f81df55232bc",
+              "volume": "fe006dd573fb",
+              "all": "b9f232115eba",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 142,
+              "sent_epoch": 1787060004.793,
+              "rankedAt": "2026-08-18T22:33:09.000+09:00",
+              "order": "f81df55232bc",
+              "volume": "fe006dd573fb",
+              "all": "02a4e9ac6c15",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 143,
+              "sent_epoch": 1787060005.801,
+              "rankedAt": "2026-08-18T22:33:09.000+09:00",
+              "order": "f81df55232bc",
+              "volume": "fe006dd573fb",
+              "all": "600265ac4fbe",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 144,
+              "sent_epoch": 1787060006.803,
+              "rankedAt": "2026-08-18T22:33:09.000+09:00",
+              "order": "f81df55232bc",
+              "volume": "fe006dd573fb",
+              "all": "19008953fa10",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 145,
+              "sent_epoch": 1787060007.872,
+              "rankedAt": "2026-08-18T22:33:09.000+09:00",
+              "order": "f81df55232bc",
+              "volume": "fe006dd573fb",
+              "all": "e2144deb3058",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 146,
+              "sent_epoch": 1787060008.805,
+              "rankedAt": "2026-08-18T22:33:09.000+09:00",
+              "order": "f81df55232bc",
+              "volume": "fe006dd573fb",
+              "all": "f8f89e167dea",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 147,
+              "sent_epoch": 1787060009.795,
+              "rankedAt": "2026-08-18T22:33:09.000+09:00",
+              "order": "f81df55232bc",
+              "volume": "fe006dd573fb",
+              "all": "e70274ef6df0",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 148,
+              "sent_epoch": 1787060010.799,
+              "rankedAt": "2026-08-18T22:33:09.000+09:00",
+              "order": "f81df55232bc",
+              "volume": "fe006dd573fb",
+              "all": "adf5a159dde7",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 149,
+              "sent_epoch": 1787060011.809,
+              "rankedAt": "2026-08-18T22:33:19.000+09:00",
+              "order": "eb672d31312d",
+              "volume": "ef12c1aba027",
+              "all": "debcc5849117",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 150,
+              "sent_epoch": 1787060012.796,
+              "rankedAt": "2026-08-18T22:33:19.000+09:00",
+              "order": "eb672d31312d",
+              "volume": "ef12c1aba027",
+              "all": "949f16fbe737",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 151,
+              "sent_epoch": 1787060013.797,
+              "rankedAt": "2026-08-18T22:33:19.000+09:00",
+              "order": "eb672d31312d",
+              "volume": "ef12c1aba027",
+              "all": "01e2d30f53da",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 152,
+              "sent_epoch": 1787060014.804,
+              "rankedAt": "2026-08-18T22:33:19.000+09:00",
+              "order": "eb672d31312d",
+              "volume": "ef12c1aba027",
+              "all": "3f7f06aae081",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 153,
+              "sent_epoch": 1787060015.793,
+              "rankedAt": "2026-08-18T22:33:19.000+09:00",
+              "order": "eb672d31312d",
+              "volume": "ef12c1aba027",
+              "all": "7d54aa591d3d",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 154,
+              "sent_epoch": 1787060016.802,
+              "rankedAt": "2026-08-18T22:33:19.000+09:00",
+              "order": "eb672d31312d",
+              "volume": "ef12c1aba027",
+              "all": "caa5ffac1452",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 155,
+              "sent_epoch": 1787060017.798,
+              "rankedAt": "2026-08-18T22:33:19.000+09:00",
+              "order": "eb672d31312d",
+              "volume": "ef12c1aba027",
+              "all": "81c1a938079a",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 156,
+              "sent_epoch": 1787060018.796,
+              "rankedAt": "2026-08-18T22:33:19.000+09:00",
+              "order": "eb672d31312d",
+              "volume": "ef12c1aba027",
+              "all": "f5db4c0d9d93",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 157,
+              "sent_epoch": 1787060019.793,
+              "rankedAt": "2026-08-18T22:33:19.000+09:00",
+              "order": "eb672d31312d",
+              "volume": "ef12c1aba027",
+              "all": "56e5d3d68d3a",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 158,
+              "sent_epoch": 1787060020.799,
+              "rankedAt": "2026-08-18T22:33:19.000+09:00",
+              "order": "eb672d31312d",
+              "volume": "ef12c1aba027",
+              "all": "108330e533dd",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 159,
+              "sent_epoch": 1787060021.794,
+              "rankedAt": "2026-08-18T22:33:19.000+09:00",
+              "order": "eb672d31312d",
+              "volume": "ef12c1aba027",
+              "all": "014b6ba52ea0",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 160,
+              "sent_epoch": 1787060022.799,
+              "rankedAt": "2026-08-18T22:33:19.000+09:00",
+              "order": "eb672d31312d",
+              "volume": "ef12c1aba027",
+              "all": "277a7ae7ced8",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 161,
+              "sent_epoch": 1787060023.795,
+              "rankedAt": "2026-08-18T22:33:19.000+09:00",
+              "order": "eb672d31312d",
+              "volume": "ef12c1aba027",
+              "all": "58c6a6672c25",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 162,
+              "sent_epoch": 1787060024.793,
+              "rankedAt": "2026-08-18T22:33:19.000+09:00",
+              "order": "eb672d31312d",
+              "volume": "ef12c1aba027",
+              "all": "c5f4328b2515",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 163,
+              "sent_epoch": 1787060025.795,
+              "rankedAt": "2026-08-18T22:33:19.000+09:00",
+              "order": "eb672d31312d",
+              "volume": "ef12c1aba027",
+              "all": "e0a1c4ab20cd",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 164,
+              "sent_epoch": 1787060026.797,
+              "rankedAt": "2026-08-18T22:33:19.000+09:00",
+              "order": "eb672d31312d",
+              "volume": "ef12c1aba027",
+              "all": "bd403a83f80c",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 165,
+              "sent_epoch": 1787060027.794,
+              "rankedAt": "2026-08-18T22:33:39.000+09:00",
+              "order": "8a31cb3bd682",
+              "volume": "e4685fe2c44a",
+              "all": "74ea4f04d246",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 166,
+              "sent_epoch": 1787060028.795,
+              "rankedAt": "2026-08-18T22:33:39.000+09:00",
+              "order": "8a31cb3bd682",
+              "volume": "e4685fe2c44a",
+              "all": "319567d7e458",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 167,
+              "sent_epoch": 1787060029.794,
+              "rankedAt": "2026-08-18T22:33:39.000+09:00",
+              "order": "8a31cb3bd682",
+              "volume": "e4685fe2c44a",
+              "all": "e36f0cf930a7",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 168,
+              "sent_epoch": 1787060030.796,
+              "rankedAt": "2026-08-18T22:33:39.000+09:00",
+              "order": "8a31cb3bd682",
+              "volume": "e4685fe2c44a",
+              "all": "f8ea07491831",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 169,
+              "sent_epoch": 1787060031.807,
+              "rankedAt": "2026-08-18T22:33:39.000+09:00",
+              "order": "8a31cb3bd682",
+              "volume": "e4685fe2c44a",
+              "all": "10a8df4e46d2",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 170,
+              "sent_epoch": 1787060032.804,
+              "rankedAt": "2026-08-18T22:33:39.000+09:00",
+              "order": "8a31cb3bd682",
+              "volume": "e4685fe2c44a",
+              "all": "38a69314d9a3",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 171,
+              "sent_epoch": 1787060033.795,
+              "rankedAt": "2026-08-18T22:33:39.000+09:00",
+              "order": "8a31cb3bd682",
+              "volume": "e4685fe2c44a",
+              "all": "5883a250641f",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 172,
+              "sent_epoch": 1787060034.794,
+              "rankedAt": "2026-08-18T22:33:39.000+09:00",
+              "order": "8a31cb3bd682",
+              "volume": "e4685fe2c44a",
+              "all": "26d33f183203",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 173,
+              "sent_epoch": 1787060035.806,
+              "rankedAt": "2026-08-18T22:33:39.000+09:00",
+              "order": "8a31cb3bd682",
+              "volume": "e4685fe2c44a",
+              "all": "af0c4c2957d8",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 174,
+              "sent_epoch": 1787060036.795,
+              "rankedAt": "2026-08-18T22:33:39.000+09:00",
+              "order": "8a31cb3bd682",
+              "volume": "e4685fe2c44a",
+              "all": "88b165e89b99",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 175,
+              "sent_epoch": 1787060037.801,
+              "rankedAt": "2026-08-18T22:33:49.000+09:00",
+              "order": "b60a8e8eacc8",
+              "volume": "cd19ee5e7df9",
+              "all": "1da46f89ea85",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 176,
+              "sent_epoch": 1787060038.801,
+              "rankedAt": "2026-08-18T22:33:49.000+09:00",
+              "order": "b60a8e8eacc8",
+              "volume": "cd19ee5e7df9",
+              "all": "7421914a28d9",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 177,
+              "sent_epoch": 1787060039.799,
+              "rankedAt": "2026-08-18T22:33:49.000+09:00",
+              "order": "b60a8e8eacc8",
+              "volume": "cd19ee5e7df9",
+              "all": "21a0de86f672",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 178,
+              "sent_epoch": 1787060040.796,
+              "rankedAt": "2026-08-18T22:33:49.000+09:00",
+              "order": "b60a8e8eacc8",
+              "volume": "cd19ee5e7df9",
+              "all": "e34fd615e90b",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            },
+            {
+              "i": 179,
+              "sent_epoch": 1787060041.798,
+              "rankedAt": "2026-08-18T22:33:49.000+09:00",
+              "order": "b60a8e8eacc8",
+              "volume": "cd19ee5e7df9",
+              "all": "a5e4d9eae83a",
+              "top3": [
+                "BIAF",
+                "AIXC",
+                "DVLT"
+              ],
+              "error": null
+            }
+          ]
+        },
+        "5s": {
+          "polls": 240,
+          "stride": 1,
+          "span_s": 1195.0,
+          "actual_gap_s": {
+            "n": 239,
+            "min": 4.749,
+            "p50": 5.0,
+            "max": 5.268,
+            "mean": 5.0
+          },
+          "rankedAt": {
+            "distinct": 82,
+            "changes": 81,
+            "changes_per_min": 4.07,
+            "observed_interval_s": {
+              "n": 80,
+              "min": 9.99,
+              "p50": 15.0,
+              "max": 20.01,
+              "mean": 14.75
+            },
+            "server_stamp_delta_s": {
+              "n": 80,
+              "min": 10.0,
+              "p50": 10.0,
+              "max": 20.0,
+              "mean": 14.88
+            },
+            "server_stamp_delta_hist": {
+              "10.0": 41,
+              "20.0": 39
+            },
+            "stamp_lag_s": {
+              "n": 240,
+              "min": 8.0,
+              "p50": 18.0,
+              "max": 28.0,
+              "mean": 16.54
+            }
+          },
+          "order": {
+            "distinct": 82,
+            "changes": 81,
+            "changes_per_min": 4.07,
+            "observed_interval_s": {
+              "n": 80,
+              "min": 9.99,
+              "p50": 15.0,
+              "max": 20.01,
+              "mean": 14.75
+            }
+          },
+          "volume": {
+            "distinct": 82,
+            "changes": 81,
+            "changes_per_min": 4.07,
+            "observed_interval_s": {
+              "n": 80,
+              "min": 9.99,
+              "p50": 15.0,
+              "max": 20.01,
+              "mean": 14.75
+            }
+          },
+          "last": {
+            "distinct": 240,
+            "changes": 239,
+            "changes_per_min": 12.0,
+            "observed_interval_s": {
+              "n": 238,
+              "min": 4.75,
+              "p50": 5.0,
+              "max": 5.27,
+              "mean": 5.0
+            }
+          },
+          "rate": {
+            "distinct": 240,
+            "changes": 239,
+            "changes_per_min": 12.0,
+            "observed_interval_s": {
+              "n": 238,
+              "min": 4.75,
+              "p50": 5.0,
+              "max": 5.27,
+              "mean": 5.0
+            }
+          },
+          "all": {
+            "distinct": 240,
+            "changes": 239,
+            "changes_per_min": 12.0,
+            "observed_interval_s": {
+              "n": 238,
+              "min": 4.75,
+              "p50": 5.0,
+              "max": 5.27,
+              "mean": 5.0
+            }
+          },
+          "stamp_vs_content": {
+            "both": 81,
+            "stamp_only": 0,
+            "content_only": 158,
+            "neither": 0
+          },
+          "nominal_gap_s": 5.0,
+          "start_kst": "2026-08-18T22:34:06.955+09:00",
+          "errors": 0,
+          "collector_429_during": 0
+        },
+        "12s": {
+          "polls": 100,
+          "stride": 1,
+          "span_s": 1188.0,
+          "actual_gap_s": {
+            "n": 99,
+            "min": 11.952,
+            "p50": 12.0,
+            "max": 12.044,
+            "mean": 12.0
+          },
+          "rankedAt": {
+            "distinct": 80,
+            "changes": 79,
+            "changes_per_min": 3.99,
+            "observed_interval_s": {
+              "n": 78,
+              "min": 11.97,
+              "p50": 12.0,
+              "max": 24.01,
+              "mean": 15.08
+            },
+            "server_stamp_delta_s": {
+              "n": 78,
+              "min": 10.0,
+              "p50": 20.0,
+              "max": 30.0,
+              "mean": 15.13
+            },
+            "server_stamp_delta_hist": {
+              "10.0": 39,
+              "20.0": 38,
+              "30.0": 1
+            },
+            "stamp_lag_s": {
+              "n": 100,
+              "min": 6.1,
+              "p50": 18.1,
+              "max": 30.2,
+              "mean": 18.61
+            }
+          },
+          "order": {
+            "distinct": 80,
+            "changes": 79,
+            "changes_per_min": 3.99,
+            "observed_interval_s": {
+              "n": 78,
+              "min": 11.97,
+              "p50": 12.0,
+              "max": 24.01,
+              "mean": 15.08
+            }
+          },
+          "volume": {
+            "distinct": 80,
+            "changes": 79,
+            "changes_per_min": 3.99,
+            "observed_interval_s": {
+              "n": 78,
+              "min": 11.97,
+              "p50": 12.0,
+              "max": 24.01,
+              "mean": 15.08
+            }
+          },
+          "last": {
+            "distinct": 100,
+            "changes": 99,
+            "changes_per_min": 5.0,
+            "observed_interval_s": {
+              "n": 98,
+              "min": 11.95,
+              "p50": 12.0,
+              "max": 12.04,
+              "mean": 12.0
+            }
+          },
+          "rate": {
+            "distinct": 100,
+            "changes": 99,
+            "changes_per_min": 5.0,
+            "observed_interval_s": {
+              "n": 98,
+              "min": 11.95,
+              "p50": 12.0,
+              "max": 12.04,
+              "mean": 12.0
+            }
+          },
+          "all": {
+            "distinct": 100,
+            "changes": 99,
+            "changes_per_min": 5.0,
+            "observed_interval_s": {
+              "n": 98,
+              "min": 11.95,
+              "p50": 12.0,
+              "max": 12.04,
+              "mean": 12.0
+            }
+          },
+          "stamp_vs_content": {
+            "both": 79,
+            "stamp_only": 0,
+            "content_only": 20,
+            "neither": 0
+          },
+          "nominal_gap_s": 12.0,
+          "start_kst": "2026-08-18T22:54:07.117+09:00",
+          "errors": 0,
+          "collector_429_during": 0
+        }
+      }
+    },
+    "top_gainers_1d": {
+      "params": {
+        "type": "TOP_GAINERS",
+        "marketCountry": "US",
+        "duration": "1d",
+        "count": 100
+      },
+      "arms": {}
+    },
+    "universe_overlap": {
+      "TOSS_SECURITIES_TRADING_VOLUME": {
+        "rows": 100,
+        "in_price_band_cfg_0.10_20": {
+          "n": 82,
+          "pct": 82.0
+        },
+        "in_price_band_task_2_5": {
+          "n": 18,
+          "pct": 18.0
+        },
+        "passes_tier0_full": {
+          "n": 23,
+          "pct": 23.0
+        },
+        "meta_resolved": 100,
+        "symbols": [
+          "LGCL",
+          "SAGT",
+          "AIXC",
+          "SLE",
+          "WFF",
+          "BIAF",
+          "OSRH",
+          "DVLT",
+          "EJH",
+          "XOS",
+          "SOXS",
+          "AGRZ",
+          "FAMI",
+          "KORU",
+          "IPST",
+          "SOXL",
+          "UCL",
+          "WETO",
+          "OTLK",
+          "GNPX",
+          "RAM",
+          "YYAI",
+          "VBIO",
+          "PLAG",
+          "CLDI",
+          "WOK",
+          "PFSA",
+          "PBK",
+          "EYPT",
+          "SGLY",
+          "UDN",
+          "TYGO",
+          "JFU",
+          "ENVX",
+          "ENRD",
+          "IVF",
+          "TRUG",
+          "RITR",
+          "IONQ",
+          "TPST",
+          "GFAI",
+          "RAMZ",
+          "AMLX",
+          "INV",
+          "YMT",
+          "BATL",
+          "MRNA",
+          "IREN",
+          "JOBY",
+          "SNYR",
+          "SURG",
+          "EROC",
+          "VCIG",
+          "TSLL",
+          "ZENA",
+          "AIB",
+          "RDWU",
+          "SKYQ",
+          "UAVS",
+          "WOLF",
+          "CBRG",
+          "HIVE",
+          "BAOS",
+          "SXTC",
+          "LAES",
+          "LUNR",
+          "MSTU",
+          "SLNH",
+          "TQQQ",
+          "AUUD",
+          "CRGO",
+          "HAO",
+          "GETY",
+          "SCHD",
+          "QQQI",
+          "UZX",
+          "CLGN",
+          "INDI",
+          "CISS",
+          "SKYE",
+          "RZLV",
+          "NCPL",
+          "LESL",
+          "LIMN",
+          "OFAL",
+          "BZAI",
+          "IPDN",
+          "ETHU",
+          "JEPQ",
+          "AKAN",
+          "QLD",
+          "ARTL",
+          "SMU",
+          "DUOT",
+          "SGOV",
+          "YCBD",
+          "BTQ",
+          "SMR",
+          "YRD",
+          "SPCX"
+        ]
+      },
+      "TOP_GAINERS": {
+        "rows": 100,
+        "in_price_band_cfg_0.10_20": {
+          "n": 83,
+          "pct": 83.0
+        },
+        "in_price_band_task_2_5": {
+          "n": 21,
+          "pct": 21.0
+        },
+        "passes_tier0_full": {
+          "n": 30,
+          "pct": 30.0
+        },
+        "meta_resolved": 100,
+        "symbols": [
+          "AIXC",
+          "PFSA",
+          "XOS",
+          "SLE",
+          "WETO",
+          "AMLX",
+          "IPST",
+          "EJH",
+          "WEAV",
+          "SGLY",
+          "CBRZ",
+          "AGRZ",
+          "BIAF",
+          "SXTC",
+          "DUOT",
+          "AAOZ",
+          "SAGT",
+          "WFF",
+          "VOGX",
+          "BEZ",
+          "AEI",
+          "YYAI",
+          "SOXS",
+          "BANL",
+          "CORD",
+          "FLXS",
+          "OFAL",
+          "RCON",
+          "SNDQ",
+          "HAE",
+          "LITZ",
+          "RAMZ",
+          "SKDD",
+          "SMHD",
+          "TJGC",
+          "MWC",
+          "ASTN",
+          "XRTX",
+          "MUZ",
+          "RETO",
+          "OSRH",
+          "APLM",
+          "SKHN",
+          "COPR",
+          "CHRS",
+          "UUU",
+          "DVLT",
+          "CDTG",
+          "ANGX",
+          "APLZ",
+          "FCUV",
+          "OKLS",
+          "BNR",
+          "NMAX",
+          "WATR",
+          "KURA",
+          "DAMD",
+          "DUOG",
+          "IBGM",
+          "WBX",
+          "IVVD",
+          "NTHI",
+          "FLZH",
+          "INM",
+          "LVWR",
+          "SPOG",
+          "AIAI",
+          "AUUD",
+          "LBGJ",
+          "WFCF",
+          "IDUB",
+          "SPCQ",
+          "ADBG",
+          "SLMT",
+          "RKLZ",
+          "ADBU",
+          "CELU",
+          "BIO.B",
+          "QBTZ",
+          "SNK",
+          "RANI",
+          "OBX",
+          "REED",
+          "SPCG",
+          "LOFD",
+          "REFR",
+          "SSPC",
+          "EPOW",
+          "ILAG",
+          "ENRD",
+          "SSG",
+          "LIQT",
+          "FLUX",
+          "NTRP",
+          "BTCT",
+          "IONZ",
+          "FIGG",
+          "PMTL",
+          "PMEC",
+          "TECS"
+        ]
+      },
+      "TOP_LOSERS": {
+        "rows": 100,
+        "in_price_band_cfg_0.10_20": {
+          "n": 70,
+          "pct": 70.0
+        },
+        "in_price_band_task_2_5": {
+          "n": 7,
+          "pct": 7.0
+        },
+        "passes_tier0_full": {
+          "n": 10,
+          "pct": 10.0
+        },
+        "meta_resolved": 100,
+        "symbols": [
+          "LGCL",
+          "FNG",
+          "SNYR",
+          "UCL",
+          "DCGO",
+          "FAMI",
+          "ZTG",
+          "NCPL",
+          "NOMA",
+          "CBRG",
+          "CBRX",
+          "RITR",
+          "LGHL",
+          "SCKT",
+          "COHH",
+          "COHX",
+          "ALPS",
+          "TRUG",
+          "MYSZ",
+          "KLAR",
+          "AAOG",
+          "ELWT",
+          "AEHG",
+          "THCH",
+          "AAOX",
+          "QNTU",
+          "FN",
+          "OUSL",
+          "BIDG",
+          "FOMG",
+          "BEX",
+          "AMKL",
+          "BEG",
+          "CRDU",
+          "MRAX",
+          "COHC",
+          "KORU",
+          "MXLL",
+          "NVTX",
+          "CWVX",
+          "CRWG",
+          "SOXL",
+          "CRWU",
+          "AIFU",
+          "AXTU",
+          "SMTG",
+          "TTMX",
+          "MTSG",
+          "AXTX",
+          "AXTL",
+          "SNDC",
+          "ONTX",
+          "CRWX",
+          "SNDU",
+          "ALA",
+          "SNDG",
+          "POEL",
+          "SNXX",
+          "STXL",
+          "MVLL",
+          "INTW",
+          "INT",
+          "AIXI",
+          "SNSC",
+          "LRCU",
+          "TERG",
+          "STXX",
+          "STXU",
+          "LINT",
+          "MRVU",
+          "CIEG",
+          "LABX",
+          "WDCX",
+          "TSEG",
+          "WYFL",
+          "BEC",
+          "SITX",
+          "RAM",
+          "XNDX",
+          "LITU",
+          "AIB",
+          "DRAL",
+          "LRCC",
+          "LITX",
+          "SK",
+          "ENTL",
+          "ARMA",
+          "SKHU",
+          "MRVX",
+          "SKHL",
+          "SKHX",
+          "RAML",
+          "SKUU",
+          "WZRD",
+          "ARMG",
+          "AUR",
+          "QSU",
+          "EUVX",
+          "ASTY",
+          "HYNX"
+        ]
+      },
+      "_symbols_resolved": "265/265"
+    },
+    "aborted": null,
+    "verdict": "확인됨",
+    "telemetry_at_end": {
+      "at_kst": "2026-08-18 23:10:09",
+      "age_s": 232.8,
+      "md_peak_1s": 10,
+      "chart_peak_1s": 4,
+      "http_429": 1,
+      "over_limit_1s": 0,
+      "tier2": 309,
+      "tier3": 10
+    },
+    "collector_429_total_during_probe": 0,
+    "calls_used": 529,
+    "_calls": 529,
+    "_elapsed_s": 2581.1
+  }
+}
