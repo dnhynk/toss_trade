@@ -854,9 +854,16 @@ def _analyze_arm(polls: list[dict], stride: int = 1) -> dict:
         }
         if sig == "rankedAt":
             # 서버 스탬프끼리의 차 — 우리 자에 갇히지 않는 유일한 숫자.
+            # **첫 전이의 델타도 센다** (2026-08-19 수정). 이전 판은
+            # `for k in range(1, len(idx))` 로 돌아 `idx[0]` 이 짝을 못 얻었고,
+            # 그래서 히스토그램의 델타 수가 늘 `changes − 1` 이었다. 08-18 정규장
+            # 1 초 팔에서 실제로 `changes=12` 인데 히스토그램은 `n=11` 이었고
+            # **빠진 것이 `+20.0s`** 라 미수신을 과소보고했다 (docs/35 §9-2).
+            # 변화 **직전** 값은 `vals[k-1]` 이다 — 전이 사이에는 값이 안 변하므로
+            # 이전 판이 낸 델타 값들 자체는 옳았고, 하나가 빠져 있었을 뿐이다.
             sd = []
-            for k in range(1, len(idx)):
-                a, b = vals[idx[k - 1]], vals[idx[k]]
+            for k in idx:
+                a, b = vals[k - 1], vals[k]
                 if a and b:
                     sd.append(round((iso_to_ms(b) - iso_to_ms(a)) / 1000.0, 2))
             rec["server_stamp_delta_s"] = _stats(sd)
