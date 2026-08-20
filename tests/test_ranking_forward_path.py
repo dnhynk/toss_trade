@@ -1,4 +1,4 @@
-"""랭킹 사건의 **전방 가격 경로** (`docs/64`). 이 파일이 지키는 것 아홉.
+"""랭킹 사건의 **전방 가격 경로** (`docs/64` · `docs/65`). 이 파일이 지키는 것 열둘.
 
 1. **사건 정의에 가격이 한 번도 들어가지 않는다.** `last_u` 를 통째로 뒤흔들어도
    앵커가 붙는 사건 수가 같아야 한다. 설계 A 가 *"탐지가 상승을 소진한다"* 로 죽은
@@ -15,6 +15,16 @@
    코드가 막는 것은 다르다.
 8. **라벨 넷이 모든 산출물에 붙고 판정 문구가 없다.** 이 태스크의 지위 자체다.
 9. **콘솔이 ASCII 다.** cp949 콘솔에서 비 ASCII 는 `UnicodeEncodeError` 로 죽는다.
+
+`docs/65` 가 더한 셋:
+
+10. **새 추첨기가 옛 추첨기와 같은 추첨이다.** 밴드를 하나 더 켤 수 있게 새로 썼는데
+    그 자체가 팔 사이 차이를 만들면 사다리가 사다리가 아니다(`docs/44` §14-1).
+    `match_fwd=False` 에서 `draw_stratified` 와 **배열까지** 같아야 한다.
+11. **새 정합 키가 미래를 안 쓴다.** `nbar300` 은 직전 300 초다 - 뒤를 잘라내고 다시
+    불러도 같은 값이어야 한다. 이 성질이 이 키를 정합 축에 넣을 수 있는 유일한 근거다.
+12. **확증 팔을 안 연다.** 2026-08-13 이후 세션이 산출물에 닿으면 `E` 를 확증 데이터에
+    맞춰 고르는 길이 열린다(`G2G3-PREREG` §5-1). 규율이 아니라 코드가 막는지 본다.
 """
 from __future__ import annotations
 
@@ -131,11 +141,13 @@ def report(db, tmp_path_factory):
     return json.loads((out / "ranking_forward_path.json").read_text(encoding="utf-8")), out
 
 
-def _cell(rep, rtype="TOSS_SECURITIES_TRADING_VOLUME", kind="E1_new_entry", cell="N50"):
+def _cell(rep, rtype="TOSS_SECURITIES_TRADING_VOLUME", kind="E1_new_entry",
+          cell="N50", tier="all"):
     for r in rep["cells"]:
-        if (r["ranking_type"], r["kind"], r["cell"]) == (rtype, kind, cell):
+        if (r["ranking_type"], r["kind"], r["cell"], r["tier"]) == (
+                rtype, kind, cell, tier):
             return r
-    raise AssertionError(f"cell not in report: {rtype} {kind} {cell}")
+    raise AssertionError(f"cell not in report: {rtype} {kind} {cell} {tier}")
 
 
 # --------------------------------------------------------------------------- #
@@ -231,16 +243,17 @@ def test_placebo_bars_never_sit_inside_the_events_own_window(db):
     finally:
         conn.close()
     from tossmon.analysis.measure.density_matched_placebo import (
-        add_trade_count, draw_stratified, stratified_index)
+        add_trade_count, stratified_index)
     from tossmon.analysis.measure.vol_matched_placebo import build_universe
     uni = add_trade_count(build_universe(bars, lookback_s=RFP.VOL_LOOKBACK_S), bars)
     syms = sorted(uni)
     si = syms.index("BBB")
     ts = uni["BBB"]["ts"]
     anchor = np.asarray([1500], dtype="int64")
-    d = draw_stratified(uni, syms, stratified_index(uni, syms),
+    uni = RFP.add_forward_depth_proxy(uni)
+    d = RFP.draw_banded(uni, syms, stratified_index(uni, syms),
                         np.asarray([si], dtype="int64"), anchor,
-                        match_band=True, match_strat=True,
+                        match_band=True, match_strat=True, match_fwd=True,
                         draws=RFP.MATCH_DRAWS, gap_s=RFP.SELF_GAP_S,
                         rng=np.random.default_rng(RFP.SEED))
     assert d["sym"].size > 0, "nothing was drawn - the test would be vacuous"
@@ -258,21 +271,26 @@ def test_matched_arm_actually_narrows_the_volatility_band(db):
         un = box["arms"].get("placebo_unmatched")
         vm = box["arms"].get("placebo_vol_matched")
         vd = box["arms"].get("placebo_vol_density_matched")
-        if not (un and vm and vd):
+        vf = box["arms"].get("placebo_vol_density_nbar300_matched")
+        if not (un and vm and vd and vf):
             continue
         a = RFP.merge_pairing(un["pairing"])
         b = RFP.merge_pairing(vm["pairing"])
         c = RFP.merge_pairing(vd["pairing"])
+        e = RFP.merge_pairing(vf["pairing"])
         # 밴드를 더할수록 짝은 줄기만 한다 - 늘어나면 사다리가 사다리가 아니다.
-        assert a["n_paired"] >= b["n_paired"] >= c["n_paired"]
+        assert a["n_paired"] >= b["n_paired"] >= c["n_paired"] >= e["n_paired"]
         return
     pytest.fail("no cell carried the full placebo ladder")
 
 
 def test_the_ladder_changes_exactly_one_band_at_a_time():
-    """`docs/44` §14-1 의 규율이 상수에 박혀 있는지."""
-    assert [(b, s) for _a, b, s in RFP.PLACEBO_ARMS] == [(False, False), (True, False),
-                                                         (True, True)]
+    """`docs/44` §14-1 의 규율이 상수에 박혀 있는지. 칸마다 밴드가 **하나씩** 켜진다."""
+    got = [(b, s, f) for _a, b, s, f in RFP.PLACEBO_ARMS]
+    assert got == [(False, False, False), (True, False, False),
+                   (True, True, False), (True, True, True)]
+    for prev, cur in zip(got, got[1:]):
+        assert sum(int(x) for x in cur) - sum(int(x) for x in prev) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -356,9 +374,9 @@ def test_the_planted_holdout_rows_really_exist_so_the_guard_is_what_removed_them
 # --------------------------------------------------------------------------- #
 # 8. 라벨 넷과 판정 금지
 # --------------------------------------------------------------------------- #
-def test_every_report_carries_the_four_labels(report):
+def test_every_report_carries_the_five_labels(report):
     rep, _out = report
-    assert rep["labels"] == list(RFP.LABELS) and len(rep["labels"]) == 4
+    assert rep["labels"] == list(RFP.LABELS) and len(rep["labels"]) == 5
     assert rep["labels"][0] == "EXPLORATION - NOT A VERDICT"
 
 
@@ -367,6 +385,9 @@ def test_labels_name_the_poll_conditions_and_the_confirmation_rule(report):
     blob = " ".join(rep["labels"])
     assert "12.4s poll" in blob and "16.1s old" in blob and "29%" in blob
     assert "2026-08-13" in blob
+    # 다섯째 라벨: 그 조건이 흔들렸다는 실측을 같은 자리에 적는다. 셋째를 지우지
+    # 않는다 - 두 값이 나란히 있어야 어느 쪽을 인용했는지 보인다.
+    assert "16.8 / 18.0 / 18.1s" in blob and ":29 and :59" in blob
 
 
 def test_the_report_never_claims_a_verdict(report):
@@ -522,3 +543,242 @@ def test_the_db_is_opened_read_only(db):
             conn.execute("DELETE FROM rankings_snap")
     finally:
         conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# 10. 새 추첨기는 **같은 추첨**이다 - 팔 사이 차이가 기계에서 나오면 안 된다
+# --------------------------------------------------------------------------- #
+def _universe_for_draw(db):
+    conn = HE.open_ro(db)
+    try:
+        s = RFP.scan_sessions(conn, HE.holdout_floor_ms(),
+                              int(conn.execute("SELECT MAX(snap_ms) "
+                                               "FROM rankings_snap").fetchone()[0]))[0]
+        bars = RFP.session_second_bars(conn, s["open_ms"], s["close_ms"])
+    finally:
+        conn.close()
+    from tossmon.analysis.measure.density_matched_placebo import (
+        add_trade_count, stratified_index)
+    from tossmon.analysis.measure.vol_matched_placebo import build_universe
+    uni = RFP.add_forward_depth_proxy(
+        add_trade_count(build_universe(bars, lookback_s=RFP.VOL_LOOKBACK_S), bars))
+    syms = sorted(uni)
+    return uni, syms, stratified_index(uni, syms)
+
+
+@pytest.mark.parametrize("mb,ms", [(False, False), (True, False), (True, True)])
+def test_draw_banded_is_the_same_draw_as_draw_stratified_when_the_band_is_off(db, mb, ms):
+    """사다리의 규율은 *"팔 사이에 달라지는 것은 밴드 하나뿐"* 이다(`docs/44` §14-1).
+
+    새 팔만 다른 추첨기를 쓰면 팔 사이의 차이가 밴드가 아니라 **기계**에서 나온다.
+    그래서 `match_fwd=False` 에서 두 함수가 **배열까지** 같은지 본다 - 통계적으로
+    비슷한 것으로는 부족하다.
+    """
+    from tossmon.analysis.measure.density_matched_placebo import draw_stratified
+    uni, syms, index = _universe_for_draw(db)
+    si = syms.index("BBB")
+    fs = np.full(6, si, dtype="int64")
+    fb = np.asarray([300, 700, 1100, 1500, 1900, 2300], dtype="int64")
+    kw = dict(match_band=mb, match_strat=ms, draws=RFP.MATCH_DRAWS,
+              gap_s=RFP.SELF_GAP_S)
+    a = draw_stratified(uni, syms, index, fs, fb,
+                        rng=np.random.default_rng(RFP.SEED), **kw)
+    b = RFP.draw_banded(uni, syms, index, fs, fb, match_fwd=False,
+                        rng=np.random.default_rng(RFP.SEED), **kw)
+    assert a["n_paired"] > 0, "nothing was paired - the test would be vacuous"
+    assert np.array_equal(a["sym"], b["sym"])
+    assert np.array_equal(a["bar"], b["bar"])
+    assert np.array_equal(a["slot"], b["slot"])
+    assert np.array_equal(a["paired"], b["paired"])
+    for k in ("n_fires", "n_paired", "n_unpaired", "unpaired_key_missing",
+              "unpaired_empty_band", "unpaired_gap_excluded_only"):
+        assert a[k] == b[k], k
+
+
+def test_the_forward_depth_band_actually_bites(db):
+    """"맞췄다" 는 주장이 아니라 관측이어야 한다 - 뽑힌 막대가 밴드 안에 있어야 한다."""
+    from tossmon.analysis.measure.density_matched_placebo import DENSITY_TOL, density_band
+    uni, syms, index = _universe_for_draw(db)
+    si = syms.index("BBB")
+    fs = np.full(6, si, dtype="int64")
+    fb = np.asarray([300, 700, 1100, 1500, 1900, 2300], dtype="int64")
+    d = RFP.draw_banded(uni, syms, index, fs, fb, match_band=True,
+                        match_strat=True, match_fwd=True, draws=RFP.MATCH_DRAWS,
+                        gap_s=RFP.SELF_GAP_S, rng=np.random.default_rng(RFP.SEED))
+    assert d["sym"].size > 0, "nothing was drawn - the test would be vacuous"
+    fw = np.asarray(uni["BBB"][RFP.FWD_PROXY_KEY], dtype="float64")
+    for slot, bar in zip(d["slot"], d["bar"]):
+        lo, hi = density_band(float(fw[fb[int(slot)]]), DENSITY_TOL)
+        assert lo <= fw[int(bar)] <= hi
+
+
+def test_a_wider_ladder_never_pairs_more_than_a_narrower_one(db):
+    """밴드를 켜면 후보가 줄기만 한다 - 늘어나면 후보 풀이 팔마다 다른 것이다."""
+    uni, syms, index = _universe_for_draw(db)
+    si = syms.index("BBB")
+    fs = np.full(6, si, dtype="int64")
+    fb = np.asarray([300, 700, 1100, 1500, 1900, 2300], dtype="int64")
+    sizes = []
+    for _a, mb, ms, mf in RFP.PLACEBO_ARMS:
+        d = RFP.draw_banded(uni, syms, index, fs, fb, match_band=mb,
+                            match_strat=ms, match_fwd=mf, draws=RFP.MATCH_DRAWS,
+                            gap_s=RFP.SELF_GAP_S,
+                            rng=np.random.default_rng(RFP.SEED))
+        sizes.append(d["band_size"].get("p50"))
+    got = [s for s in sizes if s is not None]
+    assert len(got) == len(sizes)
+    assert got == sorted(got, reverse=True)
+
+
+# --------------------------------------------------------------------------- #
+# 11. 새 정합 키는 **미래를 안 쓴다**
+# --------------------------------------------------------------------------- #
+def test_the_forward_depth_proxy_never_looks_past_its_own_bar():
+    """접두사 불변 - 뒤를 잘라내고 다시 불러도 같은 값이어야 한다.
+
+    이 성질이 `nbar300` 을 정합 축에 넣을 수 있게 하는 **유일한** 근거다. 깨지면
+    이 팔은 결과와 같은 창의 양으로 정합한 것이 되고, 그게 바로 안 하려던 일이다.
+    """
+    ts = np.arange(0, 900, 1, dtype="int64") * 1000
+    ts = ts[(ts // 1000) % 3 != 1]
+    full = RFP.trailing_bar_count(ts, lookback_s=RFP.FWD_PROXY_LOOKBACK_S)
+    for cut in (50, 120, 300, 500):
+        part = RFP.trailing_bar_count(ts[:cut],
+                                      lookback_s=RFP.FWD_PROXY_LOOKBACK_S)
+        assert np.array_equal(part, full[:cut])
+
+
+def test_the_forward_depth_proxy_counts_the_trailing_window_inclusive():
+    """자기 막대를 포함한 직전 `lookback` 초. 경계는 `nbar60` 과 같은 `side='left'` 다."""
+    ts = np.asarray([0, 1000, 2000, 3000, 300_000, 300_001], dtype="int64")
+    got = RFP.trailing_bar_count(ts, lookback_s=300)
+    assert got.tolist() == [1, 2, 3, 4, 5, 5]
+
+
+def test_the_new_key_is_a_match_key_and_the_realised_depth_is_not(report):
+    """정합 축에 든 것과 안 든 것을 산출물이 **말로** 구분해 두는지."""
+    rep, _out = report
+    mk = rep["design"]["match_keys"]
+    assert mk["forward_depth_proxy"] == RFP.FWD_PROXY_KEY
+    assert RFP.FWD_PROXY_KEY in RFP.BALANCE_KEYS
+    fd = rep["design"]["forward_depth"]
+    assert "TRAILING" in fd["chosen"]
+    assert "REALISED" in fd["rejected"]
+    # 실현 전방 깊이는 어느 팔의 밴드도 아니다
+    assert f"n_bars_{RFP.HEADLINE_H}s" not in RFP.BALANCE_KEYS
+
+
+def test_depth_strata_are_a_diagnostic_and_never_carry_a_ci(report):
+    """사후 양으로 자른 표에 CI 를 붙이면 그건 추정처럼 읽힌다."""
+    rep, _out = report
+    seen = 0
+    for r in rep["cells"]:
+        for _arm, rows in r["depth_strata"].items():
+            for b in rows:
+                assert b["ci95"] is None
+                assert "POST-anchor" in b["no_ci_reason"]
+                seen += 1
+    assert seen > 0
+
+
+def test_depth_strata_bins_never_lose_a_pair(report):
+    """층으로 자를 때 조용히 사라지는 짝이 없어야 한다."""
+    rep, _out = report
+    for r in rep["cells"]:
+        for arm, rows in r["depth_strata"].items():
+            if not rows:
+                continue
+            a = r["arms"].get(arm + "__real_on_paired", {})
+            n = a.get(f"n_bars_{RFP.HEADLINE_H}s", {}).get("n_finite")
+            if n is None:
+                continue
+            assert sum(b["n_real"] for b in rows) == n
+
+
+# --------------------------------------------------------------------------- #
+# 12. **확증 팔을 안 연다** - 규율이 아니라 코드가 막는다
+# --------------------------------------------------------------------------- #
+def test_the_exploration_arm_is_nine_named_sessions():
+    """`G2G3-PREREG` §2-1 의 표본이 상수로 박혀 있는지."""
+    assert len(RFP.EXPLORATION_SESSIONS) == 9
+    assert RFP.EXPLORATION_SESSIONS[0] == "2026-07-31"
+    assert RFP.EXPLORATION_SESSIONS[-1] == "2026-08-12"
+    assert all(s < "2026-08-13" for s in RFP.EXPLORATION_SESSIONS)
+    assert RFP.CONFIRMATION_FLOOR_UTC.startswith("2026-08-13")
+
+
+def test_a_session_past_the_floor_is_planted_but_never_reaches_the_report(tmp_path):
+    """데이터가 우연히 안 걸리는 것과 **코드가 막는 것**은 다르다.
+
+    확증 팔에 드는 날(08-14)을 통째로 심고, 탐색 모드에서 그 날이 산출물에 안
+    닿는지 본다. 같은 DB 를 `--all-sessions` 로 열면 그 날이 나타나야 한다 -
+    안 나타나면 이 테스트가 막은 것이 아니라 데이터가 없는 것이다.
+    """
+    import tossmon.analysis.measure.ranking_forward_path as M
+    path = tmp_path / "floor.db"
+    conn = sqlite3.connect(path)
+    _make_db(path, with_holdout=False)
+    conn.close()
+    conn = sqlite3.connect(path)
+    conn.executemany("INSERT INTO rankings_snap (snap_ms, ranking_type, duration, "
+                     "rank, symbol, last_u, vol_qu, amount_u) VALUES (?,?,?,?,?,?,?,?)",
+                     _rank_rows("2026-08-14"))
+    conn.executemany("INSERT INTO trades_snap VALUES (?,?,?,?)",
+                     _trade_rows("2026-08-14"))
+    conn.commit()
+    conn.close()
+
+    kept = M.run(path)
+    assert [s["session"] for s in kept["sessions"]] == list(DAYS)
+    assert all(s["session"] in M.EXPLORATION_SESSIONS for s in kept["sessions"])
+
+    opened = M.run(path, exploration_only=False)
+    assert "2026-08-14" in [s["session"] for s in opened["sessions"]], (
+        "the planted session is missing, so the guard is not what removed it")
+
+
+def test_the_report_names_the_arm_it_used(report):
+    rep, _out = report
+    arm = rep["arm"]
+    assert arm["name"] == "exploration" and arm["exploration_only"] is True
+    assert arm["sessions_used"] and all(s in RFP.EXPLORATION_SESSIONS
+                                        for s in arm["sessions_used"])
+    assert arm["confirmation_floor_utc"] == RFP.CONFIRMATION_FLOOR_UTC
+
+
+# --------------------------------------------------------------------------- #
+# 13. 표적 층 - 가격은 **사건 뒤에** 자르는 축이다
+# --------------------------------------------------------------------------- #
+def test_tier_codes_use_the_repos_own_price_band_edge():
+    """새 경계를 만들지 않는다 - `hires_events.PRICE_BANDS_U` 의 `p5_10` 하한이다."""
+    edge = next(lo for name, lo, _hi in HE.PRICE_BANDS_U if name == "p5_10")
+    assert RFP.TIER_SPLIT_U == edge
+    got = RFP.tier_codes(np.asarray([0.0, edge - 1, edge, edge + 1, np.nan]))
+    assert got.tolist() == ["u5", "u5", "o5", "o5", "unknown"]
+
+
+def test_every_tier_is_a_subset_of_the_all_tier(report):
+    """층은 자르는 축이지 새 표본이 아니다 - 층을 더해도 `all` 을 못 넘는다."""
+    rep, _out = report
+    by = {}
+    for r in rep["cells"]:
+        by.setdefault((r["ranking_type"], r["kind"], r["cell"]), {})[r["tier"]] = r
+    seen = 0
+    for _k, d in by.items():
+        if set(d) != set(RFP.TIERS):
+            continue
+        a, u, o = d["all"]["funnel"], d["u5"]["funnel"], d["o5"]["funnel"]
+        assert u["n_events_regular"] + o["n_events_regular"] + a["n_tier_unknown"] == \
+            a["n_events_regular"]
+        assert u["n_anchored"] + o["n_anchored"] <= a["n_anchored"]
+        seen += 1
+    assert seen > 0
+
+
+def test_tiers_carry_only_the_two_strongest_arms(report):
+    """층에 붙는 팔은 **돌리기 전에 정한 둘**이다 - 늘리면 분모만 커진다."""
+    rep, _out = report
+    for r in rep["cells"]:
+        if r["tier"] == "all":
+            continue
+        assert set(r["diff"]) <= set(RFP.TIER_ARMS)

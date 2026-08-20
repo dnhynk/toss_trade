@@ -76,6 +76,42 @@ D-19: *발화가 몰리는 종목이 원래 더 출렁이는 종목일 수 있�
 - **CI 는 세션 군집 부트스트랩**이고, 거래일 군집이 5 미만이면 **내지 않는다**
   (`STRATEGY-VERDICTS` §4.4-B 의 규율. 규율이 아니라 코드가 막는다).
 
+## ★★ 전방 창 **깊이** - `docs/64` §9-1 이 신고한 구멍
+
+`docs/64` §9-1 이 스스로 적은 것: **`nbar60` 을 맞춰도 앵커 뒤 300 초의 막대 수는 따로
+논다.** 여섯 칸 중 넷에서 위약이 더 깊었고(예: 72 vs 94), `max_ret` 은 창 안 막대의
+**최댓값**이라 막대가 많은 쪽이 기계적으로 크다. 즉 §6 의 음(-) 쪽 차이 중 얼마가
+시장이고 얼마가 이 깊이 차이인지 그 문서는 못 갈랐다.
+
+**이 모듈이 고른 답: 정합 축에 `nbar300`(직전 300 초 막대 수)을 더한다.**
+
+| 후보 | 무엇으로 맞추나 | 왜 골랐나 / 왜 안 골랐나 |
+|---|---|---|
+| (a) 실현 전방 깊이 | 앵커 **뒤** 300 초 막대 수 | **안 골랐다.** 결과와 **같은 창**에서 나온 양이다. 골격 문장이 주장하는 것이 바로 "유동성이 몰린다"(= 그 양이 는다)이므로, 그것으로 맞추면 **주장하는 현상 자체를 정합으로 지운다.** 사후 처리 변수 조건화이고 추정량이 무엇을 재는지 말할 수 없게 된다 |
+| **(b) 사전 대리** | **직전 300 초 막대 수 (`nbar300`)** | **골랐다.** 창 오른쪽 끝이 앵커 막대라 **미래를 안 쓴다.** 그리고 구멍의 정체가 **창 길이 불일치**다 - 60 초 밀도로 300 초 깊이를 맞추려 한 것. 결과 창과 **같은 길이**의 사전 창이 그 대리로 가장 곧다 |
+| (c) 깊이 층으로 잘라 보기 | 실현 전방 깊이 | **추정이 아니라 진단으로만** 쓴다(표 [10], **CI 없음**). 자르는 축이 (a)와 같은 사후 양이기 때문이다. 다만 *"막대가 많을수록 `max_ret` 이 큰가"* 라는 **전제 자체**를 재는 자리라 빼지 않는다 |
+
+**고른 근거가 결과에서 나오지 않았다는 것을 여기 박아 둔다** - 위 표의 사유는 전부
+측정량의 **시간 방향**(앵커 앞/뒤)에서 나온 것이고, 어느 칸이 어느 쪽으로 움직였는지와
+무관하다.
+
+## ★ 표적 층 - `$0~5` 를 가른다
+
+골격 문장의 대상은 **동전주·급등주**다. `docs/64` 는 전 층을 섞어 냈다(§11-1 의 6).
+`t0` 시점 `last_u` 로 **`u5`($0~5) / `o5`($5 이상)** 를 가르고 **칸마다 층별 `n` 을
+같이 낸다.** 층을 가르면 짝이 준다 - **줄어든 `n` 과 그에 따른 구간 폭을 병기하고,
+너무 작으면 "작아서 못 잰다" 라고 적는다.** 억지로 결론을 만들지 않는다.
+
+## ★★★ 이 러너는 **탐색 팔 9 세션만** 연다
+
+`coordination/G2G3-PREREG.md` §2-1: 탐색 = 07-31 · 08-03~07 · 08-10~12 (**9 세션**),
+확증 = **2026-08-13 이후**. 탐색이 확증 팔을 보면 정의를 확증 데이터에 맞춰 고르게
+되고 그러면 확증이 확증이 아니게 된다(§5-1). 그래서 `--exploration` 이 **기본**이고,
+세션 목록을 상수로 박아 러너가 스스로 거른다 - 규율이 아니라 코드가 막는다.
+
+> `docs/64` 의 두 실행은 이 규율보다 앞서 있었고 **08-13 · 08-14 · 08-17 을 포함**했다.
+> 이 모듈은 그 사실을 고치지 않는다(과거 산출물은 그대로 둔다) - **여기서부터** 막는다.
+
 ## 하지 않는 것
 
 - **판정하지 않는다.** 통과/실패를 쓰지 않는다.
@@ -86,7 +122,8 @@ D-19: *발화가 몰리는 종목이 원래 더 출렁이는 종목일 수 있�
 - **라이브 워크트리에 쓰지 않는다.** DB 는 `mode=ro`, API 호출 0 건.
 
 실행: `python -m tossmon.analysis.measure.ranking_forward_path [db] [--since-d21]
-[--until-d21] [--until-ms N] [--out DIR] [--name NAME]`
+[--until-d21] [--until-ms N] [--exploration (default) | --all-sessions]
+[--out DIR] [--name NAME]`
 -> `out/ranking_forward_path.json`. **콘솔 ASCII.**
 """
 from __future__ import annotations
@@ -102,13 +139,15 @@ import pandas as pd
 from tossmon.analysis import hires_events as HE
 from tossmon.analysis import session as SS
 from tossmon.analysis.measure.density_matched_placebo import (
+    DENSITY_TOL,
     add_trade_count,
-    draw_stratified,
+    density_band,
     stratified_index,
 )
 from tossmon.analysis.measure.tick_resolution import pct_table
 from tossmon.analysis.measure.vol_matched_placebo import (
     MATCH_DRAWS,
+    MAX_REDRAW,
     VOL_LOOKBACK_S,
     VOL_MATCH_TOL,
     arm_entry_outcomes,
@@ -140,6 +179,35 @@ SELF_GAP_S = max(PROBE_HORIZONS_S) + VOL_LOOKBACK_S
 HEADLINE_H = 300
 HEADLINE = f"max_ret_{HEADLINE_H}s"
 
+#: ★★ **탐색 팔 9 세션** (`coordination/G2G3-PREREG.md` §2-1). 확증 팔은
+#: 2026-08-13 이후이고, 탐색이 그것을 보면 확증이 확증이 아니게 된다(같은 문서 §5-1).
+#: 목록을 상수로 박고 러너가 스스로 거른다 - 규율이 아니라 코드가 막는다.
+EXPLORATION_SESSIONS = (
+    "2026-07-31", "2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06",
+    "2026-08-07", "2026-08-10", "2026-08-11", "2026-08-12",
+)
+
+#: 확증 팔의 바닥. 탐색 모드는 이 시각 **이후 스냅을 읽지 않는다.**
+CONFIRMATION_FLOOR_UTC = "2026-08-13T00:00:00Z"
+
+#: ★★ 전방 창 깊이의 **사전(앵커 이전) 대리 지표**. `docs/64` §9-1 의 구멍이 이 자리다 -
+#: `nbar60` 은 **60 초** 창의 밀도인데 결과 창은 **300 초**다. **창 길이가 다르다.**
+#: 결과 창과 같은 길이의 사전 창이 전방 깊이의 가장 곧은 대리다.
+#: 실현 전방 깊이를 안 쓴 이유는 모듈 독스트링의 표에 있다 - 그것은 결과와 같은 창의
+#: 양이라 정합에 넣으면 주장하는 현상 자체를 지운다.
+FWD_PROXY_LOOKBACK_S = max(PROBE_HORIZONS_S)
+FWD_PROXY_KEY = f"nbar{FWD_PROXY_LOOKBACK_S}"
+
+#: 표적 층 경계. **새 숫자를 만들지 않고** `hires_events.PRICE_BANDS_U` 의 `p5_10`
+#: 하한을 그대로 쓴다. 층을 더 자르지 않는 이유는 짝이 한 자릿수로 내려가기 때문이다
+#: (`docs/64` §11-1 의 6).
+TIER_SPLIT_U = next(lo for name, lo, _hi in HE.PRICE_BANDS_U if name == "p5_10")
+TIERS = ("all", "u5", "o5")
+
+#: 실현 전방 깊이 진단의 층 수. **CI 를 안 낸다** - 사후 양으로 자르는 것이라
+#: 추정량이 아니라 진단이다.
+DEPTH_STRATA = 3
+
 #: 랭킹 타입 둘. `docs/59` §9-3 이 넘긴 갈림길 그대로 - **고르지 않고 둘 다 낸다.**
 #: `TOP_GAINERS` = 잴 수 있는 것 최다 / `TOSS_..._VOLUME` = 표적 층 사건 최다.
 RANKING_SPECS = (
@@ -166,11 +234,19 @@ SWEEP_CELLS = (
 ALL_CELLS = tuple(sorted(set(PRIMARY_CELLS) | set(SWEEP_CELLS)))
 
 #: 사다리. **한 칸에 하나씩만** 밴드가 켜진다(`docs/44` §14-1 의 규율).
+#: 넷째 칸이 이번에 더한 것이다 - `nbar300`(직전 300 초 막대 수) 밴드.
 PLACEBO_ARMS = (
-    ("placebo_unmatched", False, False),
-    ("placebo_vol_matched", True, False),
-    ("placebo_vol_density_matched", True, True),
+    ("placebo_unmatched", False, False, False),
+    ("placebo_vol_matched", True, False, False),
+    ("placebo_vol_density_matched", True, True, False),
+    ("placebo_vol_density_nbar300_matched", True, True, True),
 )
+
+#: 층을 가른 칸에 붙이는 팔. **가장 센 둘만** 붙인다 - 층이 묻는 것은 *"깊이를 맞춘
+#: 뒤 표적 층이 다르게 움직이는가"* 하나이고 그 물음에 필요한 것은 깊이 정합 팔과 그
+#: 바로 앞 팔뿐이다. **결과를 보기 전에 적었다.** 팔을 더 붙이면 본페로니 분모만
+#: 커지고 층별 표본은 그대로다.
+TIER_ARMS = ("placebo_vol_density_matched", "placebo_vol_density_nbar300_matched")
 
 #: 부트스트랩. 군집은 **거래일**이다 - 같은 날의 사건은 같은 장세를 공유하므로
 #: 사건 단위 재추출은 CI 를 실제보다 좁게 만든다(§4.4-A 가 "48 건 중 39 건이 하루"
@@ -186,7 +262,7 @@ SEED = 20260818
 
 #: 균형표에 싣는 정합 키와 감시 항목. `ntrade60` 은 **정합 키가 아니다** -
 #: 4 초 칸당 50 건 상한에 검열돼 있다(`docs/41` §4).
-BALANCE_KEYS = ("rv60", "nbar60", "ntrade60")
+BALANCE_KEYS = ("rv60", "nbar60", "ntrade60", FWD_PROXY_KEY)
 
 #: 앵커 **이후**의 진단 둘. 정합 키가 아니라 **위약이 사건과 같은 자리에서 뽑혔는지**
 #: 보는 눈이다.
@@ -210,7 +286,8 @@ REPORTED_METRICS = tuple(
     + [f"n_bars_{h}s" for h in PROBE_HORIZONS_S]
     + list(BALANCE_KEYS) + ["t_in_session_s"])
 
-#: **모든 산출물에 붙는 라벨 넷.** 사용자 결정(`docs/58` §G-2). ASCII 로만 쓴다 -
+#: **모든 산출물에 붙는 라벨 다섯.** 넷은 사용자 결정(`docs/58` §G-2)이고, 다섯째는
+#: 그 셋째가 흔들렸다는 실측이다(`specs/w3_g2_depth_and_tier.md` §4). ASCII 로만 쓴다 -
 #: 콘솔이 cp949 이고 이 줄들은 화면에도 그대로 나간다.
 LABELS = (
     "EXPLORATION - NOT A VERDICT",
@@ -219,6 +296,13 @@ LABELS = (
     "never received and the rankings we did get were a median 16.1s old (docs/35, W1)",
     "confirmation may use only data after 2026-08-13, and as of 2026-08-18 that is "
     "3 sessions - not enough to open yet",
+    "label [3] itself has since moved: a live probe polled the same list at 1s, 5s "
+    "and 12s and the ranking age came out 16.8 / 18.0 / 18.1s - near identical - "
+    "while the '29% of grid ticks never received' turns out to be the server using "
+    "only four of the six 10s slots in that window (:29 and :59 never appeared), "
+    "not tape we dropped (docs/35 s7-4, docs/62 s10-4). Which of the two readings "
+    "is right is a D-8 / G-1a question and neither this runner nor docs/64 settles "
+    "it - both numbers are printed with their source",
 )
 
 #: 이 모듈이 **쓰면 안 되는** 문구. 산출물 전체를 훑어 이 조각이 없는지 테스트가 본다.
@@ -292,6 +376,54 @@ def session_events(conn: sqlite3.Connection, rtype: str, duration: str,
 
 
 # --------------------------------------------------------------------------- #
+# 새 정합 키(전방 깊이의 **사전** 대리)와 표적 층
+# --------------------------------------------------------------------------- #
+def trailing_bar_count(ts: np.ndarray, *, lookback_s: int) -> np.ndarray:
+    """막대마다 **직전 `lookback_s` 초**(자기 막대 포함) 안의 초 막대 수.
+
+    `vol_matched_placebo.trailing_stats` 의 `nbar60` 과 **같은 창 경계**
+    (`side='left'`)를 쓴다 - 두 밀도 지표가 다른 구간을 재면 사다리에 나란히
+    못 놓는다.
+
+    **미래를 안 쓴다.** 창의 오른쪽 끝이 자기 막대다. 뒤를 잘라내고 다시 불러도
+    같은 값이 나온다(접두사 불변, 테스트로 고정). 이 성질이 이 키를 정합 축에
+    넣을 수 있게 하는 유일한 근거다.
+    """
+    ts = np.asarray(ts, dtype="int64")
+    if ts.size == 0:
+        return np.zeros(0, dtype="int64")
+    lo = np.searchsorted(ts, ts - int(lookback_s) * SEC_MS, side="left")
+    return (np.arange(ts.size, dtype="int64") - lo + 1).astype("int64")
+
+
+def add_forward_depth_proxy(uni: dict, *,
+                            lookback_s: int = FWD_PROXY_LOOKBACK_S) -> dict:
+    """`build_universe` 결과에 `nbar300` 을 **더한 새 dict**.
+
+    `add_trade_count` 와 같은 규약이다 - 원본을 안 고치고 배열은 참조로 공유하므로
+    비용이 dict 하나뿐이다.
+    """
+    return {s: {**u, FWD_PROXY_KEY: trailing_bar_count(u["ts"],
+                                                       lookback_s=lookback_s)}
+            for s, u in uni.items()}
+
+
+def tier_codes(last_u: np.ndarray) -> np.ndarray:
+    """`t0` 시점 `last_u` 를 표적 층으로 가른다. 값이 없으면 `unknown`.
+
+    `hires_events.price_band_codes` 의 네 층을 **$5 하나로 접은 것**이고, 경계값은
+    그 상수에서 온다 - 여기서 새 숫자를 쓰지 않는다. 사건 정의에는 가격이 여전히
+    한 번도 안 들어간다: 층은 **사건을 만든 뒤 자르는 축**이지 사건 조건이 아니다.
+    """
+    v = np.asarray(last_u, dtype="float64")
+    out = np.full(v.shape, "unknown", dtype=object)
+    ok = np.isfinite(v)
+    out[ok & (v < TIER_SPLIT_U)] = "u5"
+    out[ok & (v >= TIER_SPLIT_U)] = "o5"
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # 앵커
 # --------------------------------------------------------------------------- #
 def anchor_bars(ts: np.ndarray, t0_ms: np.ndarray, *,
@@ -313,6 +445,124 @@ def anchor_bars(ts: np.ndarray, t0_ms: np.ndarray, *,
     ok = inside & (np.nan_to_num(lag, nan=np.inf) <= float(max_wait_s))
     lag[~ok] = np.nan
     return np.where(ok, idx, -1).astype("int64"), lag
+
+
+# --------------------------------------------------------------------------- #
+# 추첨 — `draw_stratified` 에 밴드 **하나**를 더 켤 수 있게 한 것
+# --------------------------------------------------------------------------- #
+def draw_banded(uni: dict, syms: list, index: dict,
+                fire_sym: np.ndarray, fire_bar: np.ndarray, *,
+                match_band: bool, match_strat: bool, match_fwd: bool,
+                tol: float = VOL_MATCH_TOL, strat_tol: float = DENSITY_TOL,
+                fwd_tol: float = DENSITY_TOL, draws: int = MATCH_DRAWS,
+                gap_s: int = SELF_GAP_S,
+                rng: np.random.Generator | None = None,
+                max_redraw: int = MAX_REDRAW) -> dict:
+    """사건마다 위약 막대를 `draws` 개씩. **밴드 셋을 따로 켜고 끈다.**
+
+    `density_matched_placebo.draw_stratified` 에 `nbar300` 밴드 하나를 더한 것이고,
+    **`match_fwd=False` 면 그 함수와 완전히 같은 추첨**이다 - 후보 열거 순서도 난수
+    소비도 같아서 결과 배열까지 일치한다(테스트가 그것을 고정한다).
+
+    **왜 새로 쓰는가.** 사다리의 규율은 *"팔 사이에 달라지는 것은 밴드 하나뿐"*
+    (`docs/44` §14-1)이다. 새 팔만 다른 추첨기를 쓰면 팔 사이 차이가 밴드가 아니라
+    **기계**에서 나온다. 그래서 네 팔 전부가 이 함수 하나를 지나가게 하고, 옛 함수와
+    같은 추첨임을 테스트로 못 박았다.
+
+    후보는 전부 **같은 종목**이다(`stratified_index` 가 종목별로 만든다). 그래서
+    조각은 대부분 **뷰**이고, `match_fwd` 가 켜진 조각에서만 복사가 생긴다.
+    """
+    rng = rng or np.random.default_rng(SEED)
+    bk, sk = index["band_key"], index["strat_key"]
+    n = int(fire_sym.size)
+    paired = np.zeros(n, dtype=bool)
+    o_sym, o_bar, o_slot = [], [], []
+    n_missing_key = n_empty_band = n_gap_only = 0
+    band_sizes = []
+
+    for i in range(n):
+        si = int(fire_sym[i])
+        bi = int(fire_bar[i])
+        u = uni[syms[si]]
+        v = float(u[bk][bi])
+        d = float(u[sk][bi])
+        fv = float(u[FWD_PROXY_KEY][bi]) if match_fwd else 1.0
+        if (not np.isfinite(v) or v <= 0 or not np.isfinite(d) or d <= 0
+                or not np.isfinite(fv) or fv <= 0):
+            n_missing_key += 1
+            continue
+        buckets = index["by_sym"].get(si, {})
+        if not buckets:
+            n_empty_band += 1
+            continue
+        if match_strat:
+            lo_d, hi_d = density_band(d, strat_tol)
+            keys = [k for k in buckets if lo_d <= k <= hi_d]
+        else:
+            keys = list(buckets)
+        if match_fwd:
+            lo_f, hi_f = density_band(fv, fwd_tol)
+            fw = np.asarray(u[FWD_PROXY_KEY], dtype="float64")
+        chunks = []
+        for k in keys:
+            vals = buckets[k]["vals"]
+            if match_band:
+                a = int(np.searchsorted(vals, v * (1.0 - tol), side="left"))
+                b = int(np.searchsorted(vals, v * (1.0 + tol), side="right"))
+            else:
+                a, b = 0, int(vals.size)
+            if b <= a:
+                continue
+            cb = buckets[k]["bar"][a:b]                 # 뷰 - 복사가 아니다
+            if match_fwd:
+                f = fw[cb]
+                cb = cb[(f >= lo_f) & (f <= hi_f)]
+            if cb.size:
+                chunks.append(cb)
+        total = int(sum(int(c.size) for c in chunks))
+        if total == 0:
+            n_empty_band += 1
+            continue
+        band_sizes.append(total)
+        offs = np.cumsum([int(c.size) for c in chunks])
+        t0 = int(u["ts"][bi])
+        got = 0
+        for _ in range(draws * max_redraw):
+            if got >= draws:
+                break
+            p = int(rng.integers(0, total))
+            j = int(np.searchsorted(offs, p, side="right"))
+            local = p - (int(offs[j - 1]) if j else 0)
+            cb_i = int(chunks[j][local])
+            if abs(int(u["ts"][cb_i]) - t0) <= gap_s * 1000:
+                continue                      # 자기 자신의 측정 구간과 겹친다
+            o_sym.append(si)
+            o_bar.append(cb_i)
+            o_slot.append(i)
+            got += 1
+        if got:
+            paired[i] = True
+        else:
+            n_gap_only += 1
+
+    return {
+        "sym": np.asarray(o_sym, dtype="int64"),
+        "bar": np.asarray(o_bar, dtype="int64"),
+        "slot": np.asarray(o_slot, dtype="int64"),
+        "paired": paired,
+        "n_fires": n,
+        "n_paired": int(paired.sum()),
+        "n_unpaired": int((~paired).sum()),
+        "unpaired_key_missing": n_missing_key,
+        "unpaired_empty_band": n_empty_band,
+        "unpaired_gap_excluded_only": n_gap_only,
+        "band_size": pct_table(np.asarray(band_sizes, dtype="float64")),
+        "match_band": bool(match_band), "match_strat": bool(match_strat),
+        "match_fwd": bool(match_fwd),
+        "tol": float(tol) if match_band else None,
+        "strat_tol": float(strat_tol) if match_strat else None,
+        "fwd_tol": float(fwd_tol) if match_fwd else None,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -527,6 +777,77 @@ def merge_profile(items: list) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# 전방 깊이 — 격차를 세는 눈과, 깊이가 결과를 끌어올리는지 보는 진단
+# --------------------------------------------------------------------------- #
+def forward_depth_gap(real: dict, plac: dict) -> dict:
+    """짝 지은 실제와 위약의 **전방 막대 수** 중앙값과 그 격차. `docs/64` §9-1 의 표.
+
+    이 한 줄이 이번 작업의 검사식이다 - 정합 축에 `nbar300` 을 넣고도 이 격차가 안
+    줄면 **키를 잘못 고른 것**이고, 그렇다고 적어야 한다. 줄었는지 안 줄었는지를
+    주장이 아니라 수로 낸다.
+    """
+    k = f"n_bars_{HEADLINE_H}s"
+
+    def p50(d):
+        a = np.asarray(d.get(k, np.zeros(0)), dtype="float64")
+        a = a[np.isfinite(a)]
+        return float(np.median(a)) if a.size else None
+
+    r, p = p50(real), p50(plac)
+    return {"real_p50": r, "placebo_p50": p,
+            "gap": (None if r is None or p is None else float(p - r))}
+
+
+def depth_strata(real: dict, plac: dict, *, n_strata: int = DEPTH_STRATA) -> list:
+    """**실현** 전방 막대 수로 자른 층별 실제/위약 헤드라인. **CI 를 안 낸다.**
+
+    이것은 추정량이 아니라 **진단**이다. 자르는 축이 앵커 **뒤**에서 나온 양이라
+    사후 처리 변수 조건화이고, 그래서 정합 축에는 안 넣었다(모듈 독스트링의 표).
+    여기서 재는 것은 *"막대가 많을수록 `max_ret` 이 큰가"* 라는 **전제 자체**다 -
+    그 전제가 참인지 안 보고 깊이를 맞추면 맞추는 이유를 모르는 것이 된다.
+
+    층 경계는 **실제와 위약을 합친** 분포의 분위수다. 한쪽 분포로 자르면 그쪽에만
+    층이 고르게 차서 반대쪽 층이 비어 보인다.
+    """
+    k = f"n_bars_{HEADLINE_H}s"
+
+    def pull(d):
+        x = np.asarray(d.get(k, np.zeros(0)), dtype="float64")
+        y = np.asarray(d.get(HEADLINE, np.zeros(0)), dtype="float64")
+        if x.size != y.size:
+            return np.zeros(0), np.zeros(0)
+        ok = np.isfinite(x) & np.isfinite(y)
+        return x[ok], y[ok]
+
+    xr, yr = pull(real)
+    xp, yp = pull(plac)
+    if xr.size == 0 or xp.size == 0:
+        return []
+    q = np.quantile(np.concatenate([xr, xp]),
+                    np.linspace(0.0, 1.0, int(n_strata) + 1))
+    q[0], q[-1] = -np.inf, np.inf
+    out = []
+    for i in range(int(n_strata)):
+        lo, hi = float(q[i]), float(q[i + 1])
+        mr = (xr >= lo) & (xr < hi)
+        mp = (xp >= lo) & (xp < hi)
+        a, b = yr[mr], yp[mp]
+        out.append({
+            "bin": i,
+            "fwd_bars_lo": None if not np.isfinite(lo) else lo,
+            "fwd_bars_hi": None if not np.isfinite(hi) else hi,
+            "n_real": int(a.size), "n_placebo": int(b.size),
+            "real": float(a.mean()) if a.size else None,
+            "placebo": float(b.mean()) if b.size else None,
+            "diff": (float(a.mean() - b.mean()) if a.size and b.size else None),
+            "ci95": None,
+            "no_ci_reason": ("stratified on a POST-anchor quantity; this is a "
+                             "diagnostic of the premise, not an estimate"),
+        })
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # 러너
 # --------------------------------------------------------------------------- #
 def era_of(t_ms: int) -> str:
@@ -551,7 +872,8 @@ def scan_sessions(conn: sqlite3.Connection, floor_ms: int, until_ms: int) -> lis
 
 def _blank_cell() -> dict:
     return {"n_events_regular": 0, "n_symbol_has_tape": 0, "n_anchored": 0,
-            "n_window_overlap": 0, "lag": [], "real": {}, "arms": {}}
+            "n_window_overlap": 0, "n_tier_unknown": 0, "lag": [], "real": {},
+            "arms": {}}
 
 
 def _blank_arm() -> dict:
@@ -559,8 +881,14 @@ def _blank_arm() -> dict:
 
 
 def run(db: Path, *, since_ms: int | None = None, until_ms: int | None = None,
-        progress: bool = False) -> dict:
-    """세션마다 사건을 만들고 앵커를 붙이고 위약 사다리를 태운다."""
+        exploration_only: bool = True, progress: bool = False) -> dict:
+    """세션마다 사건을 만들고 앵커를 붙이고 위약 사다리를 태운다.
+
+    `exploration_only` 가 **기본 참**이다. 확증 팔(2026-08-13 이후)을 이 러너로
+    열면 `E` 를 확증 데이터에 맞춰 고르는 길이 열린다(`G2G3-PREREG` §5-1).
+    창을 좁히는 것과 세션 목록으로 거르는 것을 **둘 다** 건다 - 하나는 인자에
+    의존하고 다른 하나는 상수라, 인자를 잘못 줘도 상수가 남는다.
+    """
     conn = HE.open_ro(db)
     try:
         floor_ms = HE.holdout_floor_ms()
@@ -568,14 +896,20 @@ def run(db: Path, *, since_ms: int | None = None, until_ms: int | None = None,
             floor_ms = max(floor_ms, int(since_ms))
         db_max = int(conn.execute("SELECT MAX(snap_ms) FROM rankings_snap").fetchone()[0])
         until = int(until_ms) if until_ms is not None else db_max
+        if exploration_only:
+            until = min(until, HE.iso_ms(CONFIRMATION_FLOOR_UTC) - 1)
         sessions = scan_sessions(conn, floor_ms, until)
+        if exploration_only:
+            sessions = [s for s in sessions
+                        if s["session"] in EXPLORATION_SESSIONS]
         cells: dict = {}
 
         for s in sessions:
             bars = session_second_bars(conn, s["open_ms"], s["close_ms"])
             if not bars:
                 continue
-            uni = add_trade_count(build_universe(bars, lookback_s=VOL_LOOKBACK_S), bars)
+            uni = add_forward_depth_proxy(
+                add_trade_count(build_universe(bars, lookback_s=VOL_LOOKBACK_S), bars))
             syms = sorted(uni)
             code = {sym: i for i, sym in enumerate(syms)}
             index = stratified_index(uni, syms)
@@ -587,60 +921,93 @@ def run(db: Path, *, since_ms: int | None = None, until_ms: int | None = None,
                 kind_col = ev.kind.to_numpy(dtype=object)
                 cell_col = ev.cell.to_numpy(dtype=object)
                 for kind, cell in ALL_CELLS:
-                    key = f"{rtype}|{kind}|{cell}"
-                    box = cells.setdefault(key, _blank_cell())
                     m = (kind_col == kind) & (cell_col == cell)
-                    box["n_events_regular"] += int(m.sum())
                     if not m.any():
+                        for tier in TIERS:
+                            if tier == "all" or (kind, cell) in PRIMARY_CELLS:
+                                cells.setdefault(f"{rtype}|{kind}|{cell}|{tier}",
+                                                 _blank_cell())
                         continue
                     sub = ev[m]
-                    sid = sub.symbol.map(code).to_numpy(dtype="float64")
-                    has = np.isfinite(sid)
-                    box["n_symbol_has_tape"] += int(has.sum())
-                    if not has.any():
-                        continue
-                    sid = sid[has].astype("int64")
-                    t0 = sub.t0_ms.to_numpy(dtype="int64")[has]
-                    bar = np.full(sid.size, -1, dtype="int64")
-                    lag = np.full(sid.size, np.nan)
-                    for u in np.unique(sid):
-                        sel = np.flatnonzero(sid == u)
-                        bar[sel], lag[sel] = anchor_bars(uni[syms[int(u)]]["ts"], t0[sel])
-                    ok = bar >= 0
-                    box["n_anchored"] += int(ok.sum())
-                    if not ok.any():
-                        continue
-                    sid, bar, lag = sid[ok], bar[ok], lag[ok]
-                    box["lag"].append(lag)
-                    box["n_window_overlap"] += overlapping_windows(
-                        np.asarray([uni[syms[int(i)]]["ts"][b]
-                                    for i, b in zip(sid, bar)], dtype="int64"), sid)
-                    real = raw_metrics(uni, syms, sid, bar, open_ms=s["open_ms"])
-                    box["real"][s["session"]] = real
+                    # 층은 **사건을 만든 뒤** 자르는 축이다. 사건 정의에는 가격이
+                    # 여전히 안 들어간다.
+                    tcode = tier_codes(sub.last_u.to_numpy(dtype="float64"))
+                    sid_all = sub.symbol.map(code).to_numpy(dtype="float64")
+                    has = np.isfinite(sid_all)
+                    t0_all = sub.t0_ms.to_numpy(dtype="int64")
+                    # 앵커는 **층과 무관하게 한 번만** 붙인다 - 층마다 다시 붙이면
+                    # 같은 사건이 층에 따라 다른 앵커를 가질 수 있다.
+                    bar_all = np.full(sid_all.size, -1, dtype="int64")
+                    lag_all = np.full(sid_all.size, np.nan)
+                    if has.any():
+                        sh = sid_all[has].astype("int64")
+                        bh = np.full(sh.size, -1, dtype="int64")
+                        lh = np.full(sh.size, np.nan)
+                        th = t0_all[has]
+                        for u in np.unique(sh):
+                            sel = np.flatnonzero(sh == u)
+                            bh[sel], lh[sel] = anchor_bars(
+                                uni[syms[int(u)]]["ts"], th[sel])
+                        bar_all[has] = bh
+                        lag_all[has] = lh
+                    ok_all = bar_all >= 0
                     if progress:
                         print(f"  {s['session']} {s['era']:<10} {rtype:<32}"
                               f"{kind:<15}{cell:<9} ev={int(m.sum()):>6,}"
-                              f" anchored={int(ok.sum()):>5,}", flush=True)
-                    if (kind, cell) not in PRIMARY_CELLS:
-                        continue
-                    for arm, mb, ms in PLACEBO_ARMS:
-                        # 팔마다 **새 씨앗**을 준다 - 두 팔의 차이가 밴드 하나여야
-                        # 하는데, 난수 스트림을 이어 쓰면 추첨 자체가 달라진다.
-                        d = draw_stratified(uni, syms, index, sid, bar,
+                              f" anchored={int(ok_all.sum()):>5,}", flush=True)
+                    for tier in TIERS:
+                        if tier != "all" and (kind, cell) not in PRIMARY_CELLS:
+                            continue
+                        box = cells.setdefault(f"{rtype}|{kind}|{cell}|{tier}",
+                                               _blank_cell())
+                        tm = (np.ones(tcode.size, dtype=bool) if tier == "all"
+                              else (tcode == tier))
+                        box["n_events_regular"] += int(tm.sum())
+                        box["n_symbol_has_tape"] += int((tm & has).sum())
+                        if tier == "all":
+                            box["n_tier_unknown"] += int((tcode == "unknown").sum())
+                        take = np.flatnonzero(tm & ok_all)
+                        box["n_anchored"] += int(take.size)
+                        if take.size == 0:
+                            continue
+                        sid = sid_all[take].astype("int64")
+                        bar = bar_all[take]
+                        lag = lag_all[take]
+                        box["lag"].append(lag)
+                        box["n_window_overlap"] += overlapping_windows(
+                            np.asarray([uni[syms[int(i)]]["ts"][b]
+                                        for i, b in zip(sid, bar)],
+                                       dtype="int64"), sid)
+                        real = raw_metrics(uni, syms, sid, bar,
+                                           open_ms=s["open_ms"])
+                        box["real"][s["session"]] = real
+                        if (kind, cell) not in PRIMARY_CELLS:
+                            continue
+                        for arm, mb, ms, mf in PLACEBO_ARMS:
+                            if tier != "all" and arm not in TIER_ARMS:
+                                continue
+                            # 팔마다 **새 난수 스트림**을 준다 - 두 팔의 차이가 밴드
+                            # 하나여야 하는데, 스트림을 이어 쓰면 추첨 자체가 달라진다.
+                            d = draw_banded(uni, syms, index, sid, bar,
                                             match_band=mb, match_strat=ms,
-                                            draws=MATCH_DRAWS, gap_s=SELF_GAP_S,
+                                            match_fwd=mf, draws=MATCH_DRAWS,
+                                            gap_s=SELF_GAP_S,
                                             rng=np.random.default_rng(SEED))
-                        a = box["arms"].setdefault(arm, _blank_arm())
-                        a["pairing"].append(d)
-                        a["profile"].append(pairing_profile(real, lag, d["paired"]))
-                        a["raw"][s["session"]] = raw_metrics(
-                            uni, syms, d["sym"], d["bar"], open_ms=s["open_ms"])
-                        sel = np.flatnonzero(d["paired"])
-                        a["real_paired"][s["session"]] = raw_metrics(
-                            uni, syms, sid[sel], bar[sel], open_ms=s["open_ms"])
+                            a = box["arms"].setdefault(arm, _blank_arm())
+                            a["pairing"].append(d)
+                            a["profile"].append(
+                                pairing_profile(real, lag, d["paired"]))
+                            a["raw"][s["session"]] = raw_metrics(
+                                uni, syms, d["sym"], d["bar"],
+                                open_ms=s["open_ms"])
+                            sel = np.flatnonzero(d["paired"])
+                            a["real_paired"][s["session"]] = raw_metrics(
+                                uni, syms, sid[sel], bar[sel],
+                                open_ms=s["open_ms"])
         return {"db": str(db), "since_ms": int(floor_ms),
                 "since_utc": HE.ms_iso(floor_ms), "until_ms": until,
                 "until_utc": HE.ms_iso(until), "db_max_snap_utc": HE.ms_iso(db_max),
+                "exploration_only": bool(exploration_only),
                 "sessions": sessions, "cells": cells}
     finally:
         conn.close()
@@ -668,18 +1035,22 @@ def _per_session(by_session: dict, metric: str) -> dict:
 
 
 def cell_records(res: dict) -> list:
-    """`(랭킹타입, 사건, 칸)` 하나마다 문서가 싣는 레코드."""
+    """`(랭킹타입, 사건, 칸, 층)` 하나마다 문서가 싣는 레코드."""
     sess_era = {s["session"]: s["era"] for s in res["sessions"]}
     # **먼저 칸 수를 센다.** 보정 분모는 "실제로 들여다본 칸 수" 여야 한다
     # (`STRATEGY-VERDICTS` §4.4-F). 러너가 세므로 사람이 5 라고 적을 수 없다.
+    #
+    # ★ 이번 실행은 `docs/64` 보다 **칸을 더 만든다**(팔 넷 x 층 셋). 그래서 분모가
+    #   커지고 보정 CI 가 넓어진다 - 결함이 아니라 **더 많이 들여다본 값**이다.
+    #   `docs/64` 와 줄 대 줄로 견줄 수 있는 것은 **보정 전 95% CI** 쪽이다.
     n_comp = sum(1 for box in res["cells"].values()
-                 for arm, _b, _s in PLACEBO_ARMS if arm in box["arms"])
+                 for arm, _b, _s, _f in PLACEBO_ARMS if arm in box["arms"])
     recs = []
     for key, box in sorted(res["cells"].items()):
-        rtype, kind, cell = key.split("|")
+        rtype, kind, cell, tier = key.split("|")
         lag = np.concatenate(box["lag"]) if box["lag"] else np.zeros(0)
         real_raw = _cat_raw(box["real"])
-        rec = {"ranking_type": rtype, "kind": kind, "cell": cell,
+        rec = {"ranking_type": rtype, "kind": kind, "cell": cell, "tier": tier,
                "primary": [kind, cell] in [list(c) for c in PRIMARY_CELLS],
                "funnel": {
                    "n_events_regular": box["n_events_regular"],
@@ -690,9 +1061,10 @@ def cell_records(res: dict) -> list:
                    "n_window_overlap": box["n_window_overlap"],
                    "share_window_overlap": (box["n_window_overlap"] / box["n_anchored"]
                                             if box["n_anchored"] else None),
+                   "n_tier_unknown": box["n_tier_unknown"],
                    "anchor_lag_s": pct_table(lag[np.isfinite(lag)])},
                "arms": {}, "diff": {}, "scales": {}, "sparse_tape": {},
-               "by_era": {}}
+               "fwd_depth": {}, "depth_strata": {}, "by_era": {}}
         if box["real"]:
             rec["arms"]["real_all"] = summarize(real_raw)
             rec["scales"]["real_all"] = two_scales(real_raw[HEADLINE],
@@ -707,20 +1079,22 @@ def cell_records(res: dict) -> list:
                 "mean": float(v.mean()) if v.size else None,
                 "p50": float(np.median(v)) if v.size else None,
                 "share_positive": float((v > 0).mean()) if v.size else None}
-        for arm, _mb, _ms in PLACEBO_ARMS:
+        for arm, _mb, _ms, _mf in PLACEBO_ARMS:
             a = box["arms"].get(arm)
             if not a:
                 continue
-            rec["arms"][arm] = summarize(_cat_raw(a["raw"]))
+            praw = _cat_raw(a["raw"])
+            rraw = _cat_raw(a["real_paired"])
+            rec["arms"][arm] = summarize(praw)
             rec["arms"][arm]["pairing"] = merge_pairing(a["pairing"])
-            rec["arms"][arm + "__real_on_paired"] = summarize(
-                _cat_raw(a["real_paired"]))
+            rec["arms"][arm + "__real_on_paired"] = summarize(rraw)
             rec["sparse_tape"][arm] = merge_profile(a["profile"])
             rec["diff"][arm] = cluster_bootstrap_diff(
                 _per_session(a["real_paired"], HEADLINE),
                 _per_session(a["raw"], HEADLINE), n_comparisons=n_comp)
-            praw = _cat_raw(a["raw"])
             rec["scales"][arm] = two_scales(praw[HEADLINE], praw["_symbol"])
+            rec["fwd_depth"][arm] = forward_depth_gap(rraw, praw)
+            rec["depth_strata"][arm] = depth_strata(rraw, praw)
         recs.append(rec)
     return recs
 
@@ -733,14 +1107,15 @@ def balance_records(res: dict) -> list:
     """
     recs = []
     for key, box in sorted(res["cells"].items()):
-        rtype, kind, cell = key.split("|")
+        rtype, kind, cell, tier = key.split("|")
         if (kind, cell) not in PRIMARY_CELLS or not box["real"]:
             continue
-        row = {"ranking_type": rtype, "kind": kind, "cell": cell, "arms": {}}
+        row = {"ranking_type": rtype, "kind": kind, "cell": cell, "tier": tier,
+               "arms": {}}
         # **짝 지은 모집단 위에서 비교한다.** `real_all` 을 위약과 나란히 놓으면
         # 정합이 아니라 표본 교체를 보게 된다(`docs/44` §14-4 의 "가로로만 읽어라").
         pairs = [("real_all", _cat_raw(box["real"]))]
-        for arm, _b, _s in PLACEBO_ARMS:
+        for arm, _b, _s, _f in PLACEBO_ARMS:
             a = box["arms"].get(arm)
             if not a:
                 continue
@@ -766,6 +1141,18 @@ def build_report(res: dict) -> dict:
                    "db_max_snap_utc": res["db_max_snap_utc"],
                    "d21_boundary_utc": HE.D21_BOUNDARY_UTC,
                    "eras_in_window": sorted({s["era"] for s in res["sessions"]})},
+        "arm": {
+            "name": "exploration" if res["exploration_only"] else "unrestricted",
+            "exploration_only": res["exploration_only"],
+            "sessions_allowed": list(EXPLORATION_SESSIONS),
+            "sessions_used": [s["session"] for s in res["sessions"]],
+            "confirmation_floor_utc": CONFIRMATION_FLOOR_UTC,
+            "why": ("G2G3-PREREG s2-1 splits the sessions into an exploration arm "
+                    "(9 sessions) and a post-2026-08-13 arm reserved for the "
+                    "verdict. Choosing the event definition E while looking at the "
+                    "reserved arm would destroy what that arm is for (s5-1), so "
+                    "this runner refuses to read past the floor by default."),
+        },
         "holdout": {"window": [SS.HOLDOUT_START, SS.HOLDOUT_END]},
         "design": {
             "event_grid": "hires_events.chunk_events (docs/59) - price never enters "
@@ -782,12 +1169,60 @@ def build_report(res: dict) -> dict:
             "horizons_s": list(PROBE_HORIZONS_S),
             "headline": HEADLINE,
             "metrics": list(REPORTED_METRICS),
-            "placebo_arms": [a for a, _b, _s in PLACEBO_ARMS],
+            "placebo_arms": [a for a, _b, _s, _f in PLACEBO_ARMS],
             "placebo_axis": "same symbol, same regular session, different moment",
             "match_keys": {"vol": "rv60", "density": "nbar60",
+                           "forward_depth_proxy": FWD_PROXY_KEY,
                            "watched_not_matched": "ntrade60 (censored at 50/4s bucket, "
                                                   "docs/41 s4)",
-                           "tol": VOL_MATCH_TOL, "lookback_s": VOL_LOOKBACK_S},
+                           "tol": VOL_MATCH_TOL, "lookback_s": VOL_LOOKBACK_S,
+                           "fwd_lookback_s": FWD_PROXY_LOOKBACK_S},
+            "forward_depth": {
+                "problem": (
+                    "docs/64 s9-1: matching nbar60 leaves the forward 300s bar count "
+                    "unmatched (placebo deeper in 4 of 6 cells, e.g. 72 vs 94). "
+                    "max_ret is a MAXIMUM over the bars in the window, so the deeper "
+                    "arm is mechanically favoured and part of the negative gap in "
+                    "docs/64 s6 may be that, not the market."),
+                "chosen": (
+                    f"match {FWD_PROXY_KEY}, the bar count in the TRAILING "
+                    f"{FWD_PROXY_LOOKBACK_S}s. Its window ends AT the anchor, so no "
+                    "post-anchor quantity enters the match."),
+                "rejected": (
+                    "matching the REALISED forward bar count. That quantity comes out "
+                    "of the same window as the outcome and is exactly what the "
+                    "skeleton sentence claims goes up ('liquidity floods in'), so "
+                    "matching it would erase the claimed phenomenon and leave an "
+                    "estimand nobody can state. It is used only as the no-CI "
+                    "diagnostic in table [10]."),
+                "why_this_proxy": (
+                    "the hole is a WINDOW-LENGTH mismatch: a 60s density was being "
+                    "used to control a 300s depth. The trailing window of the same "
+                    "length is the most direct pre-anchor estimator of that depth."),
+                "chosen_before_seeing_results": (
+                    "the reason above is about the time direction of each quantity "
+                    "(before vs after the anchor), not about which cell moved which "
+                    "way. Nothing in it can be derived from the output."),
+                "check": ("table [11] puts the depth gap before and after the new "
+                          "band side by side. If the gap does not shrink, the key was "
+                          "the wrong one and that is what gets written down."),
+            },
+            "tiers": {
+                "split_u": TIER_SPLIT_U,
+                "codes": list(TIERS),
+                "source": ("hires_events.PRICE_BANDS_U p5_10 lower edge - no new "
+                           "boundary is invented here"),
+                "arms_in_tiers": list(TIER_ARMS),
+                "why_two_arms": (
+                    "the tier split asks one question - does the target tier move "
+                    "differently once the depth gap is closed - so it carries the "
+                    "depth-matched arm and the one immediately before it. Written "
+                    "down before the run; adding arms would only inflate the "
+                    "Bonferroni denominator without adding tier sample."),
+                "price_is_still_not_in_the_event": (
+                    "the tier is cut AFTER the events exist. last_u never enters "
+                    "chunk_events, and the price-invariance guard still holds."),
+            },
             "draws_per_event": MATCH_DRAWS, "self_gap_s": SELF_GAP_S, "seed": SEED,
             "bootstrap": {"n": BOOTSTRAP_N, "seed": BOOTSTRAP_SEED,
                           "cluster": "trading day (UTC session)",
@@ -857,12 +1292,27 @@ def print_report(rep: dict) -> None:
     print(f"  window {w['since_utc']} .. {w['until_utc']}   "
           f"eras {','.join(w['eras_in_window'])}  "
           f"(D-21 boundary {w['d21_boundary_utc']})")
+    arm = rep["arm"]
+    print(f"  arm     : {arm['name']}  "
+          f"sessions used {len(arm['sessions_used'])} "
+          f"{','.join(arm['sessions_used'])}")
+    print(f"            floor for the reserved arm {arm['confirmation_floor_utc']} "
+          f"- this run does not read past it")
+    for line in _wrap(arm["why"], 70):
+        print(f"      {line}")
     print(f"  anchor  : {d['anchor']}")
     print(f"  headline: {d['headline']}   horizons {d['horizons_s']}s")
     print(f"  costs   : {d['costs']}")
     print(f"  placebo : {d['placebo_axis']}; {d['draws_per_event']} draws/event, "
           f"self-gap {d['self_gap_s']}s, seed {d['seed']}")
     print(f"  session : {d['session_window']}")
+    print(f"  tiers   : split at last_u {d['tiers']['split_u']:,} "
+          f"({d['tiers']['codes']}), arms in tiers {d['tiers']['arms_in_tiers']}")
+    print("  ! forward-window depth - the axis docs/64 s9-1 said was NOT matched:")
+    for k in ("problem", "chosen", "rejected", "why_this_proxy",
+              "chosen_before_seeing_results", "check"):
+        for j, line in enumerate(_wrap(d["forward_depth"][k], 66)):
+            print(f"      {k + ':':<32}{line}" if j == 0 else f"      {'':<32}{line}")
     print("  ! TOP_GAINERS caveat:")
     for line in _wrap(d["top_gainers_caveat"], 70):
         print(f"      {line}")
@@ -880,12 +1330,14 @@ def print_report(rep: dict) -> None:
     print("    overlap% = anchored events whose 300s window overlaps ANOTHER event")
     print("    of the same symbol: those events re-count one price move, so the")
     print("    effective sample is smaller than the count. Reported, not fixed.")
-    print(f"{'ranking_type':<32}{'kind':<15}{'cell':<8}{'events':>9}{'has_tape':>10}"
-          f"{'anchored':>10}{'share':>8}{'overlap':>9}{'lag_p50':>10}")
+    print("    tier: all = every anchored event, u5 = last_u below $5 at t0,")
+    print(f"    o5 = $5 and up.  all - u5 - o5 = events with no last_u.")
+    print(f"{'ranking_type':<32}{'kind':<15}{'cell':<8}{'tier':<5}{'events':>9}"
+          f"{'has_tape':>10}{'anchored':>10}{'share':>8}{'overlap':>9}{'lag_p50':>10}")
     for r in rep["cells"]:
         f = r["funnel"]
         lg = f["anchor_lag_s"].get("p50")
-        print(f"{r['ranking_type']:<32}{r['kind']:<15}{r['cell']:<8}"
+        print(f"{r['ranking_type']:<32}{r['kind']:<15}{r['cell']:<8}{r['tier']:<5}"
               f"{f['n_events_regular']:>9,}{f['n_symbol_has_tape']:>10,}"
               f"{f['n_anchored']:>10,}{_p(f['share_anchored']):>8}"
               f"{_p(f['share_window_overlap']):>9}"
@@ -898,7 +1350,7 @@ def print_report(rep: dict) -> None:
     print("    ! READ THIS BEFORE READING THE NUMBERS:")
     for line in _wrap(d["max_ret_is_mechanically_positive"], 70):
         print(f"      {line}")
-    print(f"{'ranking_type':<32}{'kind':<15}{'cell':<8}{'h':>5}{'n':>7}"
+    print(f"{'ranking_type':<32}{'kind':<15}{'cell':<8}{'tier':<5}{'h':>5}{'n':>7}"
           f"{'max_ret':>10}{'end_ret':>10}{'end>0':>7}{'no_bar':>8}{'t_max':>8}")
     for r in rep["cells"]:
         a = r["arms"].get("real_all")
@@ -908,7 +1360,8 @@ def print_report(rep: dict) -> None:
             mr, er = a[f"max_ret_{h}s"], a[f"end_ret_{h}s"]
             tmax = a[f"t_max_{h}s"].get("p50")
             tcol = "-" if tmax is None else f"{float(tmax):.0f}s"
-            print(f"{r['ranking_type']:<32}{r['kind']:<15}{r['cell']:<8}{h:>5}"
+            print(f"{r['ranking_type']:<32}{r['kind']:<15}{r['cell']:<8}"
+                  f"{r['tier']:<5}{h:>5}"
                   f"{mr.get('n', 0):>7,}{_f(mr.get('mean')):>10}"
                   f"{_f(er.get('mean')):>10}{_p(er.get('share_positive')):>7}"
                   f"{_p(a.get(f'no_forward_bar_share_{h}s')):>8}{tcol:>8}")
@@ -920,8 +1373,8 @@ def print_report(rep: dict) -> None:
     print("    Two CIs: plain 95%, then Bonferroni over every (cell, arm) difference")
     print("    this run made.  docs 4.4-F is the case where the correction denominator")
     print("    was the whole finding, so the runner counts the cells itself.")
-    print(f"{'ranking_type':<32}{'cell':<8}{'arm':<30}{'n_real':>7}{'n_plac':>7}"
-          f"{'real':>10}{'placebo':>10}{'diff':>10}  ci95")
+    print(f"{'ranking_type':<32}{'cell':<8}{'tier':<5}{'arm':<36}{'n_real':>7}"
+          f"{'n_plac':>7}{'real':>10}{'placebo':>10}{'diff':>10}  ci95")
     withheld = set()
     for r in rep["cells"]:
         for arm in rep["design"]["placebo_arms"]:
@@ -938,7 +1391,7 @@ def print_report(rep: dict) -> None:
                       + f" | bonf[{x['ci_bonferroni'][0]:+.5f},"
                         f"{x['ci_bonferroni'][1]:+.5f}]"
                       + ("  cross" if x["crosses_zero_bonferroni"] else "  EXCL"))
-            print(f"{r['ranking_type']:<32}{r['cell']:<8}{arm:<30}"
+            print(f"{r['ranking_type']:<32}{r['cell']:<8}{r['tier']:<5}{arm:<36}"
                   f"{x['n_real']:>7,}{x['n_placebo']:>7,}{_f(x['mean_real']):>10}"
                   f"{_f(x['mean_placebo']):>10}{_f(x['mean_diff']):>10}  {ci}")
     for msg in sorted(withheld):
@@ -947,20 +1400,20 @@ def print_report(rep: dict) -> None:
 
     print("\n[5] two scales for the headline (docs/44 s13-14: the sign has flipped")
     print("    between scales before, so neither is left implicit)")
-    print(f"{'ranking_type':<32}{'cell':<8}{'arm':<30}{'event_w':>10}{'sym_unif':>10}"
-          f"{'n_ev':>8}{'n_sym':>7}")
+    print(f"{'ranking_type':<32}{'cell':<8}{'tier':<5}{'arm':<36}{'event_w':>10}"
+          f"{'sym_unif':>10}{'n_ev':>8}{'n_sym':>7}")
     for r in rep["cells"]:
         for arm, sc in r["scales"].items():
             if not sc or not sc.get("n_events"):
                 continue
-            print(f"{r['ranking_type']:<32}{r['cell']:<8}{arm:<30}"
+            print(f"{r['ranking_type']:<32}{r['cell']:<8}{r['tier']:<5}{arm:<36}"
                   f"{_f(sc['event_weighted']):>10}{_f(sc['symbol_uniform']):>10}"
                   f"{sc['n_events']:>8,}{sc['n_symbols']:>7,}")
 
     print("\n[6] D-20 - the events that could NOT be paired, profiled (docs/44 s14-4).")
     print("    Counting is not enough: if what we lose is lopsided, the surviving")
     print("    sample itself has moved.  The lost side is the sparse-tape side.")
-    print(f"{'ranking_type':<32}{'cell':<8}{'arm':<30}{'side':<6}{'n':>7}"
+    print(f"{'ranking_type':<32}{'cell':<8}{'tier':<5}{'arm':<36}{'side':<6}{'n':>7}"
           f"{'nbar60_p50':>11}{'lag_p50':>9}{'no_fwd_bar':>11}")
     for r in rep["cells"]:
         for arm, f in r["sparse_tape"].items():
@@ -968,20 +1421,21 @@ def print_report(rep: dict) -> None:
                 b = f.get(side, {})
                 if not b.get("n"):
                     continue
-                print(f"{r['ranking_type']:<32}{r['cell']:<8}{arm:<30}{side:<6}"
+                print(f"{r['ranking_type']:<32}{r['cell']:<8}{r['tier']:<5}"
+                      f"{arm:<36}{side:<6}"
                       f"{b['n']:>7,}{b['nbar60_p50']:>11.1f}"
                       f"{b['anchor_lag_s_p50']:>8.1f}s"
                       f"{_p(b['forward_no_bar_share']):>11}")
 
     print("\n[7] pairing census - nothing is dropped silently")
-    print(f"{'ranking_type':<32}{'cell':<8}{'arm':<30}{'events':>7}{'paired':>8}"
-          f"{'unpaired':>9}{'key_miss':>9}{'empty':>7}{'gap_only':>9}")
+    print(f"{'ranking_type':<32}{'cell':<8}{'tier':<5}{'arm':<36}{'events':>7}"
+          f"{'paired':>8}{'unpaired':>9}{'key_miss':>9}{'empty':>7}{'gap_only':>9}")
     for r in rep["cells"]:
         for arm in rep["design"]["placebo_arms"]:
             p = r["arms"].get(arm, {}).get("pairing")
             if not p:
                 continue
-            print(f"{r['ranking_type']:<32}{r['cell']:<8}{arm:<30}"
+            print(f"{r['ranking_type']:<32}{r['cell']:<8}{r['tier']:<5}{arm:<36}"
                   f"{p['n_fires']:>7,}{p['n_paired']:>8,}{p['n_unpaired']:>9,}"
                   f"{p['unpaired_key_missing']:>9,}{p['unpaired_empty_band']:>7,}"
                   f"{p['unpaired_gap_excluded_only']:>9,}")
@@ -989,11 +1443,12 @@ def print_report(rep: dict) -> None:
     print("\n[8] parameter sweep - does the answer stick to one grid cell?")
     print("    real arm only, headline metric, split by D-21 era.  The two eras are")
     print("    NEVER added together (docs/59 s4 extended to the D-21 boundary).")
-    print(f"{'ranking_type':<32}{'kind':<15}{'cell':<8}{'era':<12}{'sess':>5}{'n':>7}"
-          f"{'mean':>10}{'p50':>10}{'pos%':>7}")
+    print(f"{'ranking_type':<32}{'kind':<15}{'cell':<8}{'tier':<5}{'era':<12}"
+          f"{'sess':>5}{'n':>7}{'mean':>10}{'p50':>10}{'pos%':>7}")
     for r in rep["cells"]:
         for era, b in r["by_era"].items():
-            print(f"{r['ranking_type']:<32}{r['kind']:<15}{r['cell']:<8}{era:<12}"
+            print(f"{r['ranking_type']:<32}{r['kind']:<15}{r['cell']:<8}"
+                  f"{r['tier']:<5}{era:<12}"
                   f"{b['n_sessions']:>5}{b['n']:>7,}{_f(b['mean']):>10}"
                   f"{_f(b['p50']):>10}{_p(b['share_positive']):>7}")
 
@@ -1005,18 +1460,74 @@ def print_report(rep: dict) -> None:
     print("    depth and any gap is OUR window, not the market.")
     print("    Compare each 'arm' row with the '__real_on_paired' row directly above")
     print("    it - never with 'real_all', which is a different population.")
+    print("    nbar300 is the NEW match key: bar count in the TRAILING 300s.")
+    print("    fwd_bars is the REALISED forward depth and is still NOT a match key -")
+    print("    it is the check.  Read nbar300 and fwd_bars as a pair: the band bites")
+    print("    on nbar300 by construction, and whether that carries over to fwd_bars")
+    print("    is the whole question table [11] asks.")
     for row in rep["balance"]:
-        print(f"-- {row['ranking_type']}  {row['kind']} {row['cell']}")
-        print(f"   {'arm':<32}{'n':>7}{'rv60_p50':>11}{'nbar60_p50':>12}"
-              f"{'ntrade60_p50':>14}{'t_in_sess_p50':>15}{'fwd_bars_p50':>14}")
+        print(f"-- {row['ranking_type']}  {row['kind']} {row['cell']} "
+              f"tier={row['tier']}")
+        print(f"   {'arm':<40}{'n':>7}{'rv60_p50':>11}{'nbar60_p50':>12}"
+              f"{'nbar300_p50':>13}{'ntrade60_p50':>14}{'t_in_sess_p50':>15}"
+              f"{'fwd_bars_p50':>14}")
         for arm, b in row["arms"].items():
             nb = b[f"n_bars_{HEADLINE_H}s"]
-            print(f"   {arm:<32}{b['n']:>7,}"
+            print(f"   {arm:<40}{b['n']:>7,}"
                   f"{b['rv60'].get('p50', float('nan')):>11.5f}"
                   f"{b['nbar60'].get('p50', float('nan')):>12.1f}"
+                  f"{b[FWD_PROXY_KEY].get('p50', float('nan')):>13.1f}"
                   f"{b['ntrade60'].get('p50', float('nan')):>14.1f}"
                   f"{b['t_in_session_s'].get('p50', float('nan')):>14.0f}s"
                   f"{nb.get('p50', float('nan')):>14.1f}")
+
+    print("\n[10] DIAGNOSTIC, not an estimate - is the premise even true?  Split the")
+    print("     pairs by the REALISED forward bar count (a POST-anchor quantity, which")
+    print("     is why it is not a match key and why there is no CI here).  If")
+    print("     max_ret does not rise with depth, the whole depth worry is misplaced;")
+    print("     if it does, the size of the rise is the size of the worry.")
+    print(f"{'ranking_type':<32}{'cell':<8}{'tier':<5}{'arm':<36}{'bin':>4}"
+          f"{'fwd_bars':>18}{'n_real':>7}{'n_plac':>7}{'real':>10}{'placebo':>10}"
+          f"{'diff':>10}")
+    for r in rep["cells"]:
+        for arm, rows in r["depth_strata"].items():
+            for b in rows:
+                lo = "-inf" if b["fwd_bars_lo"] is None else f"{b['fwd_bars_lo']:.0f}"
+                hi = "inf" if b["fwd_bars_hi"] is None else f"{b['fwd_bars_hi']:.0f}"
+                print(f"{r['ranking_type']:<32}{r['cell']:<8}{r['tier']:<5}{arm:<36}"
+                      f"{b['bin']:>4}{f'[{lo},{hi})':>18}"
+                      f"{b['n_real']:>7,}{b['n_placebo']:>7,}"
+                      f"{_f(b['real']):>10}{_f(b['placebo']):>10}"
+                      f"{_f(b['diff']):>10}")
+
+    print("\n[11] THE POINT OF THIS RUN - what moved when the pre-anchor depth proxy")
+    print("     entered the match.  before = placebo_vol_density_matched (the arm")
+    print("     docs/64 s6-1 reported), after = placebo_vol_density_nbar300_matched.")
+    print("     Same cells, same sessions, same draws-per-event, one extra band.")
+    print("     fwd_gap = placebo forward-bar p50 MINUS real forward-bar p50: the")
+    print("     number docs/64 s9-1 could not close.  Positive = placebo deeper.")
+    print("     d_diff = after - before.  n falls because a third band pairs less;")
+    print("     that fall is the cost and it is printed, not hidden.")
+    before, after = "placebo_vol_density_matched", "placebo_vol_density_nbar300_matched"
+    print(f"{'ranking_type':<32}{'cell':<8}{'tier':<5}{'n_bef':>6}{'n_aft':>6}"
+          f"{'diff_bef':>10}{'diff_aft':>10}{'d_diff':>10}"
+          f"{'fwdgap_bef':>11}{'fwdgap_aft':>11}{'ci95_aft':>28}")
+    for r in rep["cells"]:
+        xb, xa = r["diff"].get(before), r["diff"].get(after)
+        if not xb or not xa:
+            continue
+        gb = r["fwd_depth"].get(before, {}).get("gap")
+        ga = r["fwd_depth"].get(after, {}).get("gap")
+        dd = (None if xb["mean_diff"] is None or xa["mean_diff"] is None
+              else xa["mean_diff"] - xb["mean_diff"])
+        ci = ("NO CI" if xa["ci95"] is None
+              else f"[{xa['ci95'][0]:+.5f},{xa['ci95'][1]:+.5f}]"
+                   + ("  cross" if xa["crosses_zero"] else "  EXCL"))
+        print(f"{r['ranking_type']:<32}{r['cell']:<8}{r['tier']:<5}"
+              f"{xb['n_real']:>6,}{xa['n_real']:>6,}"
+              f"{_f(xb['mean_diff']):>10}{_f(xa['mean_diff']):>10}{_f(dd):>10}"
+              f"{('-' if gb is None else f'{gb:+.1f}'):>11}"
+              f"{('-' if ga is None else f'{ga:+.1f}'):>11}{ci:>28}")
 
     print("\n" + "=" * 78)
     print("This runner decides nothing.  It reports what was measured, the sample")
@@ -1029,11 +1540,17 @@ def main(argv: list) -> int:
     since_ms = until_ms = None
     out_dir = OUT_DIR
     name = "ranking_forward_path"
+    # 확증 팔을 여는 것은 **명시적인 한 마디**여야 한다. 기본은 탐색 팔이다.
+    exploration_only = True
     args = list(argv[1:])
     i = 0
     while i < len(args):
         a = args[i]
-        if a == "--until-ms":
+        if a == "--all-sessions":
+            exploration_only = False; i += 1
+        elif a == "--exploration":
+            exploration_only = True; i += 1
+        elif a == "--until-ms":
             until_ms = int(args[i + 1]); i += 2
         elif a == "--since-ms":
             since_ms = int(args[i + 1]); i += 2
@@ -1047,8 +1564,10 @@ def main(argv: list) -> int:
             name = args[i + 1]; i += 2
         else:
             db = Path(a); i += 1
-    print("scanning sessions (UTC session x ranking type x cell) ...", flush=True)
-    res = run(db, since_ms=since_ms, until_ms=until_ms, progress=True)
+    print("scanning sessions (UTC session x ranking type x cell x tier) ...",
+          flush=True)
+    res = run(db, since_ms=since_ms, until_ms=until_ms,
+              exploration_only=exploration_only, progress=True)
     rep = build_report(res)
     out_dir.mkdir(parents=True, exist_ok=True)
     p = out_dir / f"{name}.json"
