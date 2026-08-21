@@ -105,7 +105,7 @@ orca terminal send   --terminal <handle> --text "<한 줄 지시>" --enter --jso
 orca worktree set    --worktree id:<repoId>::<path> --comment "<지금 뭐 하는지>" --workspace-status in-progress --json
 ```
 
-repo id = `12e59c9d-6eff-4602-8e62-802907e489b4`.
+repo id = `dd0ef363-0d50-4054-9a4a-d7c56ee8e141`.
 
 > **`tui-idle` 은 "워커가 놀고 있다" 가 아니다.** 입력줄이 입력을 받을 준비가 됐다는
 > 뜻이고, **위에서 에이전트가 일하는 중에도 참이다.** 이걸 "제출 실패" 로 읽어서

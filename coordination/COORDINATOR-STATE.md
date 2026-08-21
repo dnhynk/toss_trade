@@ -41,7 +41,7 @@
 
 ```bash
 # 1) 내 터미널 핸들 확인 (루트 워크트리에서 도는 에이전트 터미널)
-orca terminal list --worktree "id:12e59c9d-6eff-4602-8e62-802907e489b4::C:/Users/dongh/toss_trade" --json
+orca terminal list --worktree "id:dd0ef363-0d50-4054-9a4a-d7c56ee8e141::C:/Users/dongh/toss_trade" --json
 
 # 2) 기존 Run 에 바인딩 — 이것만 하면 워커·수집은 그대로 이어진다
 orca orchestration run-use --id run_92948a1f80a5 --from <내_핸들> --json
@@ -1082,7 +1082,7 @@ A 는 *"알파를 볼 수 있는가"* 를 가르는 병목이기 때문이다.
 
 ## 4. 워커 배치
 
-repo id = `12e59c9d-6eff-4602-8e62-802907e489b4`,
+repo id = `dd0ef363-0d50-4054-9a4a-d7c56ee8e141`,
 워크트리 = `C:/Users/dongh/orca/workspaces/toss_trade/<name>`
 
 > **★ 2026-08-21 23:3x — 하드웨어 이동 뒤 새 기계에서 여섯 개를 다시 실측했다.**
@@ -1118,10 +1118,23 @@ repo id = `12e59c9d-6eff-4602-8e62-802907e489b4`,
 | W2 | **워크트리 없음** | — | — | sonnet/high | `tossmon/store/**` · `tossmon/universe/**` |
 | W3 | `w3-analyzer` | **`feat/analyzer`** | **PR #33·#37·#45 병합됨** (#45 는 08-20 에 내가 게이트 다섯 거쳐 병합). **대기 중** — 다음 일은 D-28 이 답해져야 열린다 | opus/high | `tossmon/analysis/**` · `docs/13`·`29`·`36`·`44`·`47`·`49`·`51`·`54`·`59`·**`64`·`65`** |
 | W4 | `w4-collector` | **`feat/collector`** | **PR #39 병합됨** (08-19). ★ 08-19 에 *"PR 올릴까요?"* 로 **47 분 뒤 서 있길래 내가 풀었다** — 워커는 커밋 권한을 다시 묻는다. 대기 중 | opus/xhigh + fable/xhigh | opus/xhigh + fable/xhigh | `tossmon/collector/**` · `tossmon/api/client.py` · `docs/50`·`52`·`55`·**`63`** |
-| W5 | `w5-ops` | **`feat/ops`** | **`e7c9437`** — 08-21 실측, **08-18 이후 안 움직였다**. **작업 중** `task_5e2073cc2256` / `ctx_7f7d3af3d7f1`. ⚠ **08-20 디스패치는 7 분 만에 `Conversation interrupted` 로 죽고 산출물 0 건**이었다 — 발견은 명세 §2-3 에 건져 놨다 | ~~sonnet/high~~ → **opus/high** (08-20 에 올렸다 — 3.4 시간짜리 미규명 지연이고 라이브 운영에 닿는다) | **라이브 수집기를 돌린다.** `ops/**` · `config/config.yaml` · `docs/31`~`34`·`38`·`53`·`57`·`61` |
+| W5 | `w5-ops` | **`feat/ops`** | **`e7c9437`** — 08-22 새 기계 실측. **배정 대기.** `task_5e2073cc2256` 는 08-21 에 `completed` 로 닫혔고 명세 `w5_supervisor_pipe.md` 도 §7 로 닫혔다(표제 반증). **후속 명세를 발행했다: `coordination/specs/w5_restart_evidence.md`** — *"`RESTART` 직전에 표본을 뜬다"*. ⏸ **디스패치는 05:00 까지 잡아 뒀다** — `AUTOMATION.md` §2-1 *"`w5-ops` 는 라이브, 정규장·측정 창에는 배정 금지"*, 오늘 밤 창이 **08-22 05:00** 에 닫힌다 | ~~sonnet/high~~ → **opus/high** (08-20 에 올렸다 — 3.4 시간짜리 미규명 지연이고 라이브 운영에 닿는다) | **라이브 수집기를 돌린다.** `ops/**` · `config/config.yaml` · `docs/31`~`34`·`38`·`53`·`57`·`61` |
 | W6 / W6b | **워크트리 없음** | — | — | fable / opus | 감사 |
 | W7 | `w7-prereg` | **`feat/preregistration`** (표가 `w7-prereg` 라 적었었다) | `ba5be66` | fable | `docs/12`·`15`·`48` |
 | 코디네이터 | 루트 | `main` | **`d98f865`** (08-21 19:32) | — | `docs/00`·`04`·`07` · `coordination/**` |
+
+> ### ★★ 2026-08-22 — **Orca repo id 가 바뀌었다. 옛 id 로는 아무것도 안 잡힌다**
+>
+> 이동 뒤 Orca 가 레포를 새로 등록했다. **`12e59c9d-6eff-4602-8e62-802907e489b4` 는 죽었다**
+> → **`dd0ef363-0d50-4054-9a4a-d7c56ee8e141`**. `AUTOMATION.md` §2-1 · §0 의 3 분 인수 ·
+> `DAILY-COORDINATOR-PROMPT.md` 를 같이 고쳤다.
+>
+> **조용히 틀린다** — 옛 id 로 `terminal list` 를 치면 오류가 아니라 **빈 목록**이 온다.
+> *"워커가 없다"* 로 읽힌다. 내가 그렇게 읽을 뻔했다. 확인은 항상
+> `orca worktree list --json` 으로 **id 부터** 뜬다.
+>
+> **현재 터미널: 워커 워크트리 넷 전부 0 개.** 루트에 코디네이터 하나뿐이다 —
+> **이동으로 워커가 전부 끊겼다.** 배정하려면 `terminal create` 부터다.
 
 **터미널 핸들은 재시작마다 바뀐다.** 항상 `terminal list --worktree ... --json` 으로
 재확인하라. 워크트리당 핸들이 여러 개면 **에이전트가 아닌 셸에 디스패치하면
