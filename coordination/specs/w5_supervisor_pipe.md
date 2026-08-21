@@ -220,3 +220,83 @@ def lease_path_for_client(client_id: str) -> Path:
 **오늘 20:00 KST 까지** 진단·수정·비라이브 증명을 끝내고 PR 을 올려라.
 그때까지 원인을 못 잡으면 **멈추고 "배제된 것 / 남은 가설"을 보고**해라 (§6).
 **증상만 없애는 우회는 금지다** — 그 상태로 라이브에 넣는 것이 이 결함보다 위험하다.
+
+---
+
+## 2-3. ★★ 2026-08-20 워커가 7 분 만에 죽기 전에 찾은 것 — **여기서 다시 시작해라**
+
+**2026-08-20 09:55 에 이 명세로 워커를 붙였는데 10:03 에 `Conversation interrupted` 로
+끊겼다.** 산출물은 **0 건**이다 (`w5-ops` 에 디스패치 이후 수정된 파일이 하나도 없음을
+코디네이터가 `find -newermt` 로 확인했다. 미추적 둘은 08-07·08-08 파일이다).
+**그런데 죽기 전 7 분에 쓸 만한 것을 냈고, 코디네이터가 트랜스크립트에서 건져 왔다.**
+**다시 처음부터 파지 마라.**
+
+### (가) 프로세스 사슬의 모양은 **수수께끼가 아니다** — 워커가 갈랐다
+
+`Scripts/python.exe` 가 **255 KB = venv launcher**(105 KB 짜리 base python 사본이 아니다).
+그래서:
+
+```
+사슬 A = cmd -> venvlauncher -> ops.supervisor -> venvlauncher -> collector   (4 python)
+사슬 B =        venvlauncher -> collector                                     (2 python)
+```
+
+**층 수 차이는 정상이다.** `__main__.py` 는 자식을 안 띄운다. 여기 파지 마라.
+
+### (나) 침묵 구간에 **아무 데도** 안 썼다
+
+- `supervisor.stdout.log` 는 **21:37 에서 멈춰 있다** — 사슬 A 가 거기에도 안 썼다
+- `collector.stdout.log` 에서 사슬 A 의 첫 줄은 **죽은 프로세스의 21:19:52 줄 바로 뒤**에
+  붙어 있다. 그 사이에 아무것도 없다
+
+### (다) ★★ 유력 가설 — **우선순위다.** 워커가 실측까지 했다
+
+```
+PID=46064 cmd        BasePriority=6      <- 사슬 A (스케줄러가 띄운 것)
+PID=41076 python     BasePriority=6
+PID=50476 python     BasePriority=6
+PID=41104 python     BasePriority=6
+PID=49284 python     BasePriority=6
+PID=26096 powershell BasePriority=8      <- 사슬 B (사용자 콘솔)
+PID=28212 python     BasePriority=8
+PID=50724 python     BasePriority=8
+```
+
+**6 = BelowNormal, 8 = Normal.** 그리고 **코디네이터가 그 원인을 확인했다** — 세 작업
+(`tossmon-collector-oneshot`·`tossmon-watchdog`·`tossmon-sentinel`) **전부 XML 에
+`<Priority>` 요소가 없다.** 없으면 작업 스케줄러의 **기본값 7 = `BELOW_NORMAL_PRIORITY_CLASS`**
+가 적용된다. 관측된 6 과 정확히 맞는다.
+
+**같은 방향의 관측 하나 더 (워커)**: 사슬 A 는 **cmd → python 에만 15 초**, launcher →
+supervisor 에 3 초가 걸렸다. **태어날 때부터 굼떴다.** 락이라면 특정 지점에서 멈추지
+전 구간이 느려지지 않는다.
+
+> **이 가설이 왜 그럴듯한가**: 같은 순간 사슬 B(Normal)가 **5.6 GB DB 에 초당 수십 번
+> 쓰고 있었다.** BelowNormal 프로세스는 CPU 뿐 아니라 **I/O 도 뒤로 밀린다.**
+> 3.4 시간은 "멈춤" 이 아니라 **"굶주림" 의 크기**일 수 있다.
+
+### (라) 이 가설을 **반증할 관측** — 이것부터 해라
+
+1. **같은 부하 아래에서 우선순위만 바꿔 재라.** `launch_collector.cmd` 경로를
+   **`TOSS_LIVE=0` + scratch DB** 로 두 번 띄운다 — 한 번은 BelowNormal(스케줄러와 같게),
+   한 번은 Normal. **첫 로그 줄까지의 시간**을 재라.
+   - Normal 은 초 단위인데 BelowNormal 은 분·시간 단위면 → **가설 지지**
+   - **둘 다 느리면 가설은 죽는다.** 그때는 (마)로 가라
+2. **부하를 갈라라.** 사슬 B 를 못 멈추므로, 대신 **디스크 부하가 낮은 시각**(휴장 깊은
+   밤이 아니라 지금처럼 장이 닫혀 랭킹 폴만 도는 때)과 **개장 직후**를 비교해라.
+   굶주림이면 부하에 따라 크기가 변해야 한다.
+3. **정말 I/O 인지 CPU 인지**: 침묵 중인 프로세스의 `IO Read/Write Bytes` 델타를 재라
+   (`Get-Process | Select-Object -Property Name,Id,@{n='IORead';e={$_.ReadOperationCount}}`).
+   **0 이면 굶주림이 아니라 대기다.**
+
+### (마) 가설이 죽으면 남는 것
+
+`resumed from collector_state.json` **앞**에서 실행되는 코드만 후보다. 워커가 이미
+*"그 앞 코드 경로를 읽겠다"* 까지 갔다. 거기서부터 이어라.
+
+## 5-4. ★ 우선순위를 고치는 것은 **네 손이 아닐 수 있다**
+
+`<Priority>` 를 바꾸려면 XML 을 내보내 고치고 `schtasks /create /xml` 로 다시 등록해야
+하는데, **S4U 작업 재등록에는 관리자 권한이 필요하다**(2026-08-19 에 두 번 다 사용자
+손이 필요했다). **명령만 적어서 보고해라** — 코디네이터가 사용자에게 넘긴다.
+**추측으로 작업을 지우고 다시 만들지 마라.** 지금 도는 워치독·센티널이 그 작업들이다.
