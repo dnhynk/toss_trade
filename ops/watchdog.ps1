@@ -125,6 +125,22 @@ param(
     [double]$DiskCritGB = 5.0,
     [int]$RestartMax = 3,
     [int]$RestartWindowS = 7200,
+
+    # RESTART SAMPLE budget (see the block above Invoke-Restart). Every second spent
+    # here on the kill path is a second of collection gap, so the ceiling has to be
+    # defended rather than guessed: the restart path already costs ~28s (3s settle
+    # after the kill + 25s to verify the relaunch) and telemetry is emitted once per
+    # 300s, so 20s keeps the whole path under ~50s - still well inside one telemetry
+    # period, which means a sample can never turn a restart into a MISSED cycle. A
+    # py-spy dump of this four-link chain returns in well under a second, so 20s is
+    # roughly twenty times the expected cost and exists only to bound a hang.
+    [double]$RestartSampleBudgetS = 20.0,
+    # Distance between the two IO readings. Without a second reading the counters are
+    # since-process-start totals, which cannot separate "stopped doing IO ten minutes
+    # ago" from "never did much".
+    [double]$RestartSampleIoGapS = 2.0,
+    # Stack-dump cap. The live chain is four processes; this only bounds a runaway.
+    [int]$RestartSampleMaxProcs = 8,
     [double]$TokenGraceMin = 10.0,
     [int]$RuntimeErrorMin = 5,
 
@@ -846,23 +862,370 @@ function Invoke-Reclaim([int]$staleH = 24) {
     return @{ freed = [math]::Round($freed, 1); items = $items }
 }
 
+# --------------------------------------------------------------------------- #
+# RESTART SAMPLE (2026-08-22). Five silent stops and zero cause candidates, because both
+# reproductions (08-19, 08-21) were erased by the RESTART inside five minutes. Nobody has
+# yet seen what a collector that is ALIVE BUT NOT WORKING looks like from the inside, and
+# the seconds between "the watchdog decided to restart" and "the processes are gone" are
+# the only window in which that state exists at all. This writes that window to
+# data/NOTE_<stamp>_restart_sample.txt.
+#
+# Grade NOTE_ (FILE GRADE CONTRACT in the header): the fault is already filed as
+# ALERT_*_watch_<reason>.txt for this same event. This file is the evidence attached to
+# it, not a second fault, and grading it ALERT_ would re-break "any ALERT_ file is
+# trouble".
+#
+# Written directly instead of through Raise-Alert on purpose: Raise-Alert dedups per key
+# for hours, and a sample suppressed because another restart happened this morning is
+# precisely the loss this block exists to prevent.
+#
+# THE SAMPLE MUST NEVER COST THE RESTART. Self-recovery did its job for the first time on
+# 2026-08-21 (13s back up); breaking that safety net to take a picture would be a net
+# loss. Everything below sits inside one try/catch and one stopwatch budget, and every
+# caller ignores the return value and carries on.
+$script:RestartSampleHeader = "RESTART SAMPLE v1"
+
+# py-spy is the only thing here that can say "alive but not working". It is deliberately
+# NOT a hard dependency: with it absent the sample still carries the tree, the IO deltas
+# and the verdict, and says in the file which part is missing and why.
+function Get-PySpyExe {
+    $cand = Join-Path $RepoRoot ".venv\Scripts\py-spy.exe"
+    if (Test-Path $cand) { return $cand }
+    $c = Get-Command "py-spy" -ErrorAction SilentlyContinue
+    if ($null -ne $c) { return $c.Source }
+    return ""
+}
+
+# An external command with a hard timeout, both streams captured. A hung py-spy must cost
+# its own slice of the budget and nothing more.
+function Invoke-Bounded([string]$exe, [string]$argLine, [double]$timeoutS) {
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = $argLine
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $p = [Diagnostics.Process]::Start($psi)
+    # Async reads: with a synchronous ReadToEnd a full pipe buffer deadlocks the wait, and
+    # a deadlock here would eat the restart, which is the one thing this must never do.
+    $so = $p.StandardOutput.ReadToEndAsync()
+    $se = $p.StandardError.ReadToEndAsync()
+    if (-not $p.WaitForExit([int]($timeoutS * 1000))) {
+        try { $p.Kill() } catch { }
+        return "(TIMEOUT after ${timeoutS}s - killed)"
+    }
+    $txt = ($so.Result + $se.Result).TrimEnd()
+    if ($txt -eq "") { $txt = "(no output; exit=$($p.ExitCode))" }
+    return $txt
+}
+
+# A script-scope variable that may not exist. The sample is taken from inside
+# Invoke-Restart, and the verdict values it wants are computed far below this point in the
+# file - so read them defensively rather than assuming the caller's context.
+function Get-ScriptVar([string]$name) {
+    try { return (Get-Variable -Name $name -Scope Script -ValueOnly -ErrorAction Stop) }
+    catch { return $null }
+}
+
+function Format-SampleTxt($v) {
+    if ($null -eq $v) { return "n/a" }
+    $s = [string]$v
+    if ($s -eq "") { return "n/a" }
+    return $s
+}
+
+function Format-SampleNum($v) {
+    if ($null -eq $v) { return [double]0 }
+    try { return [double]$v } catch { return [double]0 }
+}
+
+# One WMI pass over every $ProcName process under $ExeLike - NOT just the two pattern
+# matches. "Which of the four links stopped" cannot be answered by looking at two of them.
+# Win32_Process carries IO counters, handle count, thread count, priority, working set,
+# CPU and parent, so all of sections 2 and 4 come from this single query.
+function Get-SampleProcs {
+    try {
+        return @(Get-CimInstance Win32_Process -Filter "Name='$ProcName'" -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.ProcessId -ne $PID -and
+                ($ExeLike -eq "*" -or ($_.ExecutablePath -and $_.ExecutablePath -like $ExeLike))
+            })
+    } catch { return @() }
+}
+
+function Get-ProcById([int]$procId) {
+    try { return (Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction SilentlyContinue |
+                  Select-Object -First 1) }
+    catch { return $null }
+}
+
+function Get-SampleCpuS($p) {
+    try { return [math]::Round(([double]$p.KernelModeTime + [double]$p.UserModeTime) / 1e7, 2) }
+    catch { return -1 }
+}
+
+function Get-SampleUpS($p) {
+    try {
+        $s = $p.CreationDate
+        if ($null -eq $s) { return -1 }
+        if ($s -isnot [datetime]) { $s = [Management.ManagementDateTimeConverter]::ToDateTime([string]$s) }
+        return [int]((Get-Date) - $s).TotalSeconds
+    } catch { return -1 }
+}
+
+# Returns the path it wrote, or "" if it could not write one. NEVER throws: the caller is
+# on its way to a taskkill and must get there whatever happens in here.
+function Write-RestartSample([string]$reason, [string]$mode) {
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $path = ""
+    try {
+        $L = New-Object Collections.Generic.List[string]
+        $L.Add($script:RestartSampleHeader)
+        $L.Add("taken   : $NowStamp")
+        $L.Add("mode    : $mode")
+        $L.Add("reason  : $reason")
+        $L.Add("budget  : ${RestartSampleBudgetS}s wall clock (-RestartSampleBudgetS)")
+        $L.Add("grade   : NOTE_ - EVIDENCE, not a fault. The fault for this same event is")
+        $L.Add("          filed as ALERT_*_watch_$reason.txt; read them together.")
+        $L.Add("")
+
+        # ---- [1] the verdict this restart rests on ---------------------------------
+        # Already computed by the checks above; recomputing it here would risk describing
+        # a different moment than the one that made the decision.
+        $tl = Get-ScriptVar "tele"
+        $rankAge = "n/a"
+        $t2book = "n/a"
+        if ($null -ne $tl -and $null -ne $tl.counters) {
+            if ($tl.counters.ContainsKey("ranking_snap_age_s")) { $rankAge = [int]$tl.counters["ranking_snap_age_s"] }
+            if ($tl.counters.ContainsKey("tier2_orderbook_snaps")) { $t2book = [int]$tl.counters["tier2_orderbook_snaps"] }
+        }
+        $L.Add("[1] WATCHDOG VERDICT AT THIS MOMENT - the numbers this restart rests on")
+        $L.Add("  age_min   : " + (Format-SampleTxt (Get-ScriptVar "ageMin")) + "   (telemetry age, minutes)")
+        # [int] for the same reason the summary line at the end of this file uses it: the
+        # raw value carries seven decimal places of uptime nobody can use.
+        $colUp = Get-ScriptVar "colUptimeS"
+        if ($null -ne $colUp) { $colUp = [int]$colUp }
+        $L.Add("  col_up    : " + (Format-SampleTxt $colUp) + "s")
+        $L.Add("  rank_age  : ${rankAge}s")
+        $L.Add("  t2book    : $t2book")
+        $L.Add("  session   : " + (Format-SampleTxt (Get-ScriptVar "session")) +
+               "  (raw=" + (Format-SampleTxt (Get-ScriptVar "sessionRaw")) + ")")
+        $L.Add("  open_for  : " + (Format-SampleTxt (Get-ScriptVar "openForS")) + "s")
+        $L.Add("  src       : " + (Format-SampleTxt (Get-ScriptVar "teleSource")))
+        $L.Add("  sup / col : " + @(Get-ScriptVar "sup").Count + " / " + @(Get-ScriptVar "col").Count)
+        $L.Add("  problems  : " + (Format-SampleTxt (@(Get-ScriptVar "problems") -join ",")))
+        $L.Add("")
+
+        # ---- [2] the process tree ---------------------------------------------------
+        $snapA = @(Get-SampleProcs)
+        $tA = Get-Date
+        $L.Add("[2] PROCESS TREE - every $ProcName under $ExeLike, plus resolved ancestors")
+        if ($snapA.Count -eq 0) {
+            $L.Add("  (none - no matching process was alive at sample time)")
+        } else {
+            $L.Add(("  {0,-7} {1,-7} {2,-5} {3,-4} {4,-5} {5,-8} {6,-9} {7,-8} {8}" -f `
+                    "PID", "PPID", "PRIO", "THR", "HND", "WS_MB", "CPU_S", "UP_S", "COMMAND"))
+            foreach ($p in $snapA) {
+                $cmd = [string]$p.CommandLine
+                if ($cmd -eq "") { $cmd = "(command line not readable by this token)" }
+                if ($cmd.Length -gt 160) { $cmd = $cmd.Substring(0, 160) + "..." }
+                $L.Add(("  {0,-7} {1,-7} {2,-5} {3,-4} {4,-5} {5,-8} {6,-9} {7,-8} {8}" -f `
+                        $p.ProcessId, $p.ParentProcessId, (Format-SampleTxt $p.Priority), $p.ThreadCount,
+                        $p.HandleCount, [math]::Round((Format-SampleNum $p.WorkingSetSize)/1MB, 1),
+                        (Get-SampleCpuS $p), (Get-SampleUpS $p), $cmd))
+            }
+            # Walk up. The chain that produces a collector is schtasks -> cmd -> supervisor
+            # -> collector, and "which link stopped" is unanswerable without the links that
+            # are not python.
+            $seen = @{}
+            foreach ($p in $snapA) { $seen[[int]$p.ProcessId] = $true }
+            $anc = @()
+            foreach ($p in $snapA) {
+                $ppid = [int]$p.ParentProcessId
+                $depth = 0
+                while ($ppid -gt 0 -and $depth -lt 6 -and -not $seen.ContainsKey($ppid)) {
+                    $seen[$ppid] = $true
+                    $up = Get-ProcById $ppid
+                    if ($null -eq $up) {
+                        $anc += "    pid $ppid - GONE (parent already exited; the chain above it is unreadable)"
+                        break
+                    }
+                    $acmd = [string]$up.CommandLine
+                    if ($acmd -eq "") { $acmd = "(command line not readable by this token)" }
+                    if ($acmd.Length -gt 120) { $acmd = $acmd.Substring(0, 120) + "..." }
+                    $anc += ("    pid {0,-7} ppid {1,-7} {2,-16} up={3}s  {4}" -f `
+                             $up.ProcessId, $up.ParentProcessId, $up.Name, (Get-SampleUpS $up), $acmd)
+                    $ppid = [int]$up.ParentProcessId
+                    $depth++
+                }
+            }
+            $L.Add("  ancestors:")
+            if ($anc.Count -eq 0) { $L.Add("    (none resolvable)") }
+            else { foreach ($a in $anc) { $L.Add($a) } }
+        }
+        $L.Add("")
+
+        # ---- [3] python stacks ------------------------------------------------------
+        # Reserve time for the second IO reading: a stack with no delta beside it cannot
+        # tell a blocked loop from a slow one.
+        $reserve = $RestartSampleIoGapS + 2.0
+        $pyspy = Get-PySpyExe
+        $stacks = 0
+        $L.Add("[3] PYTHON STACKS - py-spy dump")
+        $L.Add("    (no --locals on purpose: a stack says where it is stuck, and locals can")
+        $L.Add("     carry the API token into a plain-text file under data/)")
+        if ($pyspy -eq "") {
+            $L.Add("  py-spy NOT FOUND (looked in $RepoRoot\.venv\Scripts\py-spy.exe, then PATH).")
+            $L.Add("  Install it with .venv\Scripts\pip install py-spy. Everything else in this")
+            $L.Add("  file is still valid - only the stacks are missing.")
+        } elseif ($snapA.Count -eq 0) {
+            $L.Add("  (no live process to dump)")
+        } else {
+            $L.Add("  py-spy: $pyspy")
+            $targets = @($snapA)
+            if ($targets.Count -gt $RestartSampleMaxProcs) {
+                # No silent caps: say what was dropped, or the file reads as "these were all
+                # of them".
+                $L.Add(("  NOTE: {0} processes matched; dumping the first {1} " -f $targets.Count, $RestartSampleMaxProcs) +
+                       "(-RestartSampleMaxProcs). The rest are in section 2 with no stack here.")
+                $targets = @($targets | Select-Object -First $RestartSampleMaxProcs)
+            }
+            foreach ($p in $targets) {
+                $left = $RestartSampleBudgetS - $sw.Elapsed.TotalSeconds - $reserve
+                if ($left -le 1.0) {
+                    $L.Add("  BUDGET EXHAUSTED after $stacks stack(s) - remaining processes not dumped.")
+                    break
+                }
+                $per = [math]::Min(8.0, $left)
+                $L.Add(("  --- pid {0} (timeout {1:N1}s) ---" -f $p.ProcessId, $per))
+                foreach ($ln in ((Invoke-Bounded $pyspy "dump --pid $($p.ProcessId)" $per) -split "`r?`n")) {
+                    $L.Add("  " + $ln)
+                }
+                $stacks++
+            }
+        }
+        $L.Add("")
+
+        # ---- [4] IO / handles / threads, read twice ---------------------------------
+        # A single reading is a since-process-start total and cannot separate "stopped
+        # doing IO ten minutes ago" from "never did much". Two readings a few seconds apart
+        # can - and that difference is why 2026-08-21's 2.7GB rollback has no explanation
+        # today.
+        $waited = ((Get-Date) - $tA).TotalSeconds
+        if ($waited -lt $RestartSampleIoGapS) {
+            $need = $RestartSampleIoGapS - $waited
+            if (($sw.Elapsed.TotalSeconds + $need) -le $RestartSampleBudgetS) {
+                Start-Sleep -Milliseconds ([int]($need * 1000))
+            }
+        }
+        $snapB = @(Get-SampleProcs)
+        $elapsed = ((Get-Date) - $tA).TotalSeconds
+        $bById = @{}
+        foreach ($p in $snapB) { $bById[[int]$p.ProcessId] = $p }
+        $L.Add(("[4] IO / HANDLES / THREADS - two readings {0:N2}s apart (absolute = since" -f $elapsed))
+        $L.Add("    process start; delta = what it did during those seconds)")
+        if ($snapA.Count -eq 0) {
+            $L.Add("  (nothing to measure)")
+        } else {
+            $L.Add(("  {0,-7} {1,-12} {2,-12} {3,-11} {4,-11} {5,-7} {6,-6} {7}" -f `
+                    "PID", "READ_OPS", "WRITE_OPS", "READ_MB", "WRITE_MB", "HND", "THR", "CPU_S"))
+            foreach ($a in $snapA) {
+                $L.Add(("  {0,-7} {1,-12} {2,-12} {3,-11} {4,-11} {5,-7} {6,-6} {7}" -f `
+                        $a.ProcessId, [long](Format-SampleNum $a.ReadOperationCount),
+                        [long](Format-SampleNum $a.WriteOperationCount),
+                        [math]::Round((Format-SampleNum $a.ReadTransferCount)/1MB, 1),
+                        [math]::Round((Format-SampleNum $a.WriteTransferCount)/1MB, 1),
+                        $a.HandleCount, $a.ThreadCount, (Get-SampleCpuS $a)))
+            }
+            $L.Add(("  DELTA over {0:N2}s" -f $elapsed))
+            $L.Add(("  {0,-7} {1,-12} {2,-12} {3,-11} {4,-11} {5,-7} {6,-6} {7}" -f `
+                    "PID", "d_READ_OPS", "d_WRITE_OPS", "d_READ_KB", "d_WRITE_KB", "d_HND", "d_THR", "d_CPU_S"))
+            foreach ($a in $snapA) {
+                $b = $bById[[int]$a.ProcessId]
+                if ($null -eq $b) {
+                    $L.Add(("  {0,-7} EXITED between the two readings" -f $a.ProcessId))
+                    continue
+                }
+                $L.Add(("  {0,-7} {1,-12} {2,-12} {3,-11} {4,-11} {5,-7} {6,-6} {7}" -f `
+                        $a.ProcessId,
+                        [long]((Format-SampleNum $b.ReadOperationCount) - (Format-SampleNum $a.ReadOperationCount)),
+                        [long]((Format-SampleNum $b.WriteOperationCount) - (Format-SampleNum $a.WriteOperationCount)),
+                        [math]::Round(((Format-SampleNum $b.ReadTransferCount) - (Format-SampleNum $a.ReadTransferCount))/1KB, 1),
+                        [math]::Round(((Format-SampleNum $b.WriteTransferCount) - (Format-SampleNum $a.WriteTransferCount))/1KB, 1),
+                        ((Format-SampleNum $b.HandleCount) - (Format-SampleNum $a.HandleCount)),
+                        ((Format-SampleNum $b.ThreadCount) - (Format-SampleNum $a.ThreadCount)),
+                        [math]::Round((Get-SampleCpuS $b) - (Get-SampleCpuS $a), 2)))
+            }
+        }
+        $L.Add("")
+        $L.Add(("sample took {0:N2}s of the {1}s budget." -f $sw.Elapsed.TotalSeconds, $RestartSampleBudgetS))
+
+        $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+        $path = Join-Path $DataDir ("NOTE_{0}_restart_sample.txt" -f $stamp)
+        if (-not (Test-Path $DataDir)) { New-Item -ItemType Directory -Force $DataDir | Out-Null }
+        # Same no-BOM rule as Raise-Alert: read by people and by simple tools.
+        [IO.File]::WriteAllText($path, (($L -join "`r`n") + "`r`n"), [Text.UTF8Encoding]::new($false))
+        $bytes = 0
+        try { $bytes = (Get-Item $path -ErrorAction Stop).Length } catch { }
+        Write-Log ("restart-sample: wrote {0} bytes={1} mode={2} reason={3} procs={4} stacks={5} took={6:N2}s" -f `
+                   (Split-Path -Leaf $path), $bytes, $mode, $reason, $snapA.Count, $stacks, $sw.Elapsed.TotalSeconds)
+        if ($bytes -le 0) { $path = "" }
+    } catch {
+        # The whole point of this catch: a broken sampler must not become a broken watchdog.
+        # Say what happened and let the caller get on with the restart.
+        Write-Log ("restart-sample: FAILED after {0:N2}s - {1} - RESTART CONTINUES" -f `
+                   $sw.Elapsed.TotalSeconds, $_.Exception.Message)
+        $path = ""
+    }
+    return $path
+}
+
+# One line for the alert body so the reader of ALERT_*_watch_<reason>.txt is told the
+# sample exists. An alert that does not name its evidence file leaves the reader grepping.
+function Format-SampleRef([string]$path) {
+    if ($path -eq "") {
+        return "`r`n`r`nRESTART SAMPLE: none written - see the 'restart-sample:' line in data/watchdog.log for why."
+    }
+    return "`r`n`r`nRESTART SAMPLE: data/" + (Split-Path -Leaf $path) +
+           " - stacks, process tree and IO deltas taken while the processes were still alive."
+}
+
 function Invoke-Restart($state, [string]$reason) {
     # rolling restart budget - a broken collector must not be restart-hammered
     $hist = @(@(Get-Prop $state "restarts" @()) | Where-Object { ($NowEpoch - $_) -lt $RestartWindowS })
     if ($hist.Count -ge $RestartMax) {
+        # Sample here too. This is the one path that LEAVES THE STALLED PROCESSES ALIVE
+        # for a person to come back to, so it costs no collection gap at all - and it is
+        # the loudest call for help this script can make. It should not be the one path
+        # with no evidence attached to it.
+        $samplePath = Write-RestartSample $reason "budget_exhausted"
         Raise-Alert $state "restart_budget_exhausted" "CRIT" (
             "Watchdog wanted to restart the collector (reason: $reason) but the restart budget " +
             "($RestartMax per $RestartWindowS s) is exhausted. NOT restarting. " +
-            "Manual intervention required. Check data/watchdog.log and recent ALERT files.") 3600 | Out-Null
+            "Manual intervention required. Check data/watchdog.log and recent ALERT files." +
+            (Format-SampleRef $samplePath)) 3600 | Out-Null
         return $false
     }
 
     if ($DryRunRestart) {
+        # Sample on the dry-run path as well, and mark the file mode=dryrun so nobody
+        # mistakes it for an incident. Reason: this is the ONLY path that can be
+        # exercised without killing the live collector, so if the sampler skipped it,
+        # the sampler itself would be untestable except by an actual outage - and it is
+        # a rarely-run block that has to work the one time it matters. It is also free
+        # here: nothing is killed, so there is no collection gap to pay for.
+        Write-RestartSample $reason "dryrun" | Out-Null
         Set-Prop $state "restarts" (@($hist) + $NowEpoch)
         Set-Prop $state "last_restart_dryrun" "$NowStamp reason=$reason launcher=$LauncherCmd"
         Write-Log "RESTART-DRYRUN reason=$reason (would run: $LauncherCmd)"
         return $true
     }
+
+    # THE SAMPLE. Last moment at which a collector that is alive but not working still
+    # exists; one line below, taskkill removes the evidence. This is where 08-19 and
+    # 08-21 were lost.
+    $samplePath = Write-RestartSample $reason "kill"
 
     # kill remnants first so a half-dead tree cannot double-run against the API lease
     $rem = @(Get-TossProcs $SupervisorPattern) + @(Get-TossProcs $CollectorPattern)
@@ -885,7 +1248,8 @@ function Invoke-Restart($state, [string]$reason) {
     Raise-Alert $state "restarted_$reason" "WARN" (
         "Watchdog restarted the collector. reason=$reason outcome=$outcome`r`n" +
         "supervisor_procs=$($supAfter.Count) collector_procs=$($colAfter.Count)`r`n" +
-        "If outcome=FAILED check data/supervisor.stdout.log and data/collector.log tails.") 60 | Out-Null
+        "If outcome=FAILED check data/supervisor.stdout.log and data/collector.log tails." +
+        (Format-SampleRef $samplePath)) 60 | Out-Null
     Write-Log "RESTART outcome=$outcome sup=$($supAfter.Count) col=$($colAfter.Count)"
     return $ok
 }
