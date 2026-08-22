@@ -944,14 +944,80 @@ function Format-SampleNum($v) {
 # matches. "Which of the four links stopped" cannot be answered by looking at two of them.
 # Win32_Process carries IO counters, handle count, thread count, priority, working set,
 # CPU and parent, so all of sections 2 and 4 come from this single query.
+#
+# ...AND their $ProcName descendants, which is not a nicety. Measured 2026-08-22:
+# <repo>\.venv\Scripts\python.exe is the PYTHON LAUNCHER (py.exe, 255KB, InternalName
+# "Python Launcher"), not a copy of the interpreter. It re-executes the real interpreter as
+# a CHILD:
+#     stub  pid 27592  ExecutablePath = <repo>\.venv\Scripts\python.exe   1-2 threads
+#     real  pid 32324  ExecutablePath = ...\Programs\Python\Python313\python.exe
+#     - identical CommandLine, so only ExecutablePath tells them apart.
+# The child fails the $ExeLike test, so the seed set is launcher stubs ONLY - which is also
+# why the live watchdog reports sup=1 col=1 for a four-process chain. A stub holds no
+# python state at all: py-spy answers "Failed to find python version from target process"
+# on every one of them (2026-08-22 daily section 5-1 - that is NOT a permission error).
+# Without this expansion section 3 could never contain a usable stack.
+#
+# The expansion is also exactly what the restart removes: the taskkill below runs with /T,
+# so the sample covers the same tree the kill does.
 function Get-SampleProcs {
+    $all = @()
     try {
-        return @(Get-CimInstance Win32_Process -Filter "Name='$ProcName'" -ErrorAction SilentlyContinue |
-            Where-Object {
-                $_.ProcessId -ne $PID -and
-                ($ExeLike -eq "*" -or ($_.ExecutablePath -and $_.ExecutablePath -like $ExeLike))
-            })
+        $all = @(Get-CimInstance Win32_Process -Filter "Name='$ProcName'" -ErrorAction SilentlyContinue |
+                 Where-Object { $_.ProcessId -ne $PID })
     } catch { return @() }
+    if ($all.Count -eq 0) { return @() }
+    # Seed: the same test Get-TossProcs applies, so the sample starts from exactly the
+    # processes the restart decision was made about.
+    $picked = @{}
+    foreach ($p in $all) {
+        if ($ExeLike -eq "*" -or ($p.ExecutablePath -and $p.ExecutablePath -like $ExeLike)) {
+            $picked[[int]$p.ProcessId] = $true
+        }
+    }
+    # Transitive closure over parent links. Depth-bounded: the live chain is four deep and
+    # a bound stops a PID-reuse cycle from spinning here on the restart path.
+    for ($i = 0; $i -lt 8; $i++) {
+        $grew = $false
+        foreach ($p in $all) {
+            $id = [int]$p.ProcessId
+            if ($picked.ContainsKey($id)) { continue }
+            if ($picked.ContainsKey([int]$p.ParentProcessId)) { $picked[$id] = $true; $grew = $true }
+        }
+        if (-not $grew) { break }
+    }
+    return @($all | Where-Object { $picked.ContainsKey([int]$_.ProcessId) })
+}
+
+# Which process is most likely to hold the answer. 0 = collector, 1 = supervisor, 2 = the
+# rest. Uses the patterns the watchdog already has; adds no new observation.
+function Get-SampleRank($p) {
+    $cmd = [string]$p.CommandLine
+    if ($cmd -eq "") { return 2 }
+    try {
+        if ($cmd -match $CollectorPattern) { return 0 }
+        if ($cmd -match $SupervisorPattern) { return 1 }
+    } catch { return 2 }
+    return 2
+}
+
+# ORDER THE STACK TARGETS. The section 3 budget is 20s with 8s per process, and py-spy on a
+# genuinely hung interpreter can spend all of it - so whatever is dumped FIRST is what the
+# next incident actually gets. WMI hands processes back in roughly PID order, which puts
+# the launcher stubs (started first, one thread, no python state) ahead of the interpreter
+# that holds the stack. That is the wrong end of the budget.
+#
+# Rank first (the patterns already say which chain link matters most), then thread count
+# descending, then handle count, then PID for a stable order. Thread count is a SORT KEY,
+# NOT a filter: "one thread means a stub" is today's observation, not a contract, and a
+# real collector may legitimately be single-threaded for a moment. Nothing is dropped -
+# only the order changes.
+function Sort-SampleProcs($procs) {
+    return @(@($procs) | Sort-Object `
+        @{ Expression = { Get-SampleRank $_ } }, `
+        @{ Expression = { [int]$_.ThreadCount }; Descending = $true }, `
+        @{ Expression = { [int]$_.HandleCount }; Descending = $true }, `
+        @{ Expression = { [int]$_.ProcessId } })
 }
 
 function Get-ProcById([int]$procId) {
@@ -1018,9 +1084,15 @@ function Write-RestartSample([string]$reason, [string]$mode) {
         $L.Add("")
 
         # ---- [2] the process tree ---------------------------------------------------
-        $snapA = @(Get-SampleProcs)
+        $snapA = @(Sort-SampleProcs (Get-SampleProcs))
         $tA = Get-Date
-        $L.Add("[2] PROCESS TREE - every $ProcName under $ExeLike, plus resolved ancestors")
+        $L.Add("[2] PROCESS TREE - every $ProcName under $ExeLike and their $ProcName")
+        $L.Add("    descendants, plus resolved ancestors")
+        $L.Add("    ORDER (the same in [3] and [4]): collector pattern first, then supervisor")
+        $L.Add("    pattern, then the rest; within each, most threads first, then most handles.")
+        $L.Add("    Threads are a SORT KEY, NOT a filter - nothing is dropped. This exists so")
+        $L.Add("    the [3] budget is spent on the interpreter that holds a stack rather than")
+        $L.Add("    on the venv launcher stubs, which WMI would otherwise return first.")
         if ($snapA.Count -eq 0) {
             $L.Add("  (none - no matching process was alive at sample time)")
         } else {
@@ -1072,9 +1144,20 @@ function Write-RestartSample([string]$reason, [string]$mode) {
         $reserve = $RestartSampleIoGapS + 2.0
         $pyspy = Get-PySpyExe
         $stacks = 0
-        $L.Add("[3] PYTHON STACKS - py-spy dump")
+        $L.Add("[3] PYTHON STACKS - py-spy dump, in the section [2] order")
         $L.Add("    (no --locals on purpose: a stack says where it is stuck, and locals can")
         $L.Add("     carry the API token into a plain-text file under data/)")
+        # A stack read alone is unreadable - the healthy shape has to travel WITH the
+        # sample, because the person reading this is mid-incident and will not go looking.
+        # Shapes, not line numbers: line numbers drift with every collector edit.
+        $L.Add("    HOW TO READ IT - one stack alone says little; compare it with the healthy")
+        $L.Add("    shape. Healthy (2026-08-22, collector up 19h, market closed): MainThread")
+        $L.Add("    parked in asyncio _poll/select, two pool threads in _worker. The SAME place")
+        $L.Add("    means the loop is alive and nothing is arriving. A lock / file IO / socket")
+        $L.Add("    recv frame instead means a different fault. Full reference stack:")
+        $L.Add("    coordination/daily/2026-08-22.md section 5-2.")
+        $L.Add("    'Failed to find python version from target process' = a venv launcher stub,")
+        $L.Add("    not a permission problem. It never has a stack; the interpreter above it does.")
         if ($pyspy -eq "") {
             $L.Add("  py-spy NOT FOUND (looked in $RepoRoot\.venv\Scripts\py-spy.exe, then PATH).")
             $L.Add("  Install it with .venv\Scripts\pip install py-spy. Everything else in this")
@@ -1087,7 +1170,7 @@ function Write-RestartSample([string]$reason, [string]$mode) {
             if ($targets.Count -gt $RestartSampleMaxProcs) {
                 # No silent caps: say what was dropped, or the file reads as "these were all
                 # of them".
-                $L.Add(("  NOTE: {0} processes matched; dumping the first {1} " -f $targets.Count, $RestartSampleMaxProcs) +
+                $L.Add(("  NOTE: {0} processes matched; dumping the first {1} IN THE ORDER ABOVE " -f $targets.Count, $RestartSampleMaxProcs) +
                        "(-RestartSampleMaxProcs). The rest are in section 2 with no stack here.")
                 $targets = @($targets | Select-Object -First $RestartSampleMaxProcs)
             }

@@ -1132,6 +1132,191 @@ function Test-P10-TheScopeListIsTheSameInBothLanguages {
         ("ps=[" + ($a -join ",") + "] py=[" + ($b -join ",") + "]")
 }
 
+# --------------------------------------------------------------------------- #
+# RESTART SAMPLE (2026-08-22). 366 lines of sampler shipped in PR #52 with no case here at
+# all, and it sits INSIDE the self-recovery path. These five are the net.
+#
+# Every one of them drives the sampler through the REAL watchdog and then reads what landed
+# on disk - the same rule the rest of this file follows. None of them mocks the sampler.
+
+$script:rsProcs = @()
+
+# Fixtures that make the watchdog decide to restart: telemetry 50 minutes old while it
+# believes the session is open -> log_stale. Kept local rather than reusing T2's, so a
+# later edit to T2 cannot silently change what these cases test.
+function _RS-Fixtures([string]$d) {
+    Write-StateFile $d "day" 3000 20
+    Write-CollectorLog $d "day" 3000 20
+    Write-SettledOpenState $d
+}
+
+# Plant a file at <RepoRoot>\.venv\Scripts\py-spy.exe. Get-PySpyExe finds it with Test-Path
+# and never looks at what it is, so the content decides what happens next:
+#   $source = ""     a text file. Not a valid Win32 image, so [Diagnostics.Process]::Start
+#                    THROWS from inside the stack loop - a real corrupt/partial install.
+#   $source = <exe>  a real executable that exits immediately whatever arguments it gets
+#                    (where.exe), standing in for py-spy so the DUMP ORDER is observable
+#                    without this suite depending on py-spy being installed.
+function _RS-PlantPySpy([string]$d, [string]$source = "") {
+    $dir = Join-Path $d ".venv\Scripts"
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    $p = Join-Path $dir "py-spy.exe"
+    if ($source -eq "") {
+        [IO.File]::WriteAllText($p, "not an executable", [Text.UTF8Encoding]::new($false))
+    } else {
+        Copy-Item $source $p -Force
+    }
+    return $p
+}
+
+function _RS-FakePySpy { return (Join-Path $env:SystemRoot "System32\where.exe") }
+
+function _RS-SampleBody([string]$d) {
+    return (Get-AlertBody $d (Get-Alerts $d "NOTE") "restart_sample")
+}
+
+# A long-sleeping powershell.exe carrying $tag in its command line. $extraThreads spins up
+# that many extra runspace threads in-process, which is how a case controls ThreadCount -
+# the tiebreak the sampler sorts on.
+function _RS-StartProc([string]$tag, [int]$extraThreads) {
+    $body = '$tag=''{0}''; ' -f $tag
+    if ($extraThreads -gt 0) {
+        $body += ('1..{0} | ForEach-Object {{ $ps=[powershell]::Create(); ' +
+                  '[void]$ps.AddScript(''Start-Sleep -Seconds 900''); [void]$ps.BeginInvoke() }}; ') -f $extraThreads
+    }
+    $body += 'Start-Sleep -Seconds 900'
+    $p = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList @(
+        "-NoProfile", "-Command", $body)
+    $script:rsProcs += $p
+    return $p
+}
+
+function _RS-StopProcs {
+    foreach ($p in $script:rsProcs) {
+        try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { }
+    }
+    $script:rsProcs = @()
+}
+
+function Test-RS1-ASampleFailureMustNotStopTheRestart {
+    # ** THE ONE THAT MATTERS. ** Spec constraint: evidence collection must NEVER cost the
+    # restart. Today the only thing enforcing that is where the try/catch sits, and the
+    # next person to touch this file can move it without noticing. So break the sampler for
+    # real - a py-spy.exe that is not a valid Win32 image - and demand the restart anyway.
+    $d = New-Sandbox
+    _RS-Fixtures $d
+    _RS-PlantPySpy $d | Out-Null
+    Invoke-Watchdog $d | Out-Null
+    $log = Get-WatchdogLog $d
+    Assert "RS1" "the sampler really did fail (otherwise this case proves nothing)" `
+        ($log -match "restart-sample: FAILED") $log
+    Assert "RS1" "no sample file was claimed" (-not ($log -match "restart-sample: wrote")) $log
+    Assert "RS1" "THE RESTART STILL HAPPENED" (Test-Restarted $log) $log
+    Assert "RS1" "and the log says so in words" ($log -match "RESTART CONTINUES") $log
+}
+
+function Test-RS2-AnExhaustedBudgetIsWrittenDownNotSilent {
+    # No silent caps. A sample that ran out of time must SAY how many stacks it got - a
+    # truncated file that reads as complete is worse than no file, because the reader
+    # concludes "there was nothing to see".
+    $d = New-Sandbox
+    _RS-Fixtures $d
+    _RS-PlantPySpy $d (_RS-FakePySpy) | Out-Null
+    # 2.5s budget against a 2.0s reserve (IO gap 0 + 2.0) leaves 0.5s - below the 1.0s the
+    # loop needs, so it must give up before the first dump, whatever the machine's speed.
+    Invoke-Watchdog $d @{ RestartSampleBudgetS = 2.5; RestartSampleIoGapS = 0 } | Out-Null
+    $log = Get-WatchdogLog $d
+    $body = _RS-SampleBody $d
+    Assert "RS2" "a sample file was written anyway" ($body -ne "") $log
+    Assert "RS2" "the file says the budget ran out, and after how many stacks" `
+        ($body -match "BUDGET EXHAUSTED after \d+ stack") $body
+    Assert "RS2" "the restart still happened" (Test-Restarted $log) $log
+}
+
+function Test-RS3-WithoutPySpyTheOtherThreeSectionsSurvive {
+    # A new machine or a recreated venv has no py-spy - it happened on 2026-08-21. The
+    # tree, the IO deltas and the verdict must still land; py-spy is not a hard dependency.
+    # PATH is trimmed for this call so Get-PySpyExe's fallback cannot find a py-spy that
+    # this particular box happens to have: without that, the case would pass or fail
+    # depending on the machine, which is the same disease as the disk and task-scheduler
+    # seams above.
+    $d = New-Sandbox
+    _RS-Fixtures $d
+    $savedPath = $env:PATH
+    try {
+        $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+        Invoke-Watchdog $d | Out-Null
+    } finally { $env:PATH = $savedPath }
+    $body = _RS-SampleBody $d
+    Assert "RS3" "the sample was written anyway" ($body -ne "") (Get-WatchdogLog $d)
+    Assert "RS3" "it says py-spy was not found, and where it looked" `
+        ($body -match "py-spy NOT FOUND") $body
+    Assert "RS3" "section 1 (the verdict) survived" ($body -match "(?m)^\[1\] WATCHDOG VERDICT") $body
+    Assert "RS3" "section 2 (the tree) survived" ($body -match "(?m)^\[2\] PROCESS TREE") $body
+    Assert "RS3" "section 4 (IO/handles/threads) survived" ($body -match "(?m)^\[4\] IO / HANDLES") $body
+    Assert "RS3" "and the IO delta was actually computed" ($body -match "DELTA over \d+[.,]\d+s") $body
+}
+
+function Test-RS4-TheCollectorIsDumpedBeforeTheSupervisor {
+    # Ordering, part 1: the RANK beats everything else. The supervisor decoy here is
+    # deliberately BOTH started first (lower PID, so WMI returns it first) AND the fatter
+    # one (more threads, so the tiebreak would also favour it). Only the collector-pattern
+    # rank can put the collector ahead of it - which is where the per-process dump budget
+    # buys the most.
+    $d = New-Sandbox
+    _RS-Fixtures $d
+    _RS-PlantPySpy $d (_RS-FakePySpy) | Out-Null
+    $g = [Guid]::NewGuid().ToString("N").Substring(0, 6)
+    $supTag = "RS4SUP_$g"
+    $colTag = "RS4COL_$g"
+    $sup = _RS-StartProc $supTag 10
+    $col = _RS-StartProc $colTag 0
+    Start-Sleep -Seconds 2
+    try {
+        Invoke-Watchdog $d @{ SupervisorPattern = $supTag; CollectorPattern = $colTag } | Out-Null
+        $body = _RS-SampleBody $d
+        $iCol = $body.IndexOf("--- pid $($col.Id) ")
+        $iSup = $body.IndexOf("--- pid $($sup.Id) ")
+        $seen = "colPid=$($col.Id)@$iCol supPid=$($sup.Id)@$iSup"
+        Assert "RS4" "both decoys were dumped" ($iCol -ge 0 -and $iSup -ge 0) $seen
+        Assert "RS4" "the collector is dumped BEFORE the older, thread-heavier supervisor" `
+            ($iCol -ge 0 -and $iSup -ge 0 -and $iCol -lt $iSup) $seen
+    } finally { _RS-StopProcs }
+}
+
+function Test-RS5-WithinARankTheThreadHeavyProcessIsDumpedFirst {
+    # Ordering, part 2, and the reason any of this exists. Measured 2026-08-22:
+    # <repo>\.venv\Scripts\python.exe is the python LAUNCHER and re-executes the real
+    # interpreter as a CHILD WITH THE SAME COMMAND LINE. Rank cannot separate those two -
+    # only the thread count can. The thin launcher stub holds no python state at all
+    # ("Failed to find python version"), so dumping it first can spend the per-process
+    # budget on a process that can never answer, on exactly the day it matters.
+    # Both decoys carry the same tag; only the thread count differs, and the thin one is
+    # started first so PID order would put it ahead.
+    $d = New-Sandbox
+    _RS-Fixtures $d
+    _RS-PlantPySpy $d (_RS-FakePySpy) | Out-Null
+    $g = [Guid]::NewGuid().ToString("N").Substring(0, 6)
+    $tag = "RS5COL_$g"
+    $thin = _RS-StartProc $tag 0
+    $fat = _RS-StartProc $tag 10
+    Start-Sleep -Seconds 2
+    try {
+        Invoke-Watchdog $d @{ CollectorPattern = $tag; SupervisorPattern = "RS5NOTHINGMATCHES_$g" } | Out-Null
+        $body = _RS-SampleBody $d
+        $iFat = $body.IndexOf("--- pid $($fat.Id) ")
+        $iThin = $body.IndexOf("--- pid $($thin.Id) ")
+        $seen = "fatPid=$($fat.Id)@$iFat thinPid=$($thin.Id)@$iThin"
+        Assert "RS5" "both decoys were dumped" ($iFat -ge 0 -and $iThin -ge 0) $seen
+        Assert "RS5" "the thread-heavy one is dumped first, despite its higher PID" `
+            ($iFat -ge 0 -and $iThin -ge 0 -and $iFat -lt $iThin) $seen
+        Assert "RS5" "the file states the order it used" `
+            ($body -match "ORDER \(the same in \[3\] and \[4\]\)") $body
+        Assert "RS5" "and says threads are a sort key, not a filter" `
+            ($body -match "SORT KEY, NOT a filter") $body
+    } finally { _RS-StopProcs }
+}
+
 # ================= main =================
 
 Write-Host "watchdog self-test - sandbox root: $Root"
@@ -1188,12 +1373,18 @@ try {
         "Test-P8-TheRefusalToMaskIsVisible",
         "Test-P9-WithoutAMarkerAWatchdogDeathIsStillAnAlert",
         "Test-P10-TheScopeListIsTheSameInBothLanguages",
-        "Test-P11-TwoGradesInOneCycle")
+        "Test-P11-TwoGradesInOneCycle",
+        "Test-RS1-ASampleFailureMustNotStopTheRestart",
+        "Test-RS2-AnExhaustedBudgetIsWrittenDownNotSilent",
+        "Test-RS3-WithoutPySpyTheOtherThreeSectionsSurvive",
+        "Test-RS4-TheCollectorIsDumpedBeforeTheSupervisor",
+        "Test-RS5-WithinARankTheThreadHeavyProcessIsDumpedFirst")
     foreach ($c in $cases) {
         try { & $c } catch { Assert $c "case ran to completion" $false $_.Exception.Message }
     }
 } finally {
     Stop-Dummies
+    _RS-StopProcs
     if (-not $KeepSandbox) {
         try { Remove-Item $Root -Recurse -Force -ErrorAction SilentlyContinue } catch { }
     } else {
