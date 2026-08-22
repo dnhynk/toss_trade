@@ -17,7 +17,7 @@
 
 ## 순서대로 하라
 
-1. **인수**: `orca terminal list --worktree "id:12e59c9d-6eff-4602-8e62-802907e489b4::C:/Users/dongh/toss_trade" --json`
+1. **인수**: `orca terminal list --worktree "id:dd0ef363-0d50-4054-9a4a-d7c56ee8e141::C:/Users/dongh/toss_trade" --json`
    로 네 핸들을 찾고 `orca orchestration run-use --id run_92948a1f80a5 --from <핸들> --json`.
 2. **수집 건강**: `w5-ops/data/` 에서 **`ALERT_*` 파일**(진짜 사고. `PLANNED_*` 는 무시),
    `watchdog.log` 마지막 줄, `daily_health_<어제>.txt` 를 확인.
