@@ -1,0 +1,136 @@
+=== d21_verdict: D-21 coverage verdict runner (read-only) ===
+prereg   : coordination/D21-COVERAGE-PREREG.md   (rules frozen; this runner only applies them)
+session  : 2026-08-25
+window   : 2026-08-25 13:30:00Z .. 2026-08-25 20:00:00Z  UTC   (= 2026-08-25 22:30:00 .. 2026-08-26 05:00:00 KST, crosses local midnight)
+db       : C:\Users\dongh\orca\workspaces\toss_trade\w5-ops\data\tossmon.db   (mode=ro)
+log      : C:\Users\dongh\orca\workspaces\toss_trade\w5-ops\data\collector.log
+
+--- [0] BASELINE SELF-CHECK vs PREREG 2 (frozen before the data existed) ---
+    + PREREG 6-6 re-judgement (computed AFTER the rule commit 1ac0b61, 19:53:05)
+    tolerance: cover% / unobs% +-0.05pp, counts exact. bounds inclusive (BETWEEN),
+    median = sorted[n//2] (upper of the two middles) -- the definition that froze
+    17.1%/4.7% at n=10 and 19.0%/6.0% at n=6.
+    The 10-row table is a DATA-INTEGRITY check and is independent of valid/invalid;
+    only the SUMMARY is drawn from the valid subset (6-6). That is why 10 rows are
+    printed but 6 feed the bands -- the valid column below shows which.
+
+session       ranked  w/tape   cover%  capfill3    unobs%    valid   expected cov/cap/unobs   check
+2026-07-31        41       3     7.3%         0    2.262%  INVALID   7.3%/0/2.262%            OK
+2026-08-03        45       5    11.1%       196    0.419%    VALID   11.1%/196/0.419%         OK
+2026-08-04        30       1     3.3%       246    0.637%  INVALID   3.3%/246/0.637%          OK
+2026-08-05        35       8    22.9%       155   16.903%  INVALID   22.9%/155/16.903%        OK
+2026-08-06        35       3     8.6%       199    0.069%    VALID   8.6%/199/0.069%          OK
+2026-08-07        47       8    17.0%       172    0.876%  INVALID   17.0%/172/0.876%         OK
+2026-08-10        54      14    25.9%       194    0.064%    VALID   25.9%/194/0.064%         OK
+2026-08-11        70      12    17.1%       245    0.026%    VALID   17.1%/245/0.026%         OK
+2026-08-12        52      11    21.2%       231    0.030%    VALID   21.2%/231/0.030%         OK
+2026-08-13        58      11    19.0%       202    0.055%    VALID   19.0%/202/0.055%         OK
+
+valid subset (6-6): 6 of 10 sessions. invalid ones are excluded from the summary
+and therefore from the bands -- that is the whole point of revision 1.
+summary top-10 VALID-only    n=6  min=8.6% med=19.0% max=25.9%   expected n=6/8.6/19.0/25.9   OK       <- bands come from here (6-6)
+   pre-revision all-session  n=10 min=3.3% med=17.1% max=25.9%   expected n=10/3.3/17.1/25.9   OK       [superseded by 6-6a; kept as a check on min/median/max]
+summary top-100 VALID-only   n=6  min=4.5% med=6.0% max=8.0%   expected n=6/4.5/6.0/8.0   OK       <- bands come from here (6-6)
+   pre-revision all-session  n=10 min=2.6% med=4.7% max=8.0%   expected n=10/2.6/4.7/8.0   OK       [superseded by 6-6a; kept as a check on min/median/max]
+
+SELF-CHECK: PASS
+
+--- [1] TARGET WINDOW: DATA PRESENCE (3-4.4) + UNOBSERVED TIME (6-2) ---
+rankings_snap distinct snap_ms in window : 5587  (all ranking_type)
+first snap : 2026-08-25 13:30:09Z   (window_lo + 9.5s)
+last  snap : 2026-08-25 19:59:54Z   (window_hi - 5.2s)
+
+6-2 unobserved-time accounting -- every term is hand-checkable:
+  window_s        =    23400.0   13:30-20:00 UTC computed; frozen 6-2 value 23400.0
+  head_s          =        9.5   = (S[0] - lo)/1000        counted in FULL
+  tail_s          =        5.2   = (hi - S[-1])/1000       counted in FULL
+  interior_s      =        0.0   = sum of max(0, gap_s - 60) over 5586 pairs
+  unobserved_s    =       14.7   = head + tail + interior
+  unobserved_frac =   0.000629   = 14.7 / 23400.0  ->  0.063%
+  rule (6-2)      : INVALID iff unobserved_frac > 0.005  (0.5% = 117.0s)
+=> WITHIN BUDGET
+   head/tail get NO 60s exemption (6-2 rationale 3): the user chose 0.5%
+   against numbers computed that way, and changing the formula afterwards
+   would make it a different ruler than the one the choice was made on.
+
+W3 DECISION on the 3-4.4 edge rule (spec 2-1): FOLDED INTO 6-2, KEPT AS A LABEL
+  Before revision 1 this runner invalidated when head or tail exceeded 60s.
+  That test was DERIVED, not frozen: 3-4.4 fixes no number, and the runner
+  borrowed 3-4.1's to close the hole where 3-4.1 saw only interior gaps.
+  6-2 now closes that same hole directly and by name (6-1 cites the 08-05
+  tail of 3,929.5s). Keeping both would stack 'and no single edge > 60s' on
+  top of the 0.5% the user picked -- a stricter rule nobody wrote: a 100s
+  late start is 0.427%, inside budget, yet would still be invalidated.
+  6-5 keeps 3-4.4 unchanged, and 3-4.4 as written is a consequence clause
+  ('do not build a table from partial data'), which this runner still obeys:
+  an INVALID window emits no coverage table and no band. See [2](4).
+  label only, decides nothing: head/tail vs the 60s normal interval -> both within it
+
+--- [2] INVALIDATION CONDITIONS (3-4, with 3-4.1 replaced by 6-2) ---
+(0) 6-4 forward-only application : not a sealed session       PASS
+(1) unobserved time (6-2) : 0.063% of window vs 0.5% limit   PASS
+      gap list (DIAGNOSTIC, decides nothing): 0 gap(s) over 60s
+      the struck 3-4.1 invalidated on ANY single gap here; 6-2 charges each
+      max(0, gap_s - 60) and judges the total instead. 6-1: a single-gap
+      ruler catches 61s in a 6.5h window but misses a 65-minute early stop.
+      diagnostic (does NOT decide): TOSS_SECURITIES_TRADING_VOLUME snaps=1866, gaps>60s=0.
+      6-2 inherits 3-4.1's population (all ranking_type together), which can
+      mask a gap in the one type the population is drawn from. Above is that
+      check.
+(2) config_sig invariance : distinct=1, telemetry lines=78      PASS
+      n=78    rank3:GAIN/1d+MVOLUME/rt+TVOLUME/rt@100,t3max10,tr3s,ob4s,t2ob600s,t2c110s,rk12s,rkpTVOLUME@10/k2/h300s/rotate/cd600s
+      log files read: collector.log.1(264869 lines), collector.log(58597 lines)
+(3) no probe : EVIDENCE ONLY -- OPERATOR CONFIRMATION REQUIRED
+      probe artifacts (C:/Users/dongh/orca/workspaces/toss_trade/w5-ops/tests/fixtures/live/live_*.json) with mtime in window : 0
+      log lines matching /probe|saturation/i in window : 0  (file-wide: 0)
+      NOTE: that pattern never appears anywhere in this log, so 0 in the
+      window carries NO information -- the collector does not log probe
+      activity (tools/live_probe.py is a separate process).
+      NOTE: --out is operator-chosen and cannot be enumerated; a probe fired
+      from another worktree writes to that worktree's fixture dir.
+      => machine evidence above is all this runner can see. It CANNOT prove
+      no probe was fired. OPERATOR MUST CONFIRM (3-4.3; docs/62 8-2 says
+      tonight is a no-probe night).
+(4) not partial data : CONSEQUENCE CLAUSE, not an independent test
+      3-4.4 reads 'if any of the above trigger, do not build a table from
+      partial data'. It freezes no threshold of its own. This runner honours
+      it by emitting no coverage table and no band whenever (0)/(1)/(2) fire,
+      and by exiting 3 when the window has no rows at all. The 60s edge test
+      it used before revision 1 is folded into (1) -- rationale in [1].
+INVALIDATION: none triggered by machine checks (still subject to (3) operator confirmation)
+
+--- [3] WINDOW DIAGNOSTICS (PREREG 5) -- reported even when INVALID ---
+md_peak_1s    n=78   max=10  p95=10    hist 9:1 10:77
+rank_peak_1s  n=78   max=3   p95=3     hist 3:78
+              docs/62 5-3 argues RANKING worst second = collector peak
+              + 1.0 probe call <= 5 ceiling. observed peak 3 + 1 = 4.
+ranking_tier3        promotions in window : 80
+ranking_hold_expired releases in window   : 38
+cooldown violations (same symbol, ranking_tier3 twice < 600s) : 0
+
+--- [4] COVERAGE (PREREG 1) + BANDING (PREREG 3, edges from 6-6a) ---
+topN       ranked  A seats  A cover%   B tape  B cover%
+top-10         56       16     28.6%       19     33.9%
+top-100       605       16      2.6%       46      7.6%
+cost: capacity_fill->3 in window = 125
+A and B are different values and neither contains the other (3-2). Both above.
+
+[6-6a] B top-10 33.9%     -> INCREASED (above baseline max 25.9%) -- carry the 3-4 limits with it
+[3-2] A top-10 28.6%     -> HALF MATCHED (25-45%) -- must find the sim/live gap (cap? cooldown? tier0 refusal?)
+[3-3] cost 125           -> CLEARLY DECREASED (below baseline min 155) -- read with 3-1: was the cost traded for coverage?
+[3-2] sim prediction for A was 55.1% [UNREPRODUCED] -- docs/61 3-1, held as a pre-registered forecast
+[6-6a] band edges come from the VALID-6 baseline. The pass line 25.9% did not
+       move in revision 1; only the lower edge did, 17.1% -> 19.0%, i.e. it
+       got STRICTER. Do not quote the pre-revision 17.1% (6-5).
+
+Limits that travel with any number above (PREREG 4):
+  4-1 one session against a 6-session baseline (revision 1 dropped 4 of the 10).
+      Do not write 'confirmed'. 6-6b: the exchangeability argument weakens from
+      1/11 ~ 0.09 to 1/7 ~ 0.14. Do NOT cite either as a CI.
+  4-2 coverage rising does not mean alpha exists (docs/58 G-2/G-3 is separate).
+  4-3 tonight is D-21's first regular session; the holiday tier3_cap=4 reading
+      (docs/61 11-5, 50%) does not stand in for regular (tier3_cap=10, 20%).
+  4-4 do not compare with the 1.78% of docs/59 -- event grid vs symbol set.
+
+RESULT: VERDICT EMITTED (bands applied above). exit 0
+elapsed: 2.9s
