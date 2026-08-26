@@ -45,17 +45,41 @@
 # 1) 내 터미널 핸들 확인 (루트 워크트리에서 도는 에이전트 터미널)
 orca terminal list --worktree "id:dd0ef363-0d50-4054-9a4a-d7c56ee8e141::C:/Users/dongh/toss_trade" --json
 
-# 2) Run 목록 확인 — 아래 ⚠ 를 먼저 읽어라. 옛 ID 는 이제 없다
-orca orchestration run-list --json
+# 2) Run 에 바인딩 — 현행 Run 은 run_fd93b3d00b4b (2026-08-26 신설)
+orca orchestration run-use --id run_fd93b3d00b4b --from <내_핸들> --json
 
-# 3) 표준 대기 (내용까지 담아 깨워준다)
-orca orchestration check --wait --types worker_done,escalation,question,status --timeout-ms 570000 --json
+# 3) 표준 대기 (내용까지 담아 깨워준다). 폴링하지 마라 — 이게 이벤트로 깨운다
+orca orchestration check --run run_fd93b3d00b4b --wait \
+  --types worker_done,escalation,question,status --timeout-ms 900000 --json
 ```
 
-> **⚠ Run `run_92948a1f80a5` 는 사라졌다 (2026-08-23 실측).** `run-list` 에 없다.
-> **워커를 다시 붙이려면 새 Run 을 만들어야 한다.** 옛 ID 로 `run-use` 하지 마라.
-> `ops/ops_config.yaml` 의 `orchestration_run_id` 도 이 죽은 ID 를 가리키므로
-> **`ops/dispatch_sweep.py` 는 지금 아무것도 못 훑는다** — 새 Run 을 만들면 같이 고쳐라.
+> ### ★ 현행 감독 상태 (2026-08-26 08:4x KST)
+>
+> | | |
+> |---|---|
+> | **Run** | **`run_fd93b3d00b4b`** — 옛 `run_92948a1f80a5` 는 **사라졌다.** 옛 ID 로 `run-use` 하지 마라 |
+> | **Task** | `task_f8a72951ce2e` — 다음 `E` 설계 (`specs/w3_e2_design.md`) |
+> | **Dispatch** | `ctx_eb789325d778` · `state=ready` · `stage=input_accepted` |
+> | **워커** | `w3-analyzer` / `feat/e2-design` / `term_d7a94785-e5c9-46be-9cd1-c91ccfa6e8f7` |
+> | **모델** | **Fable 5 · max effort** — `launch.effective` 영수증 + 화면 둘 다로 확인 |
+> | `ops_config.yaml` | `orchestration_run_id` 를 새 Run 으로 고쳤다 → `dispatch_sweep.py` 다시 작동 |
+>
+> **끊겼을 때 복구 순서** (`ORCA-OPERATIONS` §5):
+> 1. `worker-show --dispatch ctx_eb789325d778 --json` — `ready` 면 **그냥 더 기다려라.**
+>    코딩 작업은 15~60 분이 예사고 **타임아웃은 실패가 아니라 체크포인트다**
+> 2. `failed`/`stopped` → `worker-start --task task_f8a72951ce2e --retry-of <옛 dispatch>`
+>    + 워크트리·에이전트·모델을 **명시**해라 (자동 상속 안 된다)
+> 3. `outcome_unknown` → `worker-stop` 후 재점검, 또는 `worker-abandon`
+> 4. 워커 출력은 `worker-read --dispatch ctx_eb789325d778 --limit 50 --json`
+>
+> ⚠ **하트비트와 터미널 활동은 "살아 있다" 이지 "끝났다" 가 아니다.** 완료 메시지가
+> 없다고 워커를 죽이거나 재시작하지 마라.
+>
+> ⚠ **`worker-start --terminal <handle>` 로 이미 도는 에이전트를 묶으려면 그 에이전트가
+> 놀고 있어야 한다.** 생각 중이면 `agent_readiness` 에서 **60 초 뒤 `timeout`** 으로
+> 죽는다 (2026-08-26 실측, `ctx_7a6e9707f78f`). **Run·Task 를 먼저 만들고
+> `worker-start --agent claude --model <m> --effort <e>` 로 띄우는 것이 정석이다** —
+> 그 경로가 수명주기 preamble 을 같이 넣어줘서 워커가 `worker_done` 을 낼 수 있게 된다.
 
 **주의**
 - `orchestration check` 는 `--from` 을 **안 받는다.** 다른 명령
