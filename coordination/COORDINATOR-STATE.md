@@ -66,20 +66,20 @@ orca orchestration check --run run_fd93b3d00b4b --wait \
 > | | |
 > |---|---|
 > | **Run** | **`run_fd93b3d00b4b`** — 옛 `run_92948a1f80a5` 는 **사라졌다.** 옛 ID 로 `run-use` 하지 마라 |
-> | **Task** | ~~`task_f8a72951ce2e`~~ ✅ **completed** (`docs/68` — `E` 지명 안 함) → **현행 `task_b538ee54c2a9`** — 자를 바꾼다 (`specs/w3_candle_ruler.md`, D-32 = 가) |
-> | **Dispatch** | **`ctx_f781aa7d8087`** · `state=ready` · `stage=input_accepted` (옛 `ctx_eb789325d778` 은 `succeeded` 후 release 됨) |
-> | **워커** | `w3-analyzer` / **`feat/candle-ruler`** / `term_8315dd54-6080-49f7-ba8d-3759ec3d68af` |
-> | **감시** | `Monitor bng0puq4f` — 커밋·PR·디스패치 실패. `check --wait` 는 아래 결함으로 못 쓴다 |
+> | **Task** | ~~`task_f8a72951ce2e`~~ ✅ **completed** (`docs/68` — `E` 지명 안 함) → **현행 `task_af3fbeec9103`** — 자 보정 → (가′) (`specs/w3_ruler_bias.md`, D-33) |
+> | **Dispatch** | **`ctx_660b9fbf3c1f`** · `state=ready` · `stage=input_accepted` (옛 `ctx_eb789325d778` 은 `succeeded` 후 release 됨) |
+> | **워커** | `w3-analyzer` / **`feat/ruler-bias`** / `term_8315dd54-6080-49f7-ba8d-3759ec3d68af` |
+> | **감시** | `Monitor bjuovs1gx` — 커밋·PR·디스패치 실패. `check --wait` 는 아래 결함으로 못 쓴다 |
 > | **모델** | **Fable 5 · max effort** — `launch.effective` 영수증 + 화면 둘 다로 확인 |
 > | `ops_config.yaml` | `orchestration_run_id` 를 새 Run 으로 고쳤다 → `dispatch_sweep.py` 다시 작동 |
 >
 > **끊겼을 때 복구 순서** (`ORCA-OPERATIONS` §5):
-> 1. `worker-show --dispatch ctx_f781aa7d8087 --json` — `ready` 면 **그냥 더 기다려라.**
+> 1. `worker-show --dispatch ctx_660b9fbf3c1f --json` — `ready` 면 **그냥 더 기다려라.**
 >    코딩 작업은 15~60 분이 예사고 **타임아웃은 실패가 아니라 체크포인트다**
-> 2. `failed`/`stopped` → `worker-start --task task_b538ee54c2a9 --retry-of <옛 dispatch>`
+> 2. `failed`/`stopped` → `worker-start --task task_af3fbeec9103 --retry-of <옛 dispatch>`
 >    + 워크트리·에이전트·모델을 **명시**해라 (자동 상속 안 된다)
 > 3. `outcome_unknown` → `worker-stop` 후 재점검, 또는 `worker-abandon`
-> 4. 워커 출력은 `worker-read --dispatch ctx_f781aa7d8087 --limit 50 --json`
+> 4. 워커 출력은 `worker-read --dispatch ctx_660b9fbf3c1f --limit 50 --json`
 >
 > ⚠ **하트비트와 터미널 활동은 "살아 있다" 이지 "끝났다" 가 아니다.** 완료 메시지가
 > 없다고 워커를 죽이거나 재시작하지 마라.
