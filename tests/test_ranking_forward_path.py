@@ -32,6 +32,16 @@
 13. **확증 팔에 탐색 세션도 버린 셋(08-13·08-14·08-17)도 못 들어온다.** 개정 2 이전에는
     확증 모드가 **아예 없었다** - `exploration_only=False` 는 팔을 안 가리는
     `unrestricted` 였다. 그대로 판정을 돌렸으면 버린 셋이 예외도 경고도 없이 섞였다.
+
+개정 4(`G2G3-PREREG` §2-1, 2026-08-26, W3 — 사용자 위임)가 더한 셋:
+
+14. **탐색 B(08-18~25)는 자기 여섯만 열고, 천장이 확증 바닥(08-26)과 같은 값이다.**
+    확증 팔에 심은 날이 탐색 B 산출물에 닿으면 새 `E` 를 확증 데이터에 맞춰 고르는
+    길이 다시 열린다.
+15. **한 실행은 한 시대만 연다.** 두 시대를 뭉친 수가 생길 자리를 코드가 안 만든다.
+16. **사다리는 선언한 칸에만 붙고, 나머지 칸은 세기만 한다.** 개정 4 가 탐색 B 에서
+    전방 경로를 볼 칸을 하나로 못 박았으므로, 다른 칸의 전방 경로는 **만들어지지도
+    않아야** 한다 - 만들어진 수는 언젠가 인용된다.
 """
 from __future__ import annotations
 
@@ -715,7 +725,14 @@ def test_the_exploration_arm_is_nine_named_sessions():
     # 탐색 팔을 가두는 것은 **천장**이다. 개정 2 이전에는 확증 바닥이 같은 값이라
     # 한 상수가 둘을 겸했고, 그래서 바닥을 옮기면 천장이 따라갈 뻔했다.
     assert RFP.EXPLORATION_CEILING_UTC.startswith("2026-08-13")
-    assert RFP.CONFIRMATION_FLOOR_UTC.startswith("2026-08-18")
+    # 개정 4: 확증 바닥은 08-26, 탐색 B 는 08-18..08-25 여섯이고 천장이 그 바닥과 같다.
+    assert RFP.CONFIRMATION_FLOOR_UTC == "2026-08-26T00:00:00Z"
+    assert len(RFP.EXPLORATION_B_SESSIONS) == 6
+    assert all("2026-08-18" <= d <= "2026-08-25" for d in RFP.EXPLORATION_B_SESSIONS)
+    assert set(RFP.EXPLORATION_B_SESSIONS).isdisjoint(RFP.EXPLORATION_SESSIONS)
+    assert set(RFP.EXPLORATION_B_SESSIONS).isdisjoint(RFP.DISCARDED_SESSIONS)
+    assert RFP.EXPLORATION_B_CEILING_UTC == RFP.CONFIRMATION_FLOOR_UTC
+    assert RFP.EXPLORATION_B_FLOOR_UTC == "2026-08-18T00:00:00Z"
 
 
 def test_a_session_past_the_floor_is_planted_but_never_reaches_the_report(tmp_path):
@@ -803,9 +820,11 @@ def test_tiers_carry_only_the_two_strongest_arms(report):
 # 는 팔을 안 가리는 `unrestricted` 였다 — 그대로 판정을 돌렸으면 버린 셋이 조용히
 # 섞였을 것이다. 예외도 경고도 없이.
 # --------------------------------------------------------------------------- #
-MIXED_DAYS = ("2026-08-10", "2026-08-11",          # 탐색 팔
+MIXED_DAYS = ("2026-08-10", "2026-08-11",          # 탐색 A
               "2026-08-13", "2026-08-14", "2026-08-17",   # 어느 팔도 아님
-              "2026-08-18", "2026-08-19", "2026-08-20")   # 확증 팔
+              "2026-08-18", "2026-08-19", "2026-08-20",   # 탐색 B (개정 4)
+              "2026-08-22",                               # B 의 창 안이지만 B 목록 밖 (주말)
+              "2026-08-26", "2026-08-27")                 # 확증 팔 (개정 4)
 
 
 @pytest.fixture(scope="module")
@@ -816,7 +835,7 @@ def mixed_db(tmp_path_factory):
 def test_confirmation_arm_admits_only_sessions_from_the_floor(mixed_db):
     res = RFP.run(mixed_db, confirmation=True)
     used = {s["session"] for s in res["sessions"]}
-    assert used == {"2026-08-18", "2026-08-19", "2026-08-20"}
+    assert used == {"2026-08-26", "2026-08-27"}
 
 
 def test_the_discarded_three_never_enter_the_confirmation_arm(mixed_db):
@@ -824,6 +843,8 @@ def test_the_discarded_three_never_enter_the_confirmation_arm(mixed_db):
     used = {s["session"] for s in res["sessions"]}
     assert used.isdisjoint(set(RFP.DISCARDED_SESSIONS))
     assert used.isdisjoint(set(RFP.EXPLORATION_SESSIONS))
+    # 개정 4: 탐색 B 여섯도 확증 팔에 못 들어온다 - E2 K10 의 판정에 이미 쓰였다.
+    assert used.isdisjoint(set(RFP.EXPLORATION_B_SESSIONS))
 
 
 def test_since_ms_cannot_lower_the_confirmation_floor(mixed_db):
@@ -841,11 +862,12 @@ def test_the_two_arms_cannot_be_opened_together(mixed_db):
 
 
 def test_moving_the_confirmation_floor_did_not_widen_exploration(mixed_db):
-    """개정 2 는 **바닥만** 옮겼다. 천장이 같이 따라가면 탐색이 버린 셋을 본다."""
+    """개정 2·4 는 **바닥만** 옮겼다. 탐색 A 의 천장이 따라가면 탐색 A 가 버린 셋을 본다."""
     assert RFP.EXPLORATION_CEILING_UTC == "2026-08-13T00:00:00Z"
-    assert RFP.CONFIRMATION_FLOOR_UTC == "2026-08-18T00:00:00Z"
+    assert RFP.CONFIRMATION_FLOOR_UTC == "2026-08-26T00:00:00Z"
     used = {s["session"] for s in RFP.run(mixed_db, exploration_only=True)["sessions"]}
     assert used <= set(RFP.EXPLORATION_SESSIONS)
+    assert used.isdisjoint(set(RFP.EXPLORATION_B_SESSIONS))
 
 
 def test_confirmation_report_does_not_call_itself_not_a_verdict(mixed_db):
@@ -866,3 +888,123 @@ def test_the_discarded_sessions_really_exist_so_the_guard_is_what_removed_them(m
     used = {s["session"] for s in RFP.run(mixed_db, exploration_only=False)["sessions"]}
     assert set(RFP.DISCARDED_SESSIONS) <= used
     assert set(RFP.EXPLORATION_SESSIONS) & used
+    assert set(RFP.EXPLORATION_B_SESSIONS) & used
+    assert {"2026-08-26", "2026-08-27"} <= used
+
+
+# --------------------------------------------------------------------------- #
+# 14~16. 개정 4 (G2G3-PREREG §2-1, 2026-08-26) - 탐색 B · 한 시대만 · 선언한 칸만
+# --------------------------------------------------------------------------- #
+def test_exploration_b_admits_only_its_named_sessions(mixed_db):
+    """탐색 B 는 자기 여섯(여기서는 심은 셋)만 연다. 탐색 A 도 버린 셋도 확증도 아니다."""
+    res = RFP.run(mixed_db, exploration_era="B")
+    used = {s["session"] for s in res["sessions"]}
+    assert used == {"2026-08-18", "2026-08-19", "2026-08-20"}
+    assert used <= set(RFP.EXPLORATION_B_SESSIONS)
+    # 창 안(08-18..08-26)이지만 목록 밖인 08-22 는 **이름**이 막는다 - 그리고 그 날은 있다.
+    assert "2026-08-22" not in used
+    assert "2026-08-22" in {s["session"] for s in
+                            RFP.run(mixed_db, exploration_only=False)["sessions"]}
+    assert used.isdisjoint(set(RFP.EXPLORATION_SESSIONS))
+    assert used.isdisjoint(set(RFP.DISCARDED_SESSIONS))
+    assert res["exploration_era"] == "B" and res["exploration_only"] is True
+
+
+def test_exploration_b_never_reads_the_confirmation_floor(mixed_db):
+    """확증 바닥(08-26)에 심은 날이 탐색 B 에 안 닿는다 - 그리고 그 날은 실제로 있다."""
+    res = RFP.run(mixed_db, exploration_era="B")
+    assert res["until_ms"] < HE.iso_ms(RFP.CONFIRMATION_FLOOR_UTC)
+    assert res["since_ms"] >= HE.iso_ms(RFP.EXPLORATION_B_FLOOR_UTC)
+    used = {s["session"] for s in res["sessions"]}
+    assert all(d < "2026-08-26" for d in used)
+    # `until_ms` 로 천장을 넘기려 해도 상수가 이긴다.
+    pushed = RFP.run(mixed_db, exploration_era="B",
+                     until_ms=HE.iso_ms("2026-09-01T00:00:00Z"))
+    assert {s["session"] for s in pushed["sessions"]} == used
+    # 대조군: 같은 DB 를 unrestricted 로 열면 08-26 이 나온다.
+    opened = {s["session"] for s in RFP.run(mixed_db, exploration_only=False)["sessions"]}
+    assert "2026-08-26" in opened
+
+
+def test_one_run_opens_one_era(mixed_db):
+    """두 시대를 한 실행에 여는 인자는 없다 - 뭉친 수가 생길 자리를 안 만든다."""
+    with pytest.raises(ValueError):
+        RFP.run(mixed_db, exploration_era="AB")
+    with pytest.raises(ValueError):
+        RFP.run(mixed_db, exploration_era="")
+    a = {s["session"] for s in RFP.run(mixed_db, exploration_era="A")["sessions"]}
+    b = {s["session"] for s in RFP.run(mixed_db, exploration_era="B")["sessions"]}
+    assert a and b and a.isdisjoint(b)
+    assert a <= set(RFP.EXPLORATION_SESSIONS) and b <= set(RFP.EXPLORATION_B_SESSIONS)
+
+
+def test_the_revision4_ladder_cell_is_one_named_cell():
+    assert RFP.REVISION4_LADDER_CELLS == (("E1_new_entry", "N10"),)
+    assert set(RFP.REVISION4_LADDER_CELLS) <= set(RFP.ALL_CELLS)
+
+
+def test_the_ladder_attaches_only_to_the_declared_cells(db):
+    """`primary_cells` 를 주면 사다리는 그 칸에만 붙는다. 기본값에서는 셋에 붙는다."""
+    declared = (("E1_new_entry", "N50"),)
+    res = RFP.run(db, primary_cells=declared)
+    seen_declared = seen_other = 0
+    for key, box in res["cells"].items():
+        _rt, kind, cell, tier = key.split("|")
+        if (kind, cell) in declared:
+            if tier == "all":
+                assert box["arms"], key
+                seen_declared += 1
+        else:
+            assert not box["arms"], key
+            assert tier == "all", key       # 층은 사다리가 붙는 칸에만 갈린다
+            seen_other += 1
+    assert seen_declared and seen_other
+    # 대조군: 기본값은 E3 N50_M3 에도 사다리가 붙는다 - 즉 위에서 안 붙은 것은 인자 때문이다.
+    base = RFP.run(db)
+    assert base["cells"]["TOSS_SECURITIES_TRADING_VOLUME|E3_dwell_start|N50_M3|all"]["arms"]
+    rep_ = RFP.build_report(res)
+    assert rep_["arm"]["primary_cells"] == [list(c) for c in declared]
+    assert [r for r in rep_["cells"] if r["primary"]] and all(
+        [r["kind"], r["cell"]] in [list(c) for c in declared]
+        for r in rep_["cells"] if r["primary"])
+
+
+def test_funnel_only_elsewhere_counts_but_never_measures(db):
+    """선언 밖 칸은 사건 수·앵커 수만 남고 전방 경로가 **만들어지지 않는다**."""
+    declared = (("E1_new_entry", "N50"),)
+    res = RFP.run(db, primary_cells=declared, funnel_only_elsewhere=True)
+    counted = measured = 0
+    for key, box in res["cells"].items():
+        _rt, kind, cell, _tier = key.split("|")
+        if (kind, cell) in declared:
+            continue
+        if box["n_anchored"]:
+            counted += 1
+            assert box["real"] == {}, key
+    assert counted, "no non-declared cell had an anchor, the check is empty"
+    # 대조군: 플래그를 끄면 같은 칸에 전방 경로가 생긴다.
+    loose = RFP.run(db, primary_cells=declared, funnel_only_elsewhere=False)
+    for key, box in loose["cells"].items():
+        _rt, kind, cell, _tier = key.split("|")
+        if (kind, cell) not in declared and box["n_anchored"]:
+            assert box["real"], key
+            measured += 1
+    assert measured
+    rep_ = RFP.build_report(res)
+    assert rep_["arm"]["funnel_only_elsewhere"] is True
+
+
+def test_the_cli_opens_era_b_and_the_single_cell(mixed_db, tmp_path):
+    assert RFP.main(["prog", str(mixed_db), "--exploration-b",
+                     "--primary-cell", "E1_new_entry:N50", "--funnel-only-elsewhere",
+                     "--out", str(tmp_path), "--name", "b"]) == 0
+    rep_ = json.loads((tmp_path / "b.json").read_text(encoding="utf-8"))
+    arm = rep_["arm"]
+    assert arm["name"] == "exploration" and arm["exploration_era"] == "B"
+    assert arm["sessions_allowed"] == list(RFP.EXPLORATION_B_SESSIONS)
+    assert set(arm["sessions_used"]) == {"2026-08-18", "2026-08-19", "2026-08-20"}
+    assert arm["primary_cells"] == [["E1_new_entry", "N50"]]
+    assert arm["funnel_only_elsewhere"] is True
+    assert arm["exploration_b_ceiling_utc"] == arm["confirmation_floor_utc"]
+    blob = " ".join(rep_["labels"])
+    assert "2026-08-26" in blob and "era B" in blob and "never pooled" in blob

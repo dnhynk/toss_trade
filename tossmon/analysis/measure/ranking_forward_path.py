@@ -122,8 +122,9 @@ D-19: *발화가 몰리는 종목이 원래 더 출렁이는 종목일 수 있�
 - **라이브 워크트리에 쓰지 않는다.** DB 는 `mode=ro`, API 호출 0 건.
 
 실행: `python -m tossmon.analysis.measure.ranking_forward_path [db] [--since-d21]
-[--until-d21] [--until-ms N] [--exploration (default) | --all-sessions]
-[--out DIR] [--name NAME]`
+[--until-d21] [--until-ms N] [--exploration (default) | --exploration-b |
+--confirmation | --all-sessions] [--primary-cell KIND:CELL ...]
+[--funnel-only-elsewhere] [--out DIR] [--name NAME]`
 -> `out/ranking_forward_path.json`. **콘솔 ASCII.**
 """
 from __future__ import annotations
@@ -193,8 +194,28 @@ EXPLORATION_SESSIONS = (
 EXPLORATION_CEILING_UTC = "2026-08-13T00:00:00Z"
 
 #: 확증 팔의 바닥. **개정 2** (`G2G3-PREREG` §2-1, 2026-08-22 사용자 D-28 (나)) 가
-#: 08-13 -> 08-18 로 옮겼다. 확증 모드는 이 시각 **이전 스냅을 읽지 않는다.**
-CONFIRMATION_FLOOR_UTC = "2026-08-18T00:00:00Z"
+#: 08-13 -> 08-18 로 옮겼고, **개정 4** (2026-08-26, W3 — 사용자 위임) 가 08-18 -> 08-26
+#: 으로 다시 옮겼다: E2 K10 의 판정에 소진된 08-18~25 는 탐색 B 가 됐다.
+#: 확증 모드는 이 시각 **이전 스냅을 읽지 않는다.**
+CONFIRMATION_FLOOR_UTC = "2026-08-26T00:00:00Z"
+
+#: ★★ 탐색 팔 **제2 시대(탐색 B)** — 개정 4 (`G2G3-PREREG` §2-1, 2026-08-26). E2 K10 의
+#: 확증에 소진된 여섯을 편입했다. 탐색 A(위 9 세션, D-21 이전)와 **한 숫자로 뭉치지
+#: 않는다** — 한 실행은 한 시대만 연다(`run(exploration_era=...)`). 개정 4 가 이 여섯을
+#: 데이터 보기 전에 적었다(커밋 `b06b0af`).
+EXPLORATION_B_SESSIONS = (
+    "2026-08-18", "2026-08-19", "2026-08-20", "2026-08-21", "2026-08-24", "2026-08-25",
+)
+#: 탐색 B 의 창. 바닥은 개정 2 의 옛 확증 바닥, 천장은 **새 확증 바닥과 같은 값**이다 —
+#: 탐색 B 가 확증 팔(08-26 이후)을 한 스냅도 읽지 않는다는 것을 상수가 말한다.
+EXPLORATION_B_FLOOR_UTC = "2026-08-18T00:00:00Z"
+EXPLORATION_B_CEILING_UTC = CONFIRMATION_FLOOR_UTC
+EXPLORATION_ERAS = ("A", "B")
+
+#: ★ 개정 4 가 **데이터를 읽기 전에** 못 박은, 탐색 B 에서 위약 사다리를 붙이는 유일한 칸.
+#: 근거는 데이터가 아니라 둘이다 — 골격 문장의 가시권(상위 10)과 D-21 차선의
+#: `top_n: 10 / hold_s: 300`. 다른 칸은 세기만 한다(`funnel_only_elsewhere`).
+REVISION4_LADDER_CELLS = (("E1_new_entry", "N10"),)
 
 #: 어느 팔도 아닌 세션. `docs/64`·`docs/65` 가 탐색 산출물에 노출시켜 확증에서 뺐고,
 #: 탐색 팔은 9 세션으로 얼려 있어 거기에도 못 들어간다. **되돌릴 수 없다.**
@@ -302,11 +323,15 @@ REPORTED_METRICS = tuple(
 #: 콘솔이 cp949 이고 이 줄들은 화면에도 그대로 나간다.
 LABELS = (
     "EXPLORATION - NOT A VERDICT",
-    "the 9 sessions (07-31, 08-03..07, 08-10..12) can never be reused for confirmation",
+    "exploration arm = era A (9 sessions 07-31, 08-03..07, 08-10..12, before D-21) "
+    "and era B (6 sessions 08-18..25, after D-21, added by G2G3-PREREG s2-1 revision 4 "
+    "on 2026-08-26); neither can ever be reused for confirmation and the two eras are "
+    "never pooled into one number - one run opens one era",
     "those 9 sessions sit under a 12.4s poll: 29% of the server's 10s grid ticks were "
     "never received and the rankings we did get were a median 16.1s old (docs/35, W1)",
-    "confirmation uses only regular sessions from 2026-08-18 (G2G3-PREREG s2-1 "
-    "revision 2, 2026-08-22); 2026-08-13/14/17 belong to NEITHER arm",
+    "confirmation uses only regular sessions from 2026-08-26 (G2G3-PREREG s2-1 "
+    "revision 4, 2026-08-26; revision 2 had put it at 08-18); 2026-08-13/14/17 belong "
+    "to NEITHER arm",
     "label [3] itself has since moved: a live probe polled the same list at 1s, 5s "
     "and 12s and the ranking age came out 16.8 / 18.0 / 18.1s - near identical - "
     "while the '29% of grid ticks never received' turns out to be the server using "
@@ -321,12 +346,12 @@ LABELS = (
 #: "NOT A VERDICT" 를 붙이면 그 말이 거짓이 된다. ASCII 로만 쓴다.
 CONFIRMATION_LABELS = (
     "CONFIRMATION ARM - this is the G-2 verdict path (G2G3-PREREG s3)",
-    "the 9 exploration sessions (07-31, 08-03..07, 08-10..12) are excluded and can "
-    "never be reused here",
+    "the exploration arm - era A (07-31, 08-03..07, 08-10..12) and era B (08-18..25, "
+    "revision 4) - is excluded and can never be reused here",
     "2026-08-13 / 08-14 / 08-17 belong to NEITHER arm - docs/64 and docs/65 exposed "
     "them to exploration output, so revision 2 (D-28 (b)) dropped them. Irreversible",
-    "E was frozen on 2026-08-22 (G2G3-PREREG s2-4), two days before the 5th arm "
-    "session, and was chosen on the exploration arm alone",
+    "E is whatever G2G3-PREREG s2-4 froze under the s5 procedure; its freeze commit "
+    "predates every session in this arm and E was chosen on the exploration arm alone",
     "the poll-age caveat still travels with every number: the ranking snapshots are "
     "a median 16-18s old and the server skips some of its own 10s slots (docs/35 "
     "s7-4, docs/62 s10-4). This is a D-8 / G-1a question that this runner does not "
@@ -910,16 +935,26 @@ def _blank_arm() -> dict:
 
 def run(db: Path, *, since_ms: int | None = None, until_ms: int | None = None,
         exploration_only: bool | None = None, confirmation: bool = False,
+        exploration_era: str = "A", cell_grid: tuple = ALL_CELLS,
+        primary_cells: tuple = PRIMARY_CELLS, funnel_only_elsewhere: bool = False,
         progress: bool = False) -> dict:
     """세션마다 사건을 만들고 앵커를 붙이고 위약 사다리를 태운다.
 
-    팔은 셋이고 **기본은 탐색**이다.
+    팔은 셋이고 **기본은 탐색 A** 다.
 
-    - `exploration_only` (기본): 탐색 팔 9 세션만. `E` 를 확증 데이터에 맞춰
-      고르는 길을 막는다(`G2G3-PREREG` §5-1).
-    - `confirmation`: **확증 팔만** = `CONFIRMATION_FLOOR_UTC` 이후이고 탐색 9 세션도
-      버린 3 세션도 아닌 정규장. G-2 판정이 지나가는 길이다.
+    - `exploration_only` (기본) + `exploration_era`: 탐색 팔 **한 시대만**.
+      `"A"` = 9 세션(D-21 이전, 천장 `EXPLORATION_CEILING_UTC`), `"B"` = 6 세션
+      (08-18~25, 개정 4, 창 `EXPLORATION_B_FLOOR_UTC`..`EXPLORATION_B_CEILING_UTC`).
+      두 시대를 한 실행에서 여는 인자는 **없다** — 뭉친 수가 생길 자리를 안 만든다.
+      `E` 를 확증 데이터에 맞춰 고르는 길은 여전히 막혀 있다(`G2G3-PREREG` §5-1).
+    - `confirmation`: **확증 팔만** = `CONFIRMATION_FLOOR_UTC`(08-26) 이후이고 탐색
+      A·B 도 버린 3 세션도 아닌 정규장. G-2 판정이 지나가는 길이다.
     - 둘 다 끄면 `unrestricted` — 팔이 섞이므로 **판정에 쓰면 안 된다.**
+
+    `primary_cells` 는 위약 사다리(전방 경로 비교)가 붙는 칸이다. 개정 4 가 탐색 B 에서
+    사다리를 붙일 칸을 **하나**(`E1_new_entry N10`)로 못 박았으므로 호출부가 그 칸만
+    넘긴다. `funnel_only_elsewhere=True` 면 나머지 칸은 **사건 수·앵커율만** 세고
+    전방 경로를 만들지 않는다 — "다른 칸은 재지 않는다" 를 코드가 지킨다.
 
     어느 팔이든 **창을 좁히는 것과 세션 목록으로 거르는 것을 둘 다** 건다 - 하나는
     인자에 의존하고 다른 하나는 상수라, 인자를 잘못 줘도 상수가 남는다.
@@ -930,6 +965,13 @@ def run(db: Path, *, since_ms: int | None = None, until_ms: int | None = None,
         raise ValueError(
             "confirmation and exploration_only are mutually exclusive - "
             "G2G3-PREREG s2-1 keeps the two arms apart")
+    if exploration_only and exploration_era not in EXPLORATION_ERAS:
+        raise ValueError(
+            f"exploration_era must be one of {EXPLORATION_ERAS}, got "
+            f"{exploration_era!r} - one run opens ONE era (G2G3-PREREG s2-1 "
+            f"revision 4: the eras are never pooled)")
+    primary_cells = tuple(tuple(c) for c in primary_cells)
+    cell_grid = tuple(sorted(set(tuple(c) for c in cell_grid) | set(primary_cells)))
     conn = HE.open_ro(db)
     try:
         floor_ms = HE.holdout_floor_ms()
@@ -941,16 +983,28 @@ def run(db: Path, *, since_ms: int | None = None, until_ms: int | None = None,
         db_max = int(conn.execute("SELECT MAX(snap_ms) FROM rankings_snap").fetchone()[0])
         until = int(until_ms) if until_ms is not None else db_max
         if exploration_only:
-            until = min(until, HE.iso_ms(EXPLORATION_CEILING_UTC) - 1)
+            if exploration_era == "A":
+                until = min(until, HE.iso_ms(EXPLORATION_CEILING_UTC) - 1)
+            else:
+                # 탐색 B: 바닥과 천장을 **둘 다** 상수가 정한다. 천장이 확증 바닥과
+                # 같은 값이라 탐색 B 는 확증 팔을 한 스냅도 못 읽는다.
+                floor_ms = max(floor_ms, HE.iso_ms(EXPLORATION_B_FLOOR_UTC))
+                until = min(until, HE.iso_ms(EXPLORATION_B_CEILING_UTC) - 1)
         sessions = scan_sessions(conn, floor_ms, until)
         if exploration_only:
+            allowed = (EXPLORATION_SESSIONS if exploration_era == "A"
+                       else EXPLORATION_B_SESSIONS)
+            # 창이 이미 거르지만 이름으로도 막는다 - 버린 셋(08-13/14/17)은 탐색 B 의
+            # 창 안에 있지 않지만, 바닥 상수가 언젠가 또 움직여도 버려진 채 남아야 한다.
             sessions = [s for s in sessions
-                        if s["session"] in EXPLORATION_SESSIONS]
+                        if s["session"] in allowed
+                        and s["session"] not in DISCARDED_SESSIONS]
         if confirmation:
             # 바닥이 이미 셋을 걸러내지만 이름으로도 막는다 - 바닥 상수가 언젠가
             # 또 움직여도 버린 세션은 계속 버려진 채로 남아야 한다.
             sessions = [s for s in sessions
                         if s["session"] not in EXPLORATION_SESSIONS
+                        and s["session"] not in EXPLORATION_B_SESSIONS
                         and s["session"] not in DISCARDED_SESSIONS]
         cells: dict = {}
 
@@ -970,11 +1024,11 @@ def run(db: Path, *, since_ms: int | None = None, until_ms: int | None = None,
                     continue
                 kind_col = ev.kind.to_numpy(dtype=object)
                 cell_col = ev.cell.to_numpy(dtype=object)
-                for kind, cell in ALL_CELLS:
+                for kind, cell in cell_grid:
                     m = (kind_col == kind) & (cell_col == cell)
                     if not m.any():
                         for tier in TIERS:
-                            if tier == "all" or (kind, cell) in PRIMARY_CELLS:
+                            if tier == "all" or (kind, cell) in primary_cells:
                                 cells.setdefault(f"{rtype}|{kind}|{cell}|{tier}",
                                                  _blank_cell())
                         continue
@@ -1006,7 +1060,7 @@ def run(db: Path, *, since_ms: int | None = None, until_ms: int | None = None,
                               f"{kind:<15}{cell:<9} ev={int(m.sum()):>6,}"
                               f" anchored={int(ok_all.sum()):>5,}", flush=True)
                     for tier in TIERS:
-                        if tier != "all" and (kind, cell) not in PRIMARY_CELLS:
+                        if tier != "all" and (kind, cell) not in primary_cells:
                             continue
                         box = cells.setdefault(f"{rtype}|{kind}|{cell}|{tier}",
                                                _blank_cell())
@@ -1028,10 +1082,14 @@ def run(db: Path, *, since_ms: int | None = None, until_ms: int | None = None,
                             np.asarray([uni[syms[int(i)]]["ts"][b]
                                         for i, b in zip(sid, bar)],
                                        dtype="int64"), sid)
+                        if funnel_only_elsewhere and (kind, cell) not in primary_cells:
+                            # 개정 4: 사다리를 안 붙이는 칸은 **세기만** 한다.
+                            # 전방 경로를 만들지 않으므로 인용할 수치 자체가 없다.
+                            continue
                         real = raw_metrics(uni, syms, sid, bar,
                                            open_ms=s["open_ms"])
                         box["real"][s["session"]] = real
-                        if (kind, cell) not in PRIMARY_CELLS:
+                        if (kind, cell) not in primary_cells:
                             continue
                         for arm, mb, ms, mf in PLACEBO_ARMS:
                             if tier != "all" and arm not in TIER_ARMS:
@@ -1059,6 +1117,9 @@ def run(db: Path, *, since_ms: int | None = None, until_ms: int | None = None,
                 "until_utc": HE.ms_iso(until), "db_max_snap_utc": HE.ms_iso(db_max),
                 "exploration_only": bool(exploration_only),
                 "confirmation": bool(confirmation),
+                "exploration_era": (str(exploration_era) if exploration_only else None),
+                "primary_cells": [list(c) for c in primary_cells],
+                "funnel_only_elsewhere": bool(funnel_only_elsewhere),
                 "sessions": sessions, "cells": cells}
     finally:
         conn.close()
@@ -1096,13 +1157,14 @@ def cell_records(res: dict) -> list:
     #   `docs/64` 와 줄 대 줄로 견줄 수 있는 것은 **보정 전 95% CI** 쪽이다.
     n_comp = sum(1 for box in res["cells"].values()
                  for arm, _b, _s, _f in PLACEBO_ARMS if arm in box["arms"])
+    prim = [list(c) for c in res.get("primary_cells", PRIMARY_CELLS)]
     recs = []
     for key, box in sorted(res["cells"].items()):
         rtype, kind, cell, tier = key.split("|")
         lag = np.concatenate(box["lag"]) if box["lag"] else np.zeros(0)
         real_raw = _cat_raw(box["real"])
         rec = {"ranking_type": rtype, "kind": kind, "cell": cell, "tier": tier,
-               "primary": [kind, cell] in [list(c) for c in PRIMARY_CELLS],
+               "primary": [kind, cell] in prim,
                "funnel": {
                    "n_events_regular": box["n_events_regular"],
                    "n_symbol_has_tape": box["n_symbol_has_tape"],
@@ -1156,10 +1218,11 @@ def balance_records(res: dict) -> list:
     `ntrade60` 은 감시 항목이다: 4 초 칸당 50 건 상한에 검열돼 있어(`docs/41` §4)
     정합 키로 쓰지 않았다. 막대 수를 맞췄을 때 이 값이 **따라 맞는지**만 본다.
     """
+    prim = {tuple(c) for c in res.get("primary_cells", PRIMARY_CELLS)}
     recs = []
     for key, box in sorted(res["cells"].items()):
         rtype, kind, cell, tier = key.split("|")
-        if (kind, cell) not in PRIMARY_CELLS or not box["real"]:
+        if (kind, cell) not in prim or not box["real"]:
             continue
         row = {"ranking_type": rtype, "kind": kind, "cell": cell, "tier": tier,
                "arms": {}}
@@ -1202,20 +1265,33 @@ def build_report(res: dict) -> dict:
                      else "unrestricted"),
             "exploration_only": res["exploration_only"],
             "confirmation": bool(res.get("confirmation")),
-            "sessions_allowed": list(EXPLORATION_SESSIONS),
+            "exploration_era": res.get("exploration_era"),
+            "sessions_allowed": (
+                list(EXPLORATION_SESSIONS) if res.get("exploration_era") == "A"
+                else list(EXPLORATION_B_SESSIONS) if res.get("exploration_era") == "B"
+                else []),
             "sessions_used": [s["session"] for s in res["sessions"]],
+            "exploration_a_sessions": list(EXPLORATION_SESSIONS),
             "exploration_ceiling_utc": EXPLORATION_CEILING_UTC,
+            "exploration_b_sessions": list(EXPLORATION_B_SESSIONS),
+            "exploration_b_floor_utc": EXPLORATION_B_FLOOR_UTC,
+            "exploration_b_ceiling_utc": EXPLORATION_B_CEILING_UTC,
             "confirmation_floor_utc": CONFIRMATION_FLOOR_UTC,
             "discarded_sessions": list(DISCARDED_SESSIONS),
-            "why": ("G2G3-PREREG s2-1 splits the sessions into an exploration arm "
-                    "(9 sessions, ceiling 2026-08-13) and a confirmation arm "
-                    "(floor 2026-08-18, revision 2) reserved for the verdict. "
-                    "2026-08-13/14/17 belong to NEITHER - docs/64 and docs/65 "
-                    "exposed them to exploration output, so revision 2 dropped "
-                    "them and the exploration arm is frozen at 9. Choosing the "
-                    "event definition E while looking at the reserved arm would "
-                    "destroy what that arm is for (s5-1), so this runner refuses "
-                    "to read past the ceiling by default."),
+            "primary_cells": res.get("primary_cells", [list(c) for c in PRIMARY_CELLS]),
+            "funnel_only_elsewhere": bool(res.get("funnel_only_elsewhere")),
+            "why": ("G2G3-PREREG s2-1 (revision 4, 2026-08-26) splits the sessions "
+                    "into an exploration arm with two eras - era A (9 sessions, "
+                    "ceiling 2026-08-13, before D-21) and era B (6 sessions 08-18..25, "
+                    "after D-21, the sessions the E2 K10 verdict consumed) - and a "
+                    "confirmation arm (floor 2026-08-26) reserved for the verdict of "
+                    "the next E. The two eras are never pooled: one run opens one era. "
+                    "2026-08-13/14/17 belong to NEITHER - docs/64 and docs/65 exposed "
+                    "them to exploration output, so revision 2 dropped them. Choosing "
+                    "the event definition E while looking at the reserved arm would "
+                    "destroy what that arm is for (s5-1), so this runner refuses to "
+                    "read past its era's ceiling by default, and revision 4 names "
+                    "the ONE cell that gets a placebo ladder on era B."),
         },
         "holdout": {"window": [SS.HOLDOUT_START, SS.HOLDOUT_END]},
         "design": {
@@ -1357,9 +1433,12 @@ def print_report(rep: dict) -> None:
           f"eras {','.join(w['eras_in_window'])}  "
           f"(D-21 boundary {w['d21_boundary_utc']})")
     arm = rep["arm"]
-    print(f"  arm     : {arm['name']}  "
+    era = arm.get("exploration_era")
+    print(f"  arm     : {arm['name']}{'' if era is None else ' era ' + era}  "
           f"sessions used {len(arm['sessions_used'])} "
           f"{','.join(arm['sessions_used'])}")
+    print(f"            ladder cells {arm.get('primary_cells')}  "
+          f"funnel-only elsewhere {arm.get('funnel_only_elsewhere')}")
     print(f"            floor for the reserved arm {arm['confirmation_floor_utc']} "
           f"- this run does not read past it")
     for line in _wrap(arm["why"], 70):
@@ -1607,6 +1686,9 @@ def main(argv: list) -> int:
     # 확증 팔을 여는 것은 **명시적인 한 마디**여야 한다. 기본은 탐색 팔이다.
     exploration_only = True
     confirmation = False
+    exploration_era = "A"
+    primary_cells: list = []
+    funnel_only_elsewhere = False
     args = list(argv[1:])
     i = 0
     while i < len(args):
@@ -1617,7 +1699,16 @@ def main(argv: list) -> int:
             # 확증 팔만. 판정이 지나가는 유일한 길이다.
             exploration_only = False; confirmation = True; i += 1
         elif a == "--exploration":
-            exploration_only = True; confirmation = False; i += 1
+            exploration_only = True; confirmation = False; exploration_era = "A"; i += 1
+        elif a == "--exploration-b":
+            # 탐색 B (개정 4). 탐색 A 와 같은 실행에 못 섞인다.
+            exploration_only = True; confirmation = False; exploration_era = "B"; i += 1
+        elif a == "--primary-cell":
+            # `KIND:CELL`. 반복 가능. 주면 사다리는 **이 칸에만** 붙는다.
+            kind, cell = args[i + 1].split(":", 1)
+            primary_cells.append((kind, cell)); i += 2
+        elif a == "--funnel-only-elsewhere":
+            funnel_only_elsewhere = True; i += 1
         elif a == "--until-ms":
             until_ms = int(args[i + 1]); i += 2
         elif a == "--since-ms":
@@ -1636,6 +1727,9 @@ def main(argv: list) -> int:
           flush=True)
     res = run(db, since_ms=since_ms, until_ms=until_ms,
               exploration_only=exploration_only, confirmation=confirmation,
+              exploration_era=exploration_era,
+              primary_cells=(tuple(primary_cells) if primary_cells else PRIMARY_CELLS),
+              funnel_only_elsewhere=funnel_only_elsewhere,
               progress=True)
     rep = build_report(res)
     out_dir.mkdir(parents=True, exist_ok=True)
