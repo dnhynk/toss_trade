@@ -1,0 +1,1008 @@
+scanning sessions (UTC session x ranking type x cell x tier) ...
+  2026-08-18 d21_after  TOP_GAINERS                     E1_new_entry   N10       ev=   174 anchored=   23
+  2026-08-18 d21_after  TOP_GAINERS                     E1_new_entry   N100      ev= 1,821 anchored=   30
+  2026-08-18 d21_after  TOP_GAINERS                     E1_new_entry   N20       ev=   478 anchored=   55
+  2026-08-18 d21_after  TOP_GAINERS                     E1_new_entry   N50       ev= 1,107 anchored=   47
+  2026-08-18 d21_after  TOP_GAINERS                     E2_rank_jump   K10       ev= 1,239 anchored=   53
+  2026-08-18 d21_after  TOP_GAINERS                     E2_rank_jump   K20       ev=   340 anchored=   15
+  2026-08-18 d21_after  TOP_GAINERS                     E2_rank_jump   K5        ev= 3,062 anchored=  178
+  2026-08-18 d21_after  TOP_GAINERS                     E3_dwell_start N50_M3    ev=   777 anchored=   28
+  2026-08-18 d21_after  TOP_GAINERS                     E3_dwell_start N50_M6    ev=   583 anchored=   24
+  2026-08-18 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N10       ev=   294 anchored=   62
+  2026-08-18 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N100      ev= 3,179 anchored=   17
+  2026-08-18 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N20       ev=   607 anchored=   22
+  2026-08-18 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50       ev= 1,668 anchored=   18
+  2026-08-18 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10       ev= 1,421 anchored=   28
+  2026-08-18 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K20       ev=   556 anchored=   13
+  2026-08-18 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K5        ev= 3,373 anchored=   52
+  2026-08-18 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3    ev= 1,361 anchored=   18
+  2026-08-18 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M6    ev= 1,158 anchored=   17
+  2026-08-19 d21_after  TOP_GAINERS                     E1_new_entry   N10       ev=   190 anchored=   28
+  2026-08-19 d21_after  TOP_GAINERS                     E1_new_entry   N100      ev= 1,924 anchored=   65
+  2026-08-19 d21_after  TOP_GAINERS                     E1_new_entry   N20       ev=   644 anchored=   32
+  2026-08-19 d21_after  TOP_GAINERS                     E1_new_entry   N50       ev= 1,155 anchored=   30
+  2026-08-19 d21_after  TOP_GAINERS                     E2_rank_jump   K10       ev= 1,333 anchored=   59
+  2026-08-19 d21_after  TOP_GAINERS                     E2_rank_jump   K20       ev=   318 anchored=   21
+  2026-08-19 d21_after  TOP_GAINERS                     E2_rank_jump   K5        ev= 3,761 anchored=  130
+  2026-08-19 d21_after  TOP_GAINERS                     E3_dwell_start N50_M3    ev=   743 anchored=   20
+  2026-08-19 d21_after  TOP_GAINERS                     E3_dwell_start N50_M6    ev=   545 anchored=   16
+  2026-08-19 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N10       ev=   329 anchored=   91
+  2026-08-19 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N100      ev= 3,321 anchored=   28
+  2026-08-19 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N20       ev=   712 anchored=   51
+  2026-08-19 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50       ev= 1,686 anchored=   31
+  2026-08-19 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10       ev= 1,687 anchored=   50
+  2026-08-19 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K20       ev=   606 anchored=   21
+  2026-08-19 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K5        ev= 3,969 anchored=   96
+  2026-08-19 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3    ev= 1,326 anchored=   25
+  2026-08-19 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M6    ev= 1,102 anchored=   22
+  2026-08-20 d21_after  TOP_GAINERS                     E1_new_entry   N10       ev=   328 anchored=   32
+  2026-08-20 d21_after  TOP_GAINERS                     E1_new_entry   N100      ev= 2,043 anchored=   76
+  2026-08-20 d21_after  TOP_GAINERS                     E1_new_entry   N20       ev=   761 anchored=   77
+  2026-08-20 d21_after  TOP_GAINERS                     E1_new_entry   N50       ev= 1,380 anchored=   55
+  2026-08-20 d21_after  TOP_GAINERS                     E2_rank_jump   K10       ev= 1,760 anchored=  113
+  2026-08-20 d21_after  TOP_GAINERS                     E2_rank_jump   K20       ev=   475 anchored=   32
+  2026-08-20 d21_after  TOP_GAINERS                     E2_rank_jump   K5        ev= 4,641 anchored=  231
+  2026-08-20 d21_after  TOP_GAINERS                     E3_dwell_start N50_M3    ev=   987 anchored=   46
+  2026-08-20 d21_after  TOP_GAINERS                     E3_dwell_start N50_M6    ev=   698 anchored=   39
+  2026-08-20 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N10       ev=   260 anchored=   70
+  2026-08-20 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N100      ev= 3,247 anchored=   42
+  2026-08-20 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N20       ev=   753 anchored=   50
+  2026-08-20 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50       ev= 1,745 anchored=   31
+  2026-08-20 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10       ev= 1,727 anchored=   32
+  2026-08-20 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K20       ev=   644 anchored=   13
+  2026-08-20 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K5        ev= 4,127 anchored=   84
+  2026-08-20 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3    ev= 1,357 anchored=   27
+  2026-08-20 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M6    ev= 1,152 anchored=   26
+  2026-08-21 d21_after  TOP_GAINERS                     E1_new_entry   N10       ev=   386 anchored=   93
+  2026-08-21 d21_after  TOP_GAINERS                     E1_new_entry   N100      ev= 1,874 anchored=   63
+  2026-08-21 d21_after  TOP_GAINERS                     E1_new_entry   N20       ev=   590 anchored=   90
+  2026-08-21 d21_after  TOP_GAINERS                     E1_new_entry   N50       ev= 1,173 anchored=   48
+  2026-08-21 d21_after  TOP_GAINERS                     E2_rank_jump   K10       ev= 1,558 anchored=  103
+  2026-08-21 d21_after  TOP_GAINERS                     E2_rank_jump   K20       ev=   431 anchored=   35
+  2026-08-21 d21_after  TOP_GAINERS                     E2_rank_jump   K5        ev= 4,027 anchored=  271
+  2026-08-21 d21_after  TOP_GAINERS                     E3_dwell_start N50_M3    ev=   832 anchored=   41
+  2026-08-21 d21_after  TOP_GAINERS                     E3_dwell_start N50_M6    ev=   601 anchored=   34
+  2026-08-21 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N10       ev=   334 anchored=   80
+  2026-08-21 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N100      ev= 3,251 anchored=   34
+  2026-08-21 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N20       ev=   793 anchored=   60
+  2026-08-21 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50       ev= 1,819 anchored=   56
+  2026-08-21 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10       ev= 1,723 anchored=   71
+  2026-08-21 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K20       ev=   631 anchored=   20
+  2026-08-21 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K5        ev= 4,042 anchored=  149
+  2026-08-21 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3    ev= 1,450 anchored=   49
+  2026-08-21 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M6    ev= 1,208 anchored=   39
+  2026-08-24 d21_after  TOP_GAINERS                     E1_new_entry   N10       ev=   264 anchored=   13
+  2026-08-24 d21_after  TOP_GAINERS                     E1_new_entry   N100      ev= 1,972 anchored=   64
+  2026-08-24 d21_after  TOP_GAINERS                     E1_new_entry   N20       ev=   710 anchored=   44
+  2026-08-24 d21_after  TOP_GAINERS                     E1_new_entry   N50       ev= 1,112 anchored=   38
+  2026-08-24 d21_after  TOP_GAINERS                     E2_rank_jump   K10       ev= 1,388 anchored=   58
+  2026-08-24 d21_after  TOP_GAINERS                     E2_rank_jump   K20       ev=   390 anchored=   21
+  2026-08-24 d21_after  TOP_GAINERS                     E2_rank_jump   K5        ev= 3,632 anchored=  139
+  2026-08-24 d21_after  TOP_GAINERS                     E3_dwell_start N50_M3    ev=   806 anchored=   30
+  2026-08-24 d21_after  TOP_GAINERS                     E3_dwell_start N50_M6    ev=   588 anchored=   22
+  2026-08-24 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N10       ev=   250 anchored=   49
+  2026-08-24 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N100      ev= 3,507 anchored=   70
+  2026-08-24 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N20       ev=   670 anchored=   46
+  2026-08-24 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50       ev= 1,782 anchored=   47
+  2026-08-24 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10       ev= 1,600 anchored=   59
+  2026-08-24 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K20       ev=   577 anchored=   22
+  2026-08-24 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K5        ev= 3,702 anchored=   93
+  2026-08-24 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3    ev= 1,404 anchored=   39
+  2026-08-24 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M6    ev= 1,213 anchored=   39
+  2026-08-25 d21_after  TOP_GAINERS                     E1_new_entry   N10       ev=   165 anchored=    9
+  2026-08-25 d21_after  TOP_GAINERS                     E1_new_entry   N100      ev= 1,985 anchored=   71
+  2026-08-25 d21_after  TOP_GAINERS                     E1_new_entry   N20       ev=   467 anchored=   50
+  2026-08-25 d21_after  TOP_GAINERS                     E1_new_entry   N50       ev= 1,019 anchored=   56
+  2026-08-25 d21_after  TOP_GAINERS                     E2_rank_jump   K10       ev= 1,219 anchored=   83
+  2026-08-25 d21_after  TOP_GAINERS                     E2_rank_jump   K20       ev=   269 anchored=   28
+  2026-08-25 d21_after  TOP_GAINERS                     E2_rank_jump   K5        ev= 3,462 anchored=  195
+  2026-08-25 d21_after  TOP_GAINERS                     E3_dwell_start N50_M3    ev=   728 anchored=   45
+  2026-08-25 d21_after  TOP_GAINERS                     E3_dwell_start N50_M6    ev=   535 anchored=   36
+  2026-08-25 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N10       ev=   356 anchored=   77
+  2026-08-25 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N100      ev= 3,104 anchored=   54
+  2026-08-25 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N20       ev=   674 anchored=   49
+  2026-08-25 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50       ev= 1,559 anchored=   43
+  2026-08-25 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10       ev= 1,431 anchored=   61
+  2026-08-25 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K20       ev=   482 anchored=   14
+  2026-08-25 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K5        ev= 3,340 anchored=  139
+  2026-08-25 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3    ev= 1,239 anchored=   36
+  2026-08-25 d21_after  TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M6    ev= 1,054 anchored=   30
+==============================================================================
+ranking events -> FORWARD PRICE PATH   (docs/58 G-2 exploration)
+==============================================================================
+  [1] CONFIRMATION ARM - this is the G-2 verdict path (G2G3-PREREG s3)
+  [2] the 9 exploration sessions (07-31, 08-03..07, 08-10..12) are excluded
+      and can never be reused here
+  [3] 2026-08-13 / 08-14 / 08-17 belong to NEITHER arm - docs/64 and docs/65
+      exposed them to exploration output, so revision 2 (D-28 (b)) dropped
+      them. Irreversible
+  [4] E was frozen on 2026-08-22 (G2G3-PREREG s2-4), two days before the 5th
+      arm session, and was chosen on the exploration arm alone
+  [5] the poll-age caveat still travels with every number: the ranking
+      snapshots are a median 16-18s old and the server skips some of its own
+      10s slots (docs/35 s7-4, docs/62 s10-4). This is a D-8 / G-1a question
+      that this runner does not settle
+-- measurement conditions (attach to EVERY number below) --
+  poll period 12.4s vs server grid 10.0s -> 29% of grid ticks never received
+  ranking age at receipt: median 16.1s
+  5s poll deployed: False   source: docs/35 (W1, 2026-08-07) / docs/58 section 1-3
+  window 2026-08-18T00:00:00Z .. 2026-08-26T08:09:01Z   eras d21_after  (D-21 boundary 2026-08-14T00:16:01Z)
+  arm     : confirmation  sessions used 6 2026-08-18,2026-08-19,2026-08-20,2026-08-21,2026-08-24,2026-08-25
+            floor for the reserved arm 2026-08-18T00:00:00Z - this run does not read past it
+      G2G3-PREREG s2-1 splits the sessions into an exploration arm (9
+      sessions, ceiling 2026-08-13) and a confirmation arm (floor
+      2026-08-18, revision 2) reserved for the verdict. 2026-08-13/14/17
+      belong to NEITHER - docs/64 and docs/65 exposed them to exploration
+      output, so revision 2 dropped them and the exploration arm is frozen
+      at 9. Choosing the event definition E while looking at the reserved
+      arm would destroy what that arm is for (s5-1), so this runner refuses
+      to read past the ceiling by default.
+  anchor  : first second-bar strictly after t0, within 300s; a bar in t0's own second is NOT used
+  headline: max_ret_300s   horizons [30, 60, 300]s
+  costs   : NOT subtracted - that is G-3 and needs a preregistration
+  placebo : same symbol, same regular session, different moment; 3 draws/event, self-gap 360s, seed 20260818
+  session : regular only, 13:30-20:00 UTC; bars are cut at the close so no window leaks into after-hours
+  tiers   : split at last_u 5,000,000 (['all', 'u5', 'o5']), arms in tiers ['placebo_vol_density_matched', 'placebo_vol_density_nbar300_matched']
+  ! forward-window depth - the axis docs/64 s9-1 said was NOT matched:
+      problem:                        docs/64 s9-1: matching nbar60 leaves the forward 300s bar count
+                                      unmatched (placebo deeper in 4 of 6 cells, e.g. 72 vs 94). max_ret
+                                      is a MAXIMUM over the bars in the window, so the deeper arm is
+                                      mechanically favoured and part of the negative gap in docs/64 s6
+                                      may be that, not the market.
+      chosen:                         match nbar300, the bar count in the TRAILING 300s. Its window ends
+                                      AT the anchor, so no post-anchor quantity enters the match.
+      rejected:                       matching the REALISED forward bar count. That quantity comes out
+                                      of the same window as the outcome and is exactly what the skeleton
+                                      sentence claims goes up ('liquidity floods in'), so matching it
+                                      would erase the claimed phenomenon and leave an estimand nobody
+                                      can state. It is used only as the no-CI diagnostic in table [10].
+      why_this_proxy:                 the hole is a WINDOW-LENGTH mismatch: a 60s density was being used
+                                      to control a 300s depth. The trailing window of the same length is
+                                      the most direct pre-anchor estimator of that depth.
+      chosen_before_seeing_results:   the reason above is about the time direction of each quantity
+                                      (before vs after the anchor), not about which cell moved which
+                                      way. Nothing in it can be derived from the output.
+      check:                          table [11] puts the depth gap before and after the new band side
+                                      by side. If the gap does not shrink, the key was the wrong one and
+                                      that is what gets written down.
+  ! TOP_GAINERS caveat:
+      TOP_GAINERS is a price-ranked list on the SERVER side: entering it
+      means a price threshold was already crossed upstream of us. That is
+      the same shape as the design-A death mode ('detection consumes the
+      rise'), arriving from outside our code. TOSS_SECURITIES_TRADING_VOLUME
+      is volume-ranked and is cleaner on that axis. Both are reported;
+      neither is chosen.
+
+[1] sessions in window
+session     era          reg_snaps
+2026-08-18  d21_after         5552
+2026-08-19  d21_after         5130
+2026-08-20  d21_after         5545
+2026-08-21  d21_after         5577
+2026-08-24  d21_after         5584
+2026-08-25  d21_after         5587
+
+[2] funnel - how many ranking events can be measured at all
+    events(regular) -> symbol has tape inside that regular session ->
+    an anchor bar exists in (t0, t0+300s].  'anchored' is the same set
+    docs/59 calls MEASURABLE (docs/59 counts tape over the whole UTC day,
+    this counts it inside the regular window, so this is the tighter cut).
+    overlap% = anchored events whose 300s window overlaps ANOTHER event
+    of the same symbol: those events re-count one price move, so the
+    effective sample is smaller than the count. Reported, not fixed.
+    tier: all = every anchored event, u5 = last_u below $5 at t0,
+    o5 = $5 and up.  all - u5 - o5 = events with no last_u.
+ranking_type                    kind           cell    tier    events  has_tape  anchored   share  overlap   lag_p50
+TOP_GAINERS                     E1_new_entry   N100    all     11,619     1,182       369    3.2%    58.8%     32.5s
+TOP_GAINERS                     E1_new_entry   N10     all      1,507       422       198   13.1%    70.7%      4.7s
+TOP_GAINERS                     E1_new_entry   N20     all      3,650     1,036       348    9.5%    76.7%     12.8s
+TOP_GAINERS                     E1_new_entry   N50     all      6,946       949       274    3.9%    63.5%     19.6s
+TOP_GAINERS                     E1_new_entry   N50     o5       3,306        73        28    0.8%    53.6%     13.3s
+TOP_GAINERS                     E1_new_entry   N50     u5       3,640       876       246    6.8%    64.6%     20.2s
+TOP_GAINERS                     E2_rank_jump   K10     all      8,497     1,497       469    5.5%    69.1%     21.3s
+TOP_GAINERS                     E2_rank_jump   K10     o5       3,315       141        58    1.7%    62.1%     20.7s
+TOP_GAINERS                     E2_rank_jump   K10     u5       5,182     1,356       411    7.9%    70.1%     21.3s
+TOP_GAINERS                     E2_rank_jump   K20     all      2,223       422       152    6.8%    44.7%     22.7s
+TOP_GAINERS                     E2_rank_jump   K5      all     22,585     3,695     1,144    5.1%    83.9%     17.9s
+TOP_GAINERS                     E3_dwell_start N50_M3  all      4,873       707       210    4.3%    48.1%     24.5s
+TOP_GAINERS                     E3_dwell_start N50_M3  o5       2,219        54        21    0.9%    28.6%     15.3s
+TOP_GAINERS                     E3_dwell_start N50_M3  u5       2,654       653       189    7.1%    50.3%     26.1s
+TOP_GAINERS                     E3_dwell_start N50_M6  all      3,550       544       171    4.8%    35.7%     27.4s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N100    all     19,609     1,445       245    1.2%    24.9%     39.4s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N10     all      1,823       731       429   23.5%    48.3%     10.4s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N20     all      4,209     1,107       278    6.6%    41.4%     32.4s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50     all     10,259     1,366       226    2.2%    35.8%     25.4s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50     o5       2,694        84        13    0.5%    38.5%      2.4s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50     u5       7,565     1,282       213    2.8%    35.7%     29.2s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10     all      9,589     1,489       301    3.1%    54.2%     26.9s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10     o5       2,882        89        14    0.5%    78.6%      5.4s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10     u5       6,707     1,400       287    4.3%    53.0%     27.4s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K20     all      3,496       522       103    2.9%    31.1%     40.3s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K5      all     22,553     3,346       613    2.7%    70.6%     22.2s
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3  all      8,137     1,100       194    2.4%    20.1%     27.8s
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3  o5       2,080        71        13    0.6%    38.5%      2.4s
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3  u5       6,057     1,029       181    3.0%    18.8%     33.5s
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M6  all      6,887       935       173    2.5%     9.2%     30.3s
+
+[3] forward path, REAL arm, every anchored event
+    max_ret = highest bar after the anchor / anchor - 1 (MFE).
+    no_bar% = the forward window held no bar at all: WE DO NOT KNOW,
+    which is not the same statement as 'it did not move'.
+    ! READ THIS BEFORE READING THE NUMBERS:
+      max_ret is a MAXIMUM over the forward window, so its expectation is
+      above zero at ANY anchor, including a random one. The real arm's
+      max_ret alone therefore says nothing. Only the difference against a
+      matched placebo anchored in the same symbol and session carries
+      information, and that difference is table [4].
+ranking_type                    kind           cell    tier     h      n   max_ret   end_ret  end>0  no_bar   t_max
+TOP_GAINERS                     E1_new_entry   N100    all     30    211  +0.00324  -0.00008  39.8%   42.8%     15s
+TOP_GAINERS                     E1_new_entry   N100    all     60    265  +0.00708  +0.00082  43.8%   28.2%     28s
+TOP_GAINERS                     E1_new_entry   N100    all    300    333  +0.01766  +0.00049  42.3%    9.8%    100s
+TOP_GAINERS                     E1_new_entry   N10     all     30    193  +0.01207  +0.00147  46.6%    2.5%     10s
+TOP_GAINERS                     E1_new_entry   N10     all     60    198  +0.01816  +0.00178  49.5%    0.0%     24s
+TOP_GAINERS                     E1_new_entry   N10     all    300    198  +0.03722  -0.00403  45.5%    0.0%     96s
+TOP_GAINERS                     E1_new_entry   N20     all     30    298  +0.00544  -0.00172  44.6%   14.4%     14s
+TOP_GAINERS                     E1_new_entry   N20     all     60    322  +0.01028  -0.00119  44.4%    7.5%     22s
+TOP_GAINERS                     E1_new_entry   N20     all    300    341  +0.02477  -0.00280  45.7%    2.0%     88s
+TOP_GAINERS                     E1_new_entry   N50     all     30    189  +0.00501  -0.00074  47.6%   31.0%     15s
+TOP_GAINERS                     E1_new_entry   N50     all     60    218  +0.00947  -0.00081  45.9%   20.4%     26s
+TOP_GAINERS                     E1_new_entry   N50     all    300    265  +0.02192  -0.00268  45.7%    3.3%     93s
+TOP_GAINERS                     E1_new_entry   N50     o5      30     21  +0.00633  +0.00042  47.6%   25.0%     11s
+TOP_GAINERS                     E1_new_entry   N50     o5      60     23  +0.01097  +0.00320  52.2%   17.9%     15s
+TOP_GAINERS                     E1_new_entry   N50     o5     300     28  +0.02149  +0.00732  57.1%    0.0%     85s
+TOP_GAINERS                     E1_new_entry   N50     u5      30    168  +0.00485  -0.00089  47.6%   31.7%     16s
+TOP_GAINERS                     E1_new_entry   N50     u5      60    195  +0.00930  -0.00129  45.1%   20.7%     26s
+TOP_GAINERS                     E1_new_entry   N50     u5     300    237  +0.02197  -0.00386  44.3%    3.7%     93s
+TOP_GAINERS                     E2_rank_jump   K10     all     30    325  +0.00631  +0.00096  46.2%   30.7%     14s
+TOP_GAINERS                     E2_rank_jump   K10     all     60    385  +0.00979  -0.00036  43.4%   17.9%     26s
+TOP_GAINERS                     E2_rank_jump   K10     all    300    456  +0.02076  -0.00125  44.7%    2.8%     90s
+TOP_GAINERS                     E2_rank_jump   K10     o5      30     36  +0.00617  -0.00167  50.0%   37.9%     11s
+TOP_GAINERS                     E2_rank_jump   K10     o5      60     44  +0.00905  +0.00010  50.0%   24.1%     24s
+TOP_GAINERS                     E2_rank_jump   K10     o5     300     56  +0.02648  +0.01691  60.7%    3.4%    152s
+TOP_GAINERS                     E2_rank_jump   K10     u5      30    289  +0.00633  +0.00129  45.7%   29.7%     15s
+TOP_GAINERS                     E2_rank_jump   K10     u5      60    341  +0.00988  -0.00042  42.5%   17.0%     26s
+TOP_GAINERS                     E2_rank_jump   K10     u5     300    400  +0.01996  -0.00379  42.5%    2.7%     84s
+TOP_GAINERS                     E2_rank_jump   K20     all     30    106  +0.00626  +0.00031  47.2%   30.3%     15s
+TOP_GAINERS                     E2_rank_jump   K20     all     60    126  +0.01218  -0.00047  46.8%   17.1%     26s
+TOP_GAINERS                     E2_rank_jump   K20     all    300    145  +0.02000  -0.00781  39.3%    4.6%     74s
+TOP_GAINERS                     E2_rank_jump   K5      all     30    881  +0.00618  +0.00110  49.9%   23.0%     14s
+TOP_GAINERS                     E2_rank_jump   K5      all     60    992  +0.00962  +0.00017  46.0%   13.3%     25s
+TOP_GAINERS                     E2_rank_jump   K5      all    300  1,115  +0.02113  -0.00127  46.3%    2.5%     92s
+TOP_GAINERS                     E3_dwell_start N50_M3  all     30    140  +0.00436  +0.00025  50.7%   33.3%     17s
+TOP_GAINERS                     E3_dwell_start N50_M3  all     60    165  +0.00860  +0.00019  46.1%   21.4%     27s
+TOP_GAINERS                     E3_dwell_start N50_M3  all    300    205  +0.02262  -0.00154  44.4%    2.4%     93s
+TOP_GAINERS                     E3_dwell_start N50_M3  o5      30     15  +0.00594  +0.00043  53.3%   28.6%     11s
+TOP_GAINERS                     E3_dwell_start N50_M3  o5      60     17  +0.01116  +0.00485  58.8%   19.0%     18s
+TOP_GAINERS                     E3_dwell_start N50_M3  o5     300     21  +0.02259  +0.00493  57.1%    0.0%     71s
+TOP_GAINERS                     E3_dwell_start N50_M3  u5      30    125  +0.00418  +0.00023  50.4%   33.9%     18s
+TOP_GAINERS                     E3_dwell_start N50_M3  u5      60    148  +0.00830  -0.00034  44.6%   21.7%     27s
+TOP_GAINERS                     E3_dwell_start N50_M3  u5     300    184  +0.02262  -0.00228  42.9%    2.6%    100s
+TOP_GAINERS                     E3_dwell_start N50_M6  all     30    115  +0.00460  -0.00003  53.0%   32.7%     18s
+TOP_GAINERS                     E3_dwell_start N50_M6  all     60    136  +0.00971  +0.00103  49.3%   20.5%     28s
+TOP_GAINERS                     E3_dwell_start N50_M6  all    300    166  +0.02088  -0.00540  39.8%    2.9%     92s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N100    all     30    124  +0.00520  -0.00202  37.9%   49.4%     14s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N100    all     60    162  +0.00816  -0.00104  45.1%   33.9%     34s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N100    all    300    214  +0.01473  +0.00021  45.3%   12.7%    104s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N10     all     30    370  +0.00614  +0.00070  45.1%   13.8%     12s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N10     all     60    401  +0.00893  +0.00105  48.6%    6.5%     20s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N10     all    300    423  +0.01721  -0.00179  48.0%    1.4%     74s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N20     all     30    208  +0.00711  +0.00036  43.3%   25.2%     11s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N20     all     60    236  +0.00942  -0.00071  43.6%   15.1%     24s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N20     all    300    270  +0.02034  -0.00264  50.7%    2.9%    114s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50     all     30    145  +0.00452  -0.00238  41.4%   35.8%     12s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50     all     60    171  +0.00791  -0.00083  45.0%   24.3%     25s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50     all    300    212  +0.01473  +0.00059  48.1%    6.2%    101s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50     o5      30     13  +0.00577  -0.01373  30.8%    0.0%      6s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50     o5      60     13  +0.00879  -0.01743  38.5%    0.0%     31s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50     o5     300     13  +0.01566  -0.01841  30.8%    0.0%     95s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50     u5      30    132  +0.00440  -0.00126  42.4%   38.0%     13s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50     u5      60    158  +0.00783  +0.00054  45.6%   25.8%     24s
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50     u5     300    199  +0.01467  +0.00183  49.2%    6.6%    101s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10     all     30    225  +0.00647  -0.00163  39.6%   25.2%     10s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10     all     60    250  +0.01042  -0.00049  45.6%   16.9%     22s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10     all    300    291  +0.01959  -0.00164  51.2%    3.3%    101s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10     o5      30     14  +0.00745  -0.00253  42.9%    0.0%     16s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10     o5      60     14  +0.01011  -0.00010  42.9%    0.0%     18s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10     o5     300     14  +0.02626  +0.00299  50.0%    0.0%    163s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10     u5      30    211  +0.00641  -0.00157  39.3%   26.5%     10s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10     u5      60    236  +0.01044  -0.00051  45.8%   17.8%     22s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10     u5     300    277  +0.01925  -0.00187  51.3%    3.5%    101s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K20     all     30     73  +0.00494  -0.00095  34.2%   29.1%     12s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K20     all     60     82  +0.01142  +0.00205  41.5%   20.4%     25s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K20     all    300    100  +0.01776  -0.00199  42.0%    2.9%     98s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K5      all     30    471  +0.00677  -0.00013  41.4%   23.2%     12s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K5      all     60    526  +0.00995  -0.00070  43.2%   14.2%     23s
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K5      all    300    599  +0.02038  -0.00239  49.2%    2.3%    107s
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3  all     30    129  +0.00457  -0.00310  40.3%   33.5%     11s
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3  all     60    150  +0.00833  -0.00143  44.7%   22.7%     24s
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3  all    300    182  +0.01566  +0.00018  47.8%    6.2%     96s
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3  o5      30     13  +0.00577  -0.01373  30.8%    0.0%      6s
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3  o5      60     13  +0.00879  -0.01743  38.5%    0.0%     31s
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3  o5     300     13  +0.01566  -0.01841  30.8%    0.0%     95s
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3  u5      30    116  +0.00443  -0.00191  41.4%   35.9%     12s
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3  u5      60    137  +0.00829  +0.00008  45.3%   24.3%     23s
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3  u5     300    169  +0.01566  +0.00161  49.1%    6.6%     98s
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M6  all     30    114  +0.00457  -0.00388  36.8%   34.1%     12s
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M6  all     60    132  +0.00837  -0.00218  42.4%   23.7%     23s
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M6  all    300    161  +0.01645  +0.00019  47.2%    6.9%     98s
+
+[4] D-19 - the placebo ladder: same symbol, same session, other moment.
+    Read ACROSS a row, never DOWN a column - each arm keeps a different
+    subset of events (the ones it could pair).  'real' is recomputed on
+    that arm's paired subset.  headline = max_ret_300s
+    Two CIs: plain 95%, then Bonferroni over every (cell, arm) difference
+    this run made.  docs 4.4-F is the case where the correction denominator
+    was the whole finding, so the runner counts the cells itself.
+ranking_type                    cell    tier arm                                  n_real n_plac      real   placebo      diff  ci95
+TOP_GAINERS                     N50     all  placebo_unmatched                       128    377  +0.02119  +0.02253  -0.00134  [-0.00710,+0.00524]  cross | bonf[-0.00916,+0.00933]  cross
+TOP_GAINERS                     N50     all  placebo_vol_matched                     113    332  +0.02139  +0.02630  -0.00491  [-0.01206,+0.00138]  cross | bonf[-0.01701,+0.00496]  cross
+TOP_GAINERS                     N50     all  placebo_vol_density_matched              96    280  +0.02165  +0.02552  -0.00387  [-0.01143,+0.00385]  cross | bonf[-0.01612,+0.00856]  cross
+TOP_GAINERS                     N50     all  placebo_vol_density_nbar300_matched      46    135  +0.01606  +0.01795  -0.00188  [-0.01620,+0.00633]  cross | bonf[-0.02864,+0.00976]  cross
+TOP_GAINERS                     N50     o5   placebo_vol_density_matched              10     30  +0.04529  +0.02538  +0.01992  NO CI (clusters 2)
+TOP_GAINERS                     N50     o5   placebo_vol_density_nbar300_matched       3      9  +0.01422  +0.02055  -0.00633  NO CI (clusters 2)
+TOP_GAINERS                     N50     u5   placebo_vol_density_matched              86    250  +0.01890  +0.02559  -0.00669  [-0.01179,-0.00217]  EXCL | bonf[-0.01688,+0.00033]  cross
+TOP_GAINERS                     N50     u5   placebo_vol_density_nbar300_matched      43    127  +0.01619  +0.01787  -0.00167  [-0.01793,+0.00679]  cross | bonf[-0.03352,+0.01084]  cross
+TOP_GAINERS                     K10     all  placebo_unmatched                       226    663  +0.02196  +0.02199  -0.00002  [-0.00952,+0.00710]  cross | bonf[-0.01550,+0.01100]  cross
+TOP_GAINERS                     K10     all  placebo_vol_matched                     196    567  +0.02163  +0.02533  -0.00370  [-0.01239,+0.00426]  cross | bonf[-0.01712,+0.00861]  cross
+TOP_GAINERS                     K10     all  placebo_vol_density_matched             157    455  +0.02264  +0.02294  -0.00030  [-0.00903,+0.00811]  cross | bonf[-0.01355,+0.01186]  cross
+TOP_GAINERS                     K10     all  placebo_vol_density_nbar300_matched      68    201  +0.02157  +0.02129  +0.00029  [-0.00737,+0.00445]  cross | bonf[-0.01969,+0.00594]  cross
+TOP_GAINERS                     K10     o5   placebo_vol_density_matched              21     61  +0.05068  +0.02494  +0.02574  NO CI (clusters 3)
+TOP_GAINERS                     K10     o5   placebo_vol_density_nbar300_matched       4      8  +0.04343  +0.04093  +0.00250  NO CI (clusters 1)
+TOP_GAINERS                     K10     u5   placebo_vol_density_matched             136    397  +0.01831  +0.02423  -0.00592  [-0.00989,-0.00194]  EXCL | bonf[-0.01362,+0.00117]  cross
+TOP_GAINERS                     K10     u5   placebo_vol_density_nbar300_matched      64    189  +0.02021  +0.02015  +0.00006  [-0.00803,+0.00448]  cross | bonf[-0.02005,+0.00604]  cross
+TOP_GAINERS                     N50_M3  all  placebo_unmatched                        89    265  +0.02201  +0.02419  -0.00218  [-0.00713,+0.00187]  cross | bonf[-0.01131,+0.00427]  cross
+TOP_GAINERS                     N50_M3  all  placebo_vol_matched                      77    226  +0.02211  +0.02842  -0.00632  [-0.01493,+0.00004]  cross | bonf[-0.02004,+0.00263]  cross
+TOP_GAINERS                     N50_M3  all  placebo_vol_density_matched              67    195  +0.02203  +0.02237  -0.00033  [-0.00892,+0.00756]  cross | bonf[-0.01366,+0.01244]  cross
+TOP_GAINERS                     N50_M3  all  placebo_vol_density_nbar300_matched      33     99  +0.01411  +0.01815  -0.00404  [-0.02061,+0.00557]  cross | bonf[-0.03188,+0.00898]  cross
+TOP_GAINERS                     N50_M3  o5   placebo_vol_density_matched               6     18  +0.04729  +0.02459  +0.02270  NO CI (clusters 2)
+TOP_GAINERS                     N50_M3  o5   placebo_vol_density_nbar300_matched       2      6  +0.01235  +0.02545  -0.01310  NO CI (clusters 2)
+TOP_GAINERS                     N50_M3  u5   placebo_vol_density_matched              61    176  +0.01955  +0.02372  -0.00417  [-0.00975,-0.00009]  EXCL | bonf[-0.01439,+0.00141]  cross
+TOP_GAINERS                     N50_M3  u5   placebo_vol_density_nbar300_matched      31     93  +0.01422  +0.01791  -0.00369  [-0.02208,+0.00587]  cross | bonf[-0.03730,+0.00898]  cross
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_unmatched                        77    223  +0.01781  +0.02222  -0.00441  [-0.00765,-0.00096]  EXCL | bonf[-0.00983,+0.00094]  cross
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_matched                      64    190  +0.01869  +0.02542  -0.00673  [-0.02107,+0.00284]  cross | bonf[-0.03428,+0.00693]  cross
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_density_matched              53    159  +0.02110  +0.02543  -0.00433  [-0.01889,+0.00490]  cross | bonf[-0.02944,+0.00977]  cross
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_density_nbar300_matched      33     97  +0.02144  +0.03095  -0.00951  [-0.02826,+0.00006]  cross | bonf[-0.03289,+0.00467]  cross
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5   placebo_vol_density_matched               4     12  +0.02557  +0.02287  +0.00270  NO CI (clusters 3)
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5   placebo_vol_density_nbar300_matched       2      6  +0.01100  +0.04750  -0.03651  NO CI (clusters 2)
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5   placebo_vol_density_matched              49    147  +0.02074  +0.02625  -0.00551  [-0.02008,+0.00562]  cross | bonf[-0.03085,+0.01009]  cross
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5   placebo_vol_density_nbar300_matched      31     91  +0.02212  +0.03414  -0.01202  [-0.03312,-0.00201]  EXCL | bonf[-0.04217,+0.00361]  cross
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_unmatched                       120    353  +0.02337  +0.02175  +0.00162  [-0.00159,+0.00448]  cross | bonf[-0.00409,+0.00654]  cross
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_matched                     107    311  +0.02231  +0.02008  +0.00223  [-0.00175,+0.00641]  cross | bonf[-0.00415,+0.00963]  cross
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_density_matched              80    240  +0.02392  +0.02370  +0.00022  [-0.01270,+0.00548]  cross | bonf[-0.02614,+0.00640]  cross
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_density_nbar300_matched      44    129  +0.02186  +0.02346  -0.00160  [-0.01839,+0.01025]  cross | bonf[-0.04207,+0.01853]  cross
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5   placebo_vol_density_matched               8     24  +0.03262  +0.02637  +0.00625  NO CI (clusters 3)
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5   placebo_vol_density_nbar300_matched       1      3  +0.01232  +0.02106  -0.00874  NO CI (clusters 1)
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5   placebo_vol_density_matched              73    217  +0.02269  +0.02484  -0.00215  [-0.01369,+0.00309]  cross | bonf[-0.02622,+0.00484]  cross
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5   placebo_vol_density_nbar300_matched      42    124  +0.02252  +0.02326  -0.00074  [-0.01847,+0.01113]  cross | bonf[-0.04245,+0.02264]  cross
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_unmatched                        68    196  +0.01875  +0.02231  -0.00356  [-0.00787,+0.00234]  cross | bonf[-0.00983,+0.00542]  cross
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_matched                      57    169  +0.01931  +0.02545  -0.00613  [-0.02235,+0.00516]  cross | bonf[-0.03446,+0.01143]  cross
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_density_matched              47    141  +0.02176  +0.02860  -0.00684  [-0.02429,+0.00434]  cross | bonf[-0.03975,+0.00974]  cross
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_density_nbar300_matched      30     87  +0.02249  +0.03326  -0.01077  [-0.03281,+0.00220]  cross | bonf[-0.04054,+0.00576]  cross
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5   placebo_vol_density_matched               4     12  +0.02557  +0.02287  +0.00270  NO CI (clusters 3)
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5   placebo_vol_density_nbar300_matched       2      6  +0.01100  +0.04750  -0.03651  NO CI (clusters 2)
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5   placebo_vol_density_matched              43    129  +0.02141  +0.02966  -0.00826  [-0.02572,+0.00497]  cross | bonf[-0.03999,+0.01011]  cross
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5   placebo_vol_density_nbar300_matched      28     81  +0.02331  +0.03471  -0.01139  [-0.03358,+0.00095]  cross | bonf[-0.04304,+0.00271]  cross
+    trading-day clusters 1 < 5: no pooled CI is produced (STRATEGY-VERDICTS
+    4.4-B). The runner enforces this, not discipline.
+    trading-day clusters 2 < 5: no pooled CI is produced (STRATEGY-VERDICTS
+    4.4-B). The runner enforces this, not discipline.
+    trading-day clusters 3 < 5: no pooled CI is produced (STRATEGY-VERDICTS
+    4.4-B). The runner enforces this, not discipline.
+
+[5] two scales for the headline (docs/44 s13-14: the sign has flipped
+    between scales before, so neither is left implicit)
+ranking_type                    cell    tier arm                                    event_w  sym_unif    n_ev  n_sym
+TOP_GAINERS                     N100    all  real_all                              +0.01766  +0.01696     333    107
+TOP_GAINERS                     N10     all  real_all                              +0.03722  +0.04247     198     41
+TOP_GAINERS                     N20     all  real_all                              +0.02477  +0.02707     341     58
+TOP_GAINERS                     N50     all  real_all                              +0.02192  +0.02155     265     82
+TOP_GAINERS                     N50     all  placebo_unmatched                     +0.02253  +0.02069     377     47
+TOP_GAINERS                     N50     all  placebo_vol_matched                   +0.02630  +0.02727     332     39
+TOP_GAINERS                     N50     all  placebo_vol_density_matched           +0.02552  +0.03005     280     34
+TOP_GAINERS                     N50     all  placebo_vol_density_nbar300_matched   +0.01795  +0.02035     135     24
+TOP_GAINERS                     N50     o5   real_all                              +0.02149  +0.01925      28     12
+TOP_GAINERS                     N50     o5   placebo_vol_density_matched           +0.02538  +0.03240      30      4
+TOP_GAINERS                     N50     o5   placebo_vol_density_nbar300_matched   +0.02055  +0.02369       9      2
+TOP_GAINERS                     N50     u5   real_all                              +0.02197  +0.02195     237     70
+TOP_GAINERS                     N50     u5   placebo_vol_density_matched           +0.02559  +0.03039     250     30
+TOP_GAINERS                     N50     u5   placebo_vol_density_nbar300_matched   +0.01787  +0.02019     127     22
+TOP_GAINERS                     K10     all  real_all                              +0.02076  +0.01875     456    100
+TOP_GAINERS                     K10     all  placebo_unmatched                     +0.02199  +0.01793     663     69
+TOP_GAINERS                     K10     all  placebo_vol_matched                   +0.02533  +0.02271     567     59
+TOP_GAINERS                     K10     all  placebo_vol_density_matched           +0.02294  +0.02413     455     51
+TOP_GAINERS                     K10     all  placebo_vol_density_nbar300_matched   +0.02129  +0.02059     201     38
+TOP_GAINERS                     K10     o5   real_all                              +0.02648  +0.02255      56     12
+TOP_GAINERS                     K10     o5   placebo_vol_density_matched           +0.02494  +0.02262      61      5
+TOP_GAINERS                     K10     o5   placebo_vol_density_nbar300_matched   +0.04093  +0.03878       8      2
+TOP_GAINERS                     K10     u5   real_all                              +0.01996  +0.01823     400     88
+TOP_GAINERS                     K10     u5   placebo_vol_density_matched           +0.02423  +0.02579     397     46
+TOP_GAINERS                     K10     u5   placebo_vol_density_nbar300_matched   +0.02015  +0.01935     189     36
+TOP_GAINERS                     K20     all  real_all                              +0.02000  +0.01968     145     68
+TOP_GAINERS                     K5      all  real_all                              +0.02113  +0.01782   1,115    116
+TOP_GAINERS                     N50_M3  all  real_all                              +0.02262  +0.02344     205     74
+TOP_GAINERS                     N50_M3  all  placebo_unmatched                     +0.02419  +0.02315     265     42
+TOP_GAINERS                     N50_M3  all  placebo_vol_matched                   +0.02842  +0.02998     226     35
+TOP_GAINERS                     N50_M3  all  placebo_vol_density_matched           +0.02237  +0.02623     195     31
+TOP_GAINERS                     N50_M3  all  placebo_vol_density_nbar300_matched   +0.01815  +0.01998      99     19
+TOP_GAINERS                     N50_M3  o5   real_all                              +0.02259  +0.02368      21     11
+TOP_GAINERS                     N50_M3  o5   placebo_vol_density_matched           +0.02459  +0.02884      18      4
+TOP_GAINERS                     N50_M3  o5   placebo_vol_density_nbar300_matched   +0.02545  +0.02545       6      2
+TOP_GAINERS                     N50_M3  u5   real_all                              +0.02262  +0.02340     184     63
+TOP_GAINERS                     N50_M3  u5   placebo_vol_density_matched           +0.02372  +0.02846     176     27
+TOP_GAINERS                     N50_M3  u5   placebo_vol_density_nbar300_matched   +0.01791  +0.01976      93     17
+TOP_GAINERS                     N50_M6  all  real_all                              +0.02088  +0.02254     166     69
+TOSS_SECURITIES_TRADING_VOLUME  N100    all  real_all                              +0.01473  +0.01402     214     92
+TOSS_SECURITIES_TRADING_VOLUME  N10     all  real_all                              +0.01721  +0.02094     423     78
+TOSS_SECURITIES_TRADING_VOLUME  N20     all  real_all                              +0.02034  +0.02141     270     78
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  real_all                              +0.01473  +0.01699     212     86
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_unmatched                     +0.02222  +0.02170     223     43
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_matched                   +0.02542  +0.02637     190     35
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_density_matched           +0.02543  +0.03176     159     29
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_density_nbar300_matched   +0.03095  +0.03673      97     18
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5   real_all                              +0.01566  +0.01931      13      8
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5   placebo_vol_density_matched           +0.02287  +0.02656      12      3
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5   placebo_vol_density_nbar300_matched   +0.04750  +0.04750       6      2
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5   real_all                              +0.01467  +0.01690     199     79
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5   placebo_vol_density_matched           +0.02625  +0.03269     147     27
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5   placebo_vol_density_nbar300_matched   +0.03414  +0.04264      91     17
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  real_all                              +0.01959  +0.01631     291     87
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_unmatched                     +0.02175  +0.01979     353     47
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_matched                   +0.02008  +0.01875     311     42
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_density_matched           +0.02370  +0.02498     240     35
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_density_nbar300_matched   +0.02346  +0.02887     129     21
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5   real_all                              +0.02626  +0.02661      14      6
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5   placebo_vol_density_matched           +0.02637  +0.02416      24      4
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5   placebo_vol_density_nbar300_matched   +0.02106  +0.02106       3      1
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5   real_all                              +0.01925  +0.01555     277     81
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5   placebo_vol_density_matched           +0.02484  +0.02675     217     31
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5   placebo_vol_density_nbar300_matched   +0.02326  +0.02924     124     20
+TOSS_SECURITIES_TRADING_VOLUME  K20     all  real_all                              +0.01776  +0.01944     100     52
+TOSS_SECURITIES_TRADING_VOLUME  K5      all  real_all                              +0.02038  +0.01955     599    104
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  real_all                              +0.01566  +0.01784     182     84
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_unmatched                     +0.02231  +0.02162     196     42
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_matched                   +0.02545  +0.02578     169     34
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_density_matched           +0.02860  +0.03444     141     28
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_density_nbar300_matched   +0.03326  +0.03833      87     18
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5   real_all                              +0.01566  +0.01931      13      8
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5   placebo_vol_density_matched           +0.02287  +0.02656      12      3
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5   placebo_vol_density_nbar300_matched   +0.04750  +0.04750       6      2
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5   real_all                              +0.01566  +0.01783     169     77
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5   placebo_vol_density_matched           +0.02966  +0.03583     129     26
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5   placebo_vol_density_nbar300_matched   +0.03471  +0.04176      81     17
+TOSS_SECURITIES_TRADING_VOLUME  N50_M6  all  real_all                              +0.01645  +0.01781     161     83
+
+[6] D-20 - the events that could NOT be paired, profiled (docs/44 s14-4).
+    Counting is not enough: if what we lose is lopsided, the surviving
+    sample itself has moved.  The lost side is the sparse-tape side.
+ranking_type                    cell    tier arm                                 side        n nbar60_p50  lag_p50 no_fwd_bar
+TOP_GAINERS                     N50     all  placebo_unmatched                   kept      128        6.6     6.9s       0.0%
+TOP_GAINERS                     N50     all  placebo_unmatched                   lost      146        1.0    74.7s       6.2%
+TOP_GAINERS                     N50     all  placebo_vol_matched                 kept      113        7.6     6.2s       0.0%
+TOP_GAINERS                     N50     all  placebo_vol_matched                 lost      161        1.0    62.8s       5.6%
+TOP_GAINERS                     N50     all  placebo_vol_density_matched         kept       96        7.6     5.8s       0.0%
+TOP_GAINERS                     N50     all  placebo_vol_density_matched         lost      178        1.2    52.9s       5.1%
+TOP_GAINERS                     N50     all  placebo_vol_density_nbar300_matched kept       46        9.0     5.6s       0.0%
+TOP_GAINERS                     N50     all  placebo_vol_density_nbar300_matched lost      228        1.8    32.3s       3.9%
+TOP_GAINERS                     N50     o5   placebo_vol_density_matched         kept       10        7.9     2.6s       0.0%
+TOP_GAINERS                     N50     o5   placebo_vol_density_matched         lost       18        1.3    67.8s       0.0%
+TOP_GAINERS                     N50     o5   placebo_vol_density_nbar300_matched kept        3        7.3     5.6s       0.0%
+TOP_GAINERS                     N50     o5   placebo_vol_density_nbar300_matched lost       25        2.8    49.7s       0.0%
+TOP_GAINERS                     N50     u5   placebo_vol_density_matched         kept       86        7.5     6.1s       0.0%
+TOP_GAINERS                     N50     u5   placebo_vol_density_matched         lost      160        1.2    51.6s       5.6%
+TOP_GAINERS                     N50     u5   placebo_vol_density_nbar300_matched kept       43        9.2     5.6s       0.0%
+TOP_GAINERS                     N50     u5   placebo_vol_density_nbar300_matched lost      203        1.8    30.7s       4.4%
+TOP_GAINERS                     K10     all  placebo_unmatched                   kept      228        5.9     6.7s       0.9%
+TOP_GAINERS                     K10     all  placebo_unmatched                   lost      241        1.0    71.2s       4.6%
+TOP_GAINERS                     K10     all  placebo_vol_matched                 kept      197        6.8     6.5s       0.5%
+TOP_GAINERS                     K10     all  placebo_vol_matched                 lost      272        1.2    62.4s       4.4%
+TOP_GAINERS                     K10     all  placebo_vol_density_matched         kept      157        6.8     7.0s       0.0%
+TOP_GAINERS                     K10     all  placebo_vol_density_matched         lost      312        1.2    50.3s       4.2%
+TOP_GAINERS                     K10     all  placebo_vol_density_nbar300_matched kept       68        8.0     4.8s       0.0%
+TOP_GAINERS                     K10     all  placebo_vol_density_nbar300_matched lost      401        2.0    30.6s       3.2%
+TOP_GAINERS                     K10     o5   placebo_vol_density_matched         kept       21        7.4     8.1s       0.0%
+TOP_GAINERS                     K10     o5   placebo_vol_density_matched         lost       37        1.6    44.0s       5.4%
+TOP_GAINERS                     K10     o5   placebo_vol_density_nbar300_matched kept        4       21.5     0.4s       0.0%
+TOP_GAINERS                     K10     o5   placebo_vol_density_nbar300_matched lost       54        2.7    30.3s       3.7%
+TOP_GAINERS                     K10     u5   placebo_vol_density_matched         kept      136        6.8     6.7s       0.0%
+TOP_GAINERS                     K10     u5   placebo_vol_density_matched         lost      275        1.2    52.8s       4.0%
+TOP_GAINERS                     K10     u5   placebo_vol_density_nbar300_matched kept       64        7.9     5.1s       0.0%
+TOP_GAINERS                     K10     u5   placebo_vol_density_nbar300_matched lost      347        1.9    34.2s       3.2%
+TOP_GAINERS                     N50_M3  all  placebo_unmatched                   kept       89        7.0     7.3s       0.0%
+TOP_GAINERS                     N50_M3  all  placebo_unmatched                   lost      121        1.0    76.1s       4.1%
+TOP_GAINERS                     N50_M3  all  placebo_vol_matched                 kept       77        8.3     6.9s       0.0%
+TOP_GAINERS                     N50_M3  all  placebo_vol_matched                 lost      133        1.0    64.8s       3.8%
+TOP_GAINERS                     N50_M3  all  placebo_vol_density_matched         kept       67        8.4     6.5s       0.0%
+TOP_GAINERS                     N50_M3  all  placebo_vol_density_matched         lost      143        1.2    60.9s       3.5%
+TOP_GAINERS                     N50_M3  all  placebo_vol_density_nbar300_matched kept       33       11.2     6.8s       0.0%
+TOP_GAINERS                     N50_M3  all  placebo_vol_density_nbar300_matched lost      177        1.8    36.0s       2.8%
+TOP_GAINERS                     N50_M3  o5   placebo_vol_density_matched         kept        6        7.3     2.4s       0.0%
+TOP_GAINERS                     N50_M3  o5   placebo_vol_density_matched         lost       15        1.6    62.5s       0.0%
+TOP_GAINERS                     N50_M3  o5   placebo_vol_density_nbar300_matched kept        2        6.0     3.1s       0.0%
+TOP_GAINERS                     N50_M3  o5   placebo_vol_density_nbar300_matched lost       19        2.7    46.4s       0.0%
+TOP_GAINERS                     N50_M3  u5   placebo_vol_density_matched         kept       61        8.4     7.4s       0.0%
+TOP_GAINERS                     N50_M3  u5   placebo_vol_density_matched         lost      128        1.2    60.8s       3.9%
+TOP_GAINERS                     N50_M3  u5   placebo_vol_density_nbar300_matched kept       31       11.6     6.9s       0.0%
+TOP_GAINERS                     N50_M3  u5   placebo_vol_density_nbar300_matched lost      158        1.4    38.9s       3.2%
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_unmatched                   kept       77        6.8     4.7s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_unmatched                   lost      149        1.0    61.9s       9.4%
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_matched                 kept       64        6.1     5.7s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_matched                 lost      162        1.0    51.9s       8.6%
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_density_matched         kept       53        6.7     4.6s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_density_matched         lost      173        1.0    46.5s       8.1%
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_density_nbar300_matched kept       33       10.9     1.9s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_density_nbar300_matched lost      193        1.2    38.3s       7.3%
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5   placebo_vol_density_matched         kept        4       25.0     3.3s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5   placebo_vol_density_matched         lost        9       12.9    35.3s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5   placebo_vol_density_nbar300_matched kept        2       19.0     3.3s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5   placebo_vol_density_nbar300_matched lost       11       14.2    29.5s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5   placebo_vol_density_matched         kept       49        5.7     5.4s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5   placebo_vol_density_matched         lost      164        1.0    49.6s       8.5%
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5   placebo_vol_density_nbar300_matched kept       31        9.7     2.1s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5   placebo_vol_density_nbar300_matched lost      182        1.1    41.3s       7.7%
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_unmatched                   kept      120        8.4     3.2s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_unmatched                   lost      181        1.0    85.8s       5.5%
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_matched                 kept      107        8.7     3.2s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_matched                 lost      194        1.0    80.4s       5.2%
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_density_matched         kept       80        7.3     4.3s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_density_matched         lost      221        1.1    59.2s       4.5%
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_density_nbar300_matched kept       44        9.6     3.6s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_density_nbar300_matched lost      257        1.2    40.5s       3.9%
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5   placebo_vol_density_matched         kept        8       18.1     6.5s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5   placebo_vol_density_matched         lost        6        8.3    83.5s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5   placebo_vol_density_nbar300_matched kept        1        8.0    18.4s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5   placebo_vol_density_nbar300_matched lost       13        7.2    41.7s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5   placebo_vol_density_matched         kept       73        7.8     4.4s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5   placebo_vol_density_matched         lost      214        1.1    60.8s       4.7%
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5   placebo_vol_density_nbar300_matched kept       42        8.6     3.1s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5   placebo_vol_density_nbar300_matched lost      245        1.2    40.6s       4.1%
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_unmatched                   kept       68        8.2     4.2s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_unmatched                   lost      126        1.0    77.8s       9.5%
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_matched                 kept       57        8.1     5.0s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_matched                 lost      137        1.0    64.0s       8.8%
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_density_matched         kept       47        7.9     4.3s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_density_matched         lost      147        1.1    51.4s       8.2%
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_density_nbar300_matched kept       30       13.5     2.0s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_density_nbar300_matched lost      164        1.2    44.0s       7.3%
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5   placebo_vol_density_matched         kept        4       25.0     3.3s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5   placebo_vol_density_matched         lost        9       12.9    35.3s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5   placebo_vol_density_nbar300_matched kept        2       19.0     3.3s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5   placebo_vol_density_nbar300_matched lost       11       14.2    29.5s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5   placebo_vol_density_matched         kept       43        6.8     5.1s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5   placebo_vol_density_matched         lost      138        1.1    55.6s       8.7%
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5   placebo_vol_density_nbar300_matched kept       28       12.4     2.2s       0.0%
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5   placebo_vol_density_nbar300_matched lost      153        1.2    47.1s       7.8%
+
+[7] pairing census - nothing is dropped silently
+ranking_type                    cell    tier arm                                  events  paired unpaired key_miss  empty gap_only
+TOP_GAINERS                     N50     all  placebo_unmatched                       274     128      146      140      0        6
+TOP_GAINERS                     N50     all  placebo_vol_matched                     274     113      161      140      0       21
+TOP_GAINERS                     N50     all  placebo_vol_density_matched             274      96      178      140      0       38
+TOP_GAINERS                     N50     all  placebo_vol_density_nbar300_matched     274      46      228      140      0       88
+TOP_GAINERS                     N50     o5   placebo_vol_density_matched              28      10       18       15      0        3
+TOP_GAINERS                     N50     o5   placebo_vol_density_nbar300_matched      28       3       25       15      0       10
+TOP_GAINERS                     N50     u5   placebo_vol_density_matched             246      86      160      125      0       35
+TOP_GAINERS                     N50     u5   placebo_vol_density_nbar300_matched     246      43      203      125      0       78
+TOP_GAINERS                     K10     all  placebo_unmatched                       469     228      241      231      0       10
+TOP_GAINERS                     K10     all  placebo_vol_matched                     469     197      272      231      0       41
+TOP_GAINERS                     K10     all  placebo_vol_density_matched             469     157      312      231      0       81
+TOP_GAINERS                     K10     all  placebo_vol_density_nbar300_matched     469      68      401      231      0      170
+TOP_GAINERS                     K10     o5   placebo_vol_density_matched              58      21       37       27      0       10
+TOP_GAINERS                     K10     o5   placebo_vol_density_nbar300_matched      58       4       54       27      0       27
+TOP_GAINERS                     K10     u5   placebo_vol_density_matched             411     136      275      204      0       71
+TOP_GAINERS                     K10     u5   placebo_vol_density_nbar300_matched     411      64      347      204      0      143
+TOP_GAINERS                     N50_M3  all  placebo_unmatched                       210      89      121      116      0        5
+TOP_GAINERS                     N50_M3  all  placebo_vol_matched                     210      77      133      116      0       17
+TOP_GAINERS                     N50_M3  all  placebo_vol_density_matched             210      67      143      116      0       27
+TOP_GAINERS                     N50_M3  all  placebo_vol_density_nbar300_matched     210      33      177      116      0       61
+TOP_GAINERS                     N50_M3  o5   placebo_vol_density_matched              21       6       15       12      0        3
+TOP_GAINERS                     N50_M3  o5   placebo_vol_density_nbar300_matched      21       2       19       12      0        7
+TOP_GAINERS                     N50_M3  u5   placebo_vol_density_matched             189      61      128      104      0       24
+TOP_GAINERS                     N50_M3  u5   placebo_vol_density_nbar300_matched     189      31      158      104      0       54
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_unmatched                       226      77      149      147      0        2
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_matched                     226      64      162      147      0       15
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_density_matched             226      53      173      147      0       26
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_density_nbar300_matched     226      33      193      147      0       46
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5   placebo_vol_density_matched              13       4        9        4      0        5
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5   placebo_vol_density_nbar300_matched      13       2       11        4      0        7
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5   placebo_vol_density_matched             213      49      164      143      0       21
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5   placebo_vol_density_nbar300_matched     213      31      182      143      0       39
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_unmatched                       301     120      181      171      0       10
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_matched                     301     107      194      171      0       23
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_density_matched             301      80      221      171      0       50
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_density_nbar300_matched     301      44      257      171      0       86
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5   placebo_vol_density_matched              14       8        6        3      0        3
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5   placebo_vol_density_nbar300_matched      14       1       13        3      0       10
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5   placebo_vol_density_matched             287      73      214      168      0       46
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5   placebo_vol_density_nbar300_matched     287      42      245      168      0       77
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_unmatched                       194      68      126      124      0        2
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_matched                     194      57      137      124      0       13
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_density_matched             194      47      147      124      0       23
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_density_nbar300_matched     194      30      164      124      0       40
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5   placebo_vol_density_matched              13       4        9        4      0        5
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5   placebo_vol_density_nbar300_matched      13       2       11        4      0        7
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5   placebo_vol_density_matched             181      43      138      120      0       18
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5   placebo_vol_density_nbar300_matched     181      28      153      120      0       33
+
+[8] parameter sweep - does the answer stick to one grid cell?
+    real arm only, headline metric, split by D-21 era.  The two eras are
+    NEVER added together (docs/59 s4 extended to the D-21 boundary).
+ranking_type                    kind           cell    tier era          sess      n      mean       p50   pos%
+TOP_GAINERS                     E1_new_entry   N100    all  d21_after       6    333  +0.01766  +0.00723  68.2%
+TOP_GAINERS                     E1_new_entry   N10     all  d21_after       6    198  +0.03722  +0.02312  91.4%
+TOP_GAINERS                     E1_new_entry   N20     all  d21_after       6    341  +0.02477  +0.01450  83.6%
+TOP_GAINERS                     E1_new_entry   N50     all  d21_after       6    265  +0.02192  +0.01442  79.2%
+TOP_GAINERS                     E1_new_entry   N50     o5   d21_after       4     28  +0.02149  +0.01511  78.6%
+TOP_GAINERS                     E1_new_entry   N50     u5   d21_after       6    237  +0.02197  +0.01442  79.3%
+TOP_GAINERS                     E2_rank_jump   K10     all  d21_after       6    456  +0.02076  +0.01286  80.5%
+TOP_GAINERS                     E2_rank_jump   K10     o5   d21_after       4     56  +0.02648  +0.01220  83.9%
+TOP_GAINERS                     E2_rank_jump   K10     u5   d21_after       6    400  +0.01996  +0.01308  80.0%
+TOP_GAINERS                     E2_rank_jump   K20     all  d21_after       6    145  +0.02000  +0.01398  83.4%
+TOP_GAINERS                     E2_rank_jump   K5      all  d21_after       6  1,115  +0.02113  +0.01331  81.8%
+TOP_GAINERS                     E3_dwell_start N50_M3  all  d21_after       6    205  +0.02262  +0.01442  79.5%
+TOP_GAINERS                     E3_dwell_start N50_M3  o5   d21_after       4     21  +0.02259  +0.01372  85.7%
+TOP_GAINERS                     E3_dwell_start N50_M3  u5   d21_after       6    184  +0.02262  +0.01465  78.8%
+TOP_GAINERS                     E3_dwell_start N50_M6  all  d21_after       6    166  +0.02088  +0.01465  78.9%
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N100    all  d21_after       6    214  +0.01473  +0.00504  70.6%
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N10     all  d21_after       6    423  +0.01721  +0.00697  79.4%
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N20     all  d21_after       6    270  +0.02034  +0.00990  83.0%
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50     all  d21_after       6    212  +0.01473  +0.00692  76.9%
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50     o5   d21_after       5     13  +0.01566  +0.00967  84.6%
+TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry   N50     u5   d21_after       6    199  +0.01467  +0.00598  76.4%
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10     all  d21_after       6    291  +0.01959  +0.01102  81.4%
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10     o5   d21_after       4     14  +0.02626  +0.02088  85.7%
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K10     u5   d21_after       6    277  +0.01925  +0.01045  81.2%
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K20     all  d21_after       6    100  +0.01776  +0.00662  74.0%
+TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump   K5      all  d21_after       6    599  +0.02038  +0.01005  80.5%
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3  all  d21_after       6    182  +0.01566  +0.00708  76.9%
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3  o5   d21_after       5     13  +0.01566  +0.00967  84.6%
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3  u5   d21_after       6    169  +0.01566  +0.00687  76.3%
+TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M6  all  d21_after       6    161  +0.01645  +0.00800  76.4%
+
+[9] balance - did the matching actually bite? (docs/44 s14-5)
+    ntrade60 is WATCHED, not matched: it is censored at 50 per 4s bucket.
+    t_in_sess / fwd_bars are NOT match keys either - they are the check on
+    window truncation: if the real arm sits at the open and the placebo is
+    spread over the day, the two arms get forward windows of different
+    depth and any gap is OUR window, not the market.
+    Compare each 'arm' row with the '__real_on_paired' row directly above
+    it - never with 'real_all', which is a different population.
+    nbar300 is the NEW match key: bar count in the TRAILING 300s.
+    fwd_bars is the REALISED forward depth and is still NOT a match key -
+    it is the check.  Read nbar300 and fwd_bars as a pair: the band bites
+    on nbar300 by construction, and whether that carries over to fwd_bars
+    is the whole question table [11] asks.
+-- TOP_GAINERS  E1_new_entry N50 tier=all
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                    274    0.00781         2.0          8.0           4.0          7561s          10.5
+   placebo_unmatched__real_on_paired           128    0.00780         6.0         18.5          12.0          6923s          24.5
+   placebo_unmatched                           381    0.00634         8.0         27.0          15.0         10984s          23.0
+   placebo_vol_matched__real_on_paired         113    0.00770         7.0         21.0          13.0          6563s          26.0
+   placebo_vol_matched                         334    0.00776         9.0         29.0          18.0         10119s          26.0
+   placebo_vol_density_matched__real_on_paired     96    0.00758         7.0         21.0          13.0          6923s          25.5
+   placebo_vol_density_matched                 281    0.00739         7.0         24.0          13.0         11704s          22.0
+   placebo_vol_density_nbar300_matched__real_on_paired     46    0.00524         7.5         21.0          18.5          9093s          27.5
+   placebo_vol_density_nbar300_matched         135    0.00520         8.0         22.0          17.0         13437s          25.0
+-- TOP_GAINERS  E1_new_entry N50 tier=o5
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                     28    0.01271         2.0          7.0           5.0          7760s           6.5
+   placebo_vol_density_matched__real_on_paired     10    0.01035         8.5         22.5          16.5          1304s          25.5
+   placebo_vol_density_matched                  30    0.00922         7.5         21.0          16.0          2813s          21.0
+   placebo_vol_density_nbar300_matched__real_on_paired      3    0.00799         6.0         22.0          15.0          8973s           7.0
+   placebo_vol_density_nbar300_matched           9    0.00792         7.0         24.0          11.0         11771s          17.0
+-- TOP_GAINERS  E1_new_entry N50 tier=u5
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                    246    0.00770         2.0          8.0           4.0          7561s          11.0
+   placebo_vol_density_matched__real_on_paired     86    0.00744         7.0         21.0          12.5          7838s          25.5
+   placebo_vol_density_matched                 252    0.00725         7.0         25.0          12.0         12300s          20.0
+   placebo_vol_density_nbar300_matched__real_on_paired     43    0.00498         8.0         21.0          20.0          9213s          30.0
+   placebo_vol_density_nbar300_matched         127    0.00501         8.0         20.0          17.0         13449s          25.0
+-- TOP_GAINERS  E2_rank_jump K10 tier=all
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                    469    0.00879         3.0          8.0           5.0          8134s          13.0
+   placebo_unmatched__real_on_paired           228    0.00879         5.0         17.0          11.0          7233s          20.0
+   placebo_unmatched                           680    0.00631         7.0         23.0          14.0         10268s          22.0
+   placebo_vol_matched__real_on_paired         197    0.00878         6.0         19.0          12.0          6563s          23.0
+   placebo_vol_matched                         583    0.00812         7.0         24.0          15.0          9597s          23.0
+   placebo_vol_density_matched__real_on_paired    157    0.00823         6.0         21.0          12.0          7764s          23.0
+   placebo_vol_density_matched                 462    0.00805         6.0         21.0          12.0         11704s          20.0
+   placebo_vol_density_nbar300_matched__real_on_paired     68    0.00709         7.5         23.0          19.0          9196s          28.5
+   placebo_vol_density_nbar300_matched         201    0.00661         8.0         24.0          19.0         12412s          31.0
+-- TOP_GAINERS  E2_rank_jump K10 tier=o5
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                     58    0.01102         3.0          7.5           5.0          5600s           6.0
+   placebo_vol_density_matched__real_on_paired     21    0.01083         7.0         22.0          14.0          1319s          24.0
+   placebo_vol_density_matched                  63    0.01056         7.0         21.0          14.0          5000s          27.0
+   placebo_vol_density_nbar300_matched__real_on_paired      4    0.01093        21.5         36.0          54.0          1728s          50.5
+   placebo_vol_density_nbar300_matched           8    0.00877        20.5         41.5          52.5         22013s         150.0
+-- TOP_GAINERS  E2_rank_jump K10 tier=u5
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                    411    0.00847         3.0          8.0           4.0          8466s          14.0
+   placebo_vol_density_matched__real_on_paired    136    0.00785         6.0         19.5          11.5          9196s          22.0
+   placebo_vol_density_matched                 402    0.00788         6.0         22.0          12.0         12400s          19.5
+   placebo_vol_density_nbar300_matched__real_on_paired     64    0.00690         7.0         21.5          17.5          9234s          28.5
+   placebo_vol_density_nbar300_matched         189    0.00644         7.0         22.0          18.0         12412s          29.0
+-- TOP_GAINERS  E3_dwell_start N50_M3 tier=all
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                    210    0.00780         2.0          7.0           4.0          8243s           8.5
+   placebo_unmatched__real_on_paired            89    0.00780         5.0         18.0           9.0          8355s          21.0
+   placebo_unmatched                           266    0.00649         8.0         25.0          15.0         12402s          23.5
+   placebo_vol_matched__real_on_paired          77    0.00781         7.0         21.0          12.0          7320s          25.0
+   placebo_vol_matched                         228    0.00746         8.0         30.5          16.5         11710s          23.0
+   placebo_vol_density_matched__real_on_paired     67    0.00706         6.0         22.0          12.0          8355s          25.0
+   placebo_vol_density_matched                 195    0.00627         6.0         20.0          11.0         13437s          19.0
+   placebo_vol_density_nbar300_matched__real_on_paired     33    0.00441         8.0         23.0          20.0          9945s          27.0
+   placebo_vol_density_nbar300_matched          99    0.00429         8.0         24.0          19.0         12410s          26.0
+-- TOP_GAINERS  E3_dwell_start N50_M3 tier=o5
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                     21    0.00780         2.0          7.0           4.0          6606s           6.0
+   placebo_vol_density_matched__real_on_paired      6    0.00621         6.5         25.0          13.5          3510s          30.0
+   placebo_vol_density_matched                  18    0.00541         6.0         20.0           9.5          4202s          22.0
+   placebo_vol_density_nbar300_matched__real_on_paired      2    0.00904         6.0         20.0          12.0          8312s           4.5
+   placebo_vol_density_nbar300_matched           6    0.00756         7.0         22.0          10.0          8683s          19.0
+-- TOP_GAINERS  E3_dwell_start N50_M3 tier=u5
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                    189    0.00781         2.0          7.0           4.0          8264s           9.0
+   placebo_vol_density_matched__real_on_paired     61    0.00714         6.0         21.0          12.0          8526s          25.0
+   placebo_vol_density_matched                 177    0.00683         6.0         19.0          11.0         13808s          19.0
+   placebo_vol_density_nbar300_matched__real_on_paired     31    0.00434         9.0         23.0          23.0          9945s          30.0
+   placebo_vol_density_nbar300_matched          93    0.00411         9.0         24.0          21.0         13437s          35.0
+-- TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry N50 tier=all
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                    226    0.00590         1.0          6.0           3.0         13653s           9.0
+   placebo_unmatched__real_on_paired            77    0.00606         6.0         18.0          14.0         13334s          18.0
+   placebo_unmatched                           226    0.00511         9.0         28.0          17.0         14100s          25.0
+   placebo_vol_matched__real_on_paired          64    0.00607         6.0         18.0          14.0         13310s          24.5
+   placebo_vol_matched                         192    0.00560        10.0         29.0          21.0         13136s          31.5
+   placebo_vol_density_matched__real_on_paired     53    0.00492         6.0         17.0          14.0         13583s          16.0
+   placebo_vol_density_matched                 159    0.00495         6.0         21.0           9.0         13633s          24.0
+   placebo_vol_density_nbar300_matched__real_on_paired     33    0.00608         7.0         20.0          20.0         12116s          25.0
+   placebo_vol_density_nbar300_matched          97    0.00633         7.0         19.0          16.0         13713s          33.0
+-- TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry N50 tier=o5
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                     13    0.00661        13.0         23.0          27.0         13138s          22.0
+   placebo_vol_density_matched__real_on_paired      4    0.00770        20.5         26.0         182.0         12850s          64.5
+   placebo_vol_density_matched                  12    0.00658        17.5         40.5          50.0         14160s          58.0
+   placebo_vol_density_nbar300_matched__real_on_paired      2    0.00770        19.0         26.0         175.5         15796s          40.5
+   placebo_vol_density_nbar300_matched           6    0.00729        18.0         23.5          65.0         15553s          64.5
+-- TOSS_SECURITIES_TRADING_VOLUME  E1_new_entry N50 tier=u5
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                    213    0.00574         1.0          5.0           3.0         13800s           9.0
+   placebo_vol_density_matched__real_on_paired     49    0.00492         5.0         15.0          13.0         13723s          15.0
+   placebo_vol_density_matched                 147    0.00488         5.0         20.0           9.0         13342s          21.0
+   placebo_vol_density_nbar300_matched__real_on_paired     31    0.00608         7.0         20.0          20.0         11078s          25.0
+   placebo_vol_density_nbar300_matched          91    0.00607         7.0         18.0          14.0         12782s          33.0
+-- TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump K10 tier=all
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                    301    0.00645         2.0          7.0           5.0         12621s          15.0
+   placebo_unmatched__real_on_paired           120    0.00681         7.5         17.5          17.0         11512s          24.5
+   placebo_unmatched                           359    0.00600         8.0         28.0          17.0         11083s          23.0
+   placebo_vol_matched__real_on_paired         107    0.00645         7.0         18.0          16.0         11498s          24.0
+   placebo_vol_matched                         314    0.00624         9.0         28.0          19.0          9979s          25.5
+   placebo_vol_density_matched__real_on_paired     80    0.00574         7.0         16.0          16.0         14166s          21.5
+   placebo_vol_density_matched                 240    0.00581         7.0         26.0          12.0         11836s          24.0
+   placebo_vol_density_nbar300_matched__real_on_paired     44    0.00551         8.0         18.5          16.5         14963s          24.5
+   placebo_vol_density_nbar300_matched         129    0.00521         7.0         16.0          14.0         12385s          25.0
+-- TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump K10 tier=o5
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                     14    0.00520         8.0         20.5          16.0          8533s          35.0
+   placebo_vol_density_matched__real_on_paired      8    0.00545         8.0         21.5          14.5          8533s          34.5
+   placebo_vol_density_matched                  24    0.00588         8.0         34.0          13.5          5895s          50.0
+   placebo_vol_density_nbar300_matched__real_on_paired      1    0.00443         8.0         22.0          14.0         12116s          15.0
+   placebo_vol_density_nbar300_matched           3    0.00406         8.0         20.0           9.0         13605s          64.0
+-- TOSS_SECURITIES_TRADING_VOLUME  E2_rank_jump K10 tier=u5
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                    287    0.00649         2.0          7.0           4.0         12655s          14.0
+   placebo_vol_density_matched__real_on_paired     73    0.00576         7.0         15.0          16.0         15008s          20.0
+   placebo_vol_density_matched                 217    0.00566         7.0         25.0          13.0         11839s          26.0
+   placebo_vol_density_nbar300_matched__real_on_paired     42    0.00551         8.0         17.0          16.5         15305s          24.5
+   placebo_vol_density_nbar300_matched         124    0.00521         7.0         16.0          15.0         12385s          25.0
+-- TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3 tier=all
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                    194    0.00583         1.0          6.0           3.0         13834s          10.0
+   placebo_unmatched__real_on_paired            68    0.00600         7.0         18.0          17.5         13212s          23.0
+   placebo_unmatched                           199    0.00504         8.0         28.0          17.0         13728s          26.0
+   placebo_vol_matched__real_on_paired          57    0.00590         7.0         18.0          17.0         13286s          25.0
+   placebo_vol_matched                         171    0.00549         9.0         27.0          19.0         12992s          31.0
+   placebo_vol_density_matched__real_on_paired     47    0.00474         6.0         16.0          16.0         13723s          18.0
+   placebo_vol_density_matched                 141    0.00488         6.0         21.0          10.0         13605s          24.0
+   placebo_vol_density_nbar300_matched__real_on_paired     30    0.00624         8.0         20.0          21.5         13390s          27.0
+   placebo_vol_density_nbar300_matched          88    0.00582         8.0         19.0          14.5         14636s          35.5
+-- TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3 tier=o5
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                     13    0.00661        13.0         23.0          27.0         13138s          22.0
+   placebo_vol_density_matched__real_on_paired      4    0.00770        20.5         26.0         182.0         12850s          64.5
+   placebo_vol_density_matched                  12    0.00658        17.5         40.5          50.0         14160s          58.0
+   placebo_vol_density_nbar300_matched__real_on_paired      2    0.00770        19.0         26.0         175.5         15796s          40.5
+   placebo_vol_density_nbar300_matched           6    0.00729        18.0         23.5          65.0         15553s          64.5
+-- TOSS_SECURITIES_TRADING_VOLUME  E3_dwell_start N50_M3 tier=u5
+   arm                                           n   rv60_p50  nbar60_p50  nbar300_p50  ntrade60_p50  t_in_sess_p50  fwd_bars_p50
+   real_all                                    181    0.00573         1.0          5.0           3.0         13896s           9.0
+   placebo_vol_density_matched__real_on_paired     43    0.00474         6.0         15.0          14.0         14869s          14.0
+   placebo_vol_density_matched                 129    0.00480         6.0         20.0           9.0         13163s          23.0
+   placebo_vol_density_nbar300_matched__real_on_paired     28    0.00624         7.5         19.0          21.5         13390s          27.0
+   placebo_vol_density_nbar300_matched          81    0.00633         7.0         17.0          15.0         12834s          33.0
+
+[10] DIAGNOSTIC, not an estimate - is the premise even true?  Split the
+     pairs by the REALISED forward bar count (a POST-anchor quantity, which
+     is why it is not a match key and why there is no CI here).  If
+     max_ret does not rise with depth, the whole depth worry is misplaced;
+     if it does, the size of the rise is the size of the worry.
+ranking_type                    cell    tier arm                                  bin          fwd_bars n_real n_plac      real   placebo      diff
+TOP_GAINERS                     N50     all  placebo_unmatched                      0         [-inf,13)     41    124  +0.01459  +0.01368  +0.00092
+TOP_GAINERS                     N50     all  placebo_unmatched                      1           [13,51)     56    115  +0.02276  +0.01766  +0.00510
+TOP_GAINERS                     N50     all  placebo_unmatched                      2          [51,inf)     31    138  +0.02707  +0.03453  -0.00746
+TOP_GAINERS                     N50     all  placebo_vol_matched                    0         [-inf,15)     36    111  +0.01502  +0.02024  -0.00522
+TOP_GAINERS                     N50     all  placebo_vol_matched                    1           [15,48)     44    104  +0.02193  +0.01625  +0.00568
+TOP_GAINERS                     N50     all  placebo_vol_matched                    2          [48,inf)     33    117  +0.02762  +0.04098  -0.01336
+TOP_GAINERS                     N50     all  placebo_vol_density_matched            0         [-inf,14)     31     89  +0.01560  +0.01107  +0.00453
+TOP_GAINERS                     N50     all  placebo_vol_density_matched            1           [14,40)     34     96  +0.01665  +0.01789  -0.00124
+TOP_GAINERS                     N50     all  placebo_vol_density_matched            2          [40,inf)     31     95  +0.03318  +0.04676  -0.01358
+TOP_GAINERS                     N50     all  placebo_vol_density_nbar300_matched    0         [-inf,14)     16     38  +0.00974  +0.01290  -0.00316
+TOP_GAINERS                     N50     all  placebo_vol_density_nbar300_matched    1           [14,47)     16     50  +0.01546  +0.01774  -0.00228
+TOP_GAINERS                     N50     all  placebo_vol_density_nbar300_matched    2          [47,inf)     14     47  +0.02399  +0.02225  +0.00174
+TOP_GAINERS                     N50     o5   placebo_vol_density_matched            0         [-inf,18)      3      9  +0.01422  +0.01215  +0.00207
+TOP_GAINERS                     N50     o5   placebo_vol_density_matched            1           [18,31)      3      9  +0.02177  +0.01921  +0.00256
+TOP_GAINERS                     N50     o5   placebo_vol_density_matched            2          [31,inf)      4     12  +0.08625  +0.03993  +0.04632
+TOP_GAINERS                     N50     o5   placebo_vol_density_nbar300_matched    0         [-inf,15)      3      1  +0.01422  +0.01226  +0.00195
+TOP_GAINERS                     N50     o5   placebo_vol_density_nbar300_matched    1           [15,17)      0      4         -  +0.01289         -
+TOP_GAINERS                     N50     o5   placebo_vol_density_nbar300_matched    2          [17,inf)      0      4         -  +0.03028         -
+TOP_GAINERS                     N50     u5   placebo_vol_density_matched            0         [-inf,13)     25     72  +0.01489  +0.01169  +0.00320
+TOP_GAINERS                     N50     u5   placebo_vol_density_matched            1           [13,39)     34     93  +0.01675  +0.01636  +0.00039
+TOP_GAINERS                     N50     u5   placebo_vol_density_matched            2          [39,inf)     27     85  +0.02532  +0.04745  -0.02214
+TOP_GAINERS                     N50     u5   placebo_vol_density_nbar300_matched    0         [-inf,15)     14     42  +0.00936  +0.01254  -0.00318
+TOP_GAINERS                     N50     u5   placebo_vol_density_nbar300_matched    1           [15,51)     15     42  +0.01529  +0.01767  -0.00237
+TOP_GAINERS                     N50     u5   placebo_vol_density_nbar300_matched    2          [51,inf)     14     43  +0.02399  +0.02326  +0.00073
+TOP_GAINERS                     K10     all  placebo_unmatched                      0         [-inf,12)     68    225  +0.01447  +0.01053  +0.00393
+TOP_GAINERS                     K10     all  placebo_unmatched                      1           [12,43)     96    200  +0.02205  +0.01639  +0.00566
+TOP_GAINERS                     K10     all  placebo_unmatched                      2          [43,inf)     62    238  +0.03005  +0.03751  -0.00746
+TOP_GAINERS                     K10     all  placebo_vol_matched                    0         [-inf,13)     60    173  +0.01510  +0.00886  +0.00623
+TOP_GAINERS                     K10     all  placebo_vol_matched                    1           [13,43)     77    197  +0.02230  +0.02091  +0.00139
+TOP_GAINERS                     K10     all  placebo_vol_matched                    2          [43,inf)     59    197  +0.02739  +0.04421  -0.01681
+TOP_GAINERS                     K10     all  placebo_vol_density_matched            0         [-inf,14)     52    148  +0.01849  +0.01305  +0.00544
+TOP_GAINERS                     K10     all  placebo_vol_density_matched            1           [14,34)     51    155  +0.01763  +0.01844  -0.00081
+TOP_GAINERS                     K10     all  placebo_vol_density_matched            2          [34,inf)     54    152  +0.03136  +0.03716  -0.00579
+TOP_GAINERS                     K10     all  placebo_vol_density_nbar300_matched    0         [-inf,17)     23     65  +0.01919  +0.01027  +0.00892
+TOP_GAINERS                     K10     all  placebo_vol_density_nbar300_matched    1           [17,47)     22     69  +0.01633  +0.01603  +0.00029
+TOP_GAINERS                     K10     all  placebo_vol_density_nbar300_matched    2          [47,inf)     23     67  +0.02898  +0.03738  -0.00840
+TOP_GAINERS                     K10     o5   placebo_vol_density_matched            0         [-inf,20)      7     20  +0.02024  +0.01450  +0.00574
+TOP_GAINERS                     K10     o5   placebo_vol_density_matched            1           [20,40)      7     19  +0.02968  +0.02425  +0.00543
+TOP_GAINERS                     K10     o5   placebo_vol_density_matched            2          [40,inf)      7     22  +0.10212  +0.03502  +0.06710
+TOP_GAINERS                     K10     o5   placebo_vol_density_nbar300_matched    0         [-inf,94)      3      1  +0.03857  +0.03591  +0.00266
+TOP_GAINERS                     K10     o5   placebo_vol_density_nbar300_matched    1          [94,150)      1      3  +0.05799  +0.01338  +0.04461
+TOP_GAINERS                     K10     o5   placebo_vol_density_nbar300_matched    2         [150,inf)      0      4         -  +0.06284         -
+TOP_GAINERS                     K10     u5   placebo_vol_density_matched            0         [-inf,13)     41    112  +0.01853  +0.00726  +0.01127
+TOP_GAINERS                     K10     u5   placebo_vol_density_matched            1           [13,34)     48    150  +0.01566  +0.02021  -0.00455
+TOP_GAINERS                     K10     u5   placebo_vol_density_matched            2          [34,inf)     47    135  +0.02083  +0.04278  -0.02195
+TOP_GAINERS                     K10     u5   placebo_vol_density_nbar300_matched    0         [-inf,16)     21     63  +0.02071  +0.01026  +0.01046
+TOP_GAINERS                     K10     u5   placebo_vol_density_nbar300_matched    1           [16,44)     21     63  +0.01464  +0.01477  -0.00013
+TOP_GAINERS                     K10     u5   placebo_vol_density_nbar300_matched    2          [44,inf)     22     63  +0.02505  +0.03541  -0.01037
+TOP_GAINERS                     N50_M3  all  placebo_unmatched                      0         [-inf,12)     28     80  +0.01223  +0.01255  -0.00031
+TOP_GAINERS                     N50_M3  all  placebo_unmatched                      1           [12,39)     35     91  +0.01892  +0.02063  -0.00171
+TOP_GAINERS                     N50_M3  all  placebo_unmatched                      2          [39,inf)     26     94  +0.03669  +0.03755  -0.00086
+TOP_GAINERS                     N50_M3  all  placebo_vol_matched                    0         [-inf,13)     22     67  +0.01247  +0.01714  -0.00467
+TOP_GAINERS                     N50_M3  all  placebo_vol_matched                    1           [13,48)     34     79  +0.02479  +0.02471  +0.00008
+TOP_GAINERS                     N50_M3  all  placebo_vol_matched                    2          [48,inf)     21     80  +0.02786  +0.04154  -0.01369
+TOP_GAINERS                     N50_M3  all  placebo_vol_density_matched            0         [-inf,13)     19     59  +0.01239  +0.01044  +0.00195
+TOP_GAINERS                     N50_M3  all  placebo_vol_density_matched            1           [13,42)     29     67  +0.01934  +0.01225  +0.00709
+TOP_GAINERS                     N50_M3  all  placebo_vol_density_matched            2          [42,inf)     19     69  +0.03579  +0.04238  -0.00659
+TOP_GAINERS                     N50_M3  all  placebo_vol_density_nbar300_matched    0         [-inf,14)     13     31  +0.00703  +0.01361  -0.00658
+TOP_GAINERS                     N50_M3  all  placebo_vol_density_nbar300_matched    1           [14,53)     10     34  +0.01288  +0.01650  -0.00362
+TOP_GAINERS                     N50_M3  all  placebo_vol_density_nbar300_matched    2          [53,inf)     10     34  +0.02454  +0.02393  +0.00060
+TOP_GAINERS                     N50_M3  o5   placebo_vol_density_matched            0         [-inf,19)      2      5  +0.01235  +0.02095  -0.00860
+TOP_GAINERS                     N50_M3  o5   placebo_vol_density_matched            1           [19,42)      2      7  +0.05196  +0.02417  +0.02779
+TOP_GAINERS                     N50_M3  o5   placebo_vol_density_matched            2          [42,inf)      2      6  +0.07756  +0.02813  +0.04944
+TOP_GAINERS                     N50_M3  o5   placebo_vol_density_nbar300_matched    0          [-inf,6)      1      2  +0.00322  +0.02527  -0.02205
+TOP_GAINERS                     N50_M3  o5   placebo_vol_density_nbar300_matched    1            [6,20)      1      1  +0.02148  +0.00004  +0.02143
+TOP_GAINERS                     N50_M3  o5   placebo_vol_density_nbar300_matched    2          [20,inf)      0      3         -  +0.03404         -
+TOP_GAINERS                     N50_M3  u5   placebo_vol_density_matched            0         [-inf,13)     17     56  +0.01239  +0.01180  +0.00060
+TOP_GAINERS                     N50_M3  u5   placebo_vol_density_matched            1           [13,41)     27     58  +0.01692  +0.01232  +0.00460
+TOP_GAINERS                     N50_M3  u5   placebo_vol_density_matched            2          [41,inf)     17     62  +0.03088  +0.04515  -0.01427
+TOP_GAINERS                     N50_M3  u5   placebo_vol_density_nbar300_matched    0         [-inf,14)     11     28  +0.00607  +0.01376  -0.00769
+TOP_GAINERS                     N50_M3  u5   placebo_vol_density_nbar300_matched    1           [14,55)     10     31  +0.01288  +0.01505  -0.00217
+TOP_GAINERS                     N50_M3  u5   placebo_vol_density_nbar300_matched    2          [55,inf)     10     34  +0.02454  +0.02393  +0.00060
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_unmatched                      0         [-inf,13)     29     68  +0.01170  +0.00691  +0.00478
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_unmatched                      1           [13,37)     28     75  +0.01265  +0.01525  -0.00260
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_unmatched                      2          [37,inf)     20     80  +0.03390  +0.04176  -0.00786
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_matched                    0         [-inf,13)     25     60  +0.00939  +0.00811  +0.00127
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_matched                    1           [13,53)     26     58  +0.01746  +0.01936  -0.00190
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_matched                    2          [53,inf)     13     72  +0.03905  +0.04473  -0.00569
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_density_matched            0         [-inf,12)     16     48  +0.00973  +0.00391  +0.00582
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_density_matched            1           [12,36)     24     53  +0.01716  +0.01157  +0.00560
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_density_matched            2          [36,inf)     13     58  +0.04237  +0.05591  -0.01353
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_density_nbar300_matched    0         [-inf,14)     12     31  +0.01387  +0.00879  +0.00508
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_density_nbar300_matched    1           [14,51)     13     30  +0.01399  +0.02901  -0.01502
+TOSS_SECURITIES_TRADING_VOLUME  N50     all  placebo_vol_density_nbar300_matched    2          [51,inf)      8     36  +0.04491  +0.05165  -0.00674
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5   placebo_vol_density_matched            0         [-inf,50)      1      4  +0.01232  +0.00787  +0.00445
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5   placebo_vol_density_matched            1          [50,132)      2      3  +0.01396  +0.01041  +0.00354
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5   placebo_vol_density_matched            2         [132,inf)      1      5  +0.06204  +0.04234  +0.01970
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5   placebo_vol_density_nbar300_matched    0         [-inf,64)      1      1  +0.01232  +0.06186  -0.04953
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5   placebo_vol_density_nbar300_matched    1           [64,66)      0      3         -  +0.02106         -
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5   placebo_vol_density_nbar300_matched    2          [66,inf)      1      2  +0.00967  +0.07999  -0.07032
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5   placebo_vol_density_matched            0         [-inf,11)     15     45  +0.00813  +0.00484  +0.00329
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5   placebo_vol_density_matched            1           [11,31)     20     50  +0.01961  +0.00791  +0.01170
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5   placebo_vol_density_matched            2          [31,inf)     14     52  +0.03586  +0.06241  -0.02655
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5   placebo_vol_density_nbar300_matched    0         [-inf,12)     11     30  +0.01407  +0.01104  +0.00304
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5   placebo_vol_density_nbar300_matched    1           [12,43)     12     27  +0.01263  +0.02851  -0.01588
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5   placebo_vol_density_nbar300_matched    2          [43,inf)      8     34  +0.04741  +0.05899  -0.01158
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_unmatched                      0         [-inf,14)     41    117  +0.01476  +0.00767  +0.00709
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_unmatched                      1           [14,43)     46    111  +0.02081  +0.01888  +0.00193
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_unmatched                      2          [43,inf)     33    125  +0.03765  +0.03750  +0.00016
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_matched                    0         [-inf,16)     39    100  +0.01545  +0.00941  +0.00604
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_matched                    1           [16,43)     39    100  +0.01834  +0.01408  +0.00427
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_matched                    2          [43,inf)     29    111  +0.03687  +0.03510  +0.00177
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_density_matched            0         [-inf,15)     28     70  +0.01565  +0.00962  +0.00603
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_density_matched            1           [15,34)     25     85  +0.01894  +0.01597  +0.00296
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_density_matched            2          [34,inf)     27     85  +0.03711  +0.04302  -0.00592
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_density_nbar300_matched    0         [-inf,15)     15     38  +0.01862  +0.01526  +0.00336
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_density_nbar300_matched    1           [15,32)     15     47  +0.01562  +0.01278  +0.00284
+TOSS_SECURITIES_TRADING_VOLUME  K10     all  placebo_vol_density_nbar300_matched    2          [32,inf)     14     44  +0.03202  +0.04194  -0.00992
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5   placebo_vol_density_matched            0         [-inf,25)      3      8  +0.01176  +0.01193  -0.00018
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5   placebo_vol_density_matched            1           [25,61)      2      8  +0.02918  +0.01465  +0.01453
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5   placebo_vol_density_matched            2          [61,inf)      3      8  +0.05578  +0.05253  +0.00325
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5   placebo_vol_density_nbar300_matched    0         [-inf,64)      1      0  +0.01232         -         -
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5   placebo_vol_density_nbar300_matched    1           [64,64)      0      0         -         -         -
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5   placebo_vol_density_nbar300_matched    2          [64,inf)      0      3         -  +0.02106         -
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5   placebo_vol_density_matched            0         [-inf,15)     28     62  +0.01565  +0.00998  +0.00567
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5   placebo_vol_density_matched            1           [15,34)     21     77  +0.01915  +0.01657  +0.00257
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5   placebo_vol_density_matched            2          [34,inf)     24     78  +0.03400  +0.04481  -0.01081
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5   placebo_vol_density_nbar300_matched    0         [-inf,15)     15     37  +0.01862  +0.01387  +0.00476
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5   placebo_vol_density_nbar300_matched    1           [15,33)     14     44  +0.01586  +0.01255  +0.00331
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5   placebo_vol_density_nbar300_matched    2          [33,inf)     13     43  +0.03419  +0.04230  -0.00811
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_unmatched                      0         [-inf,13)     26     57  +0.01224  +0.00606  +0.00618
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_unmatched                      1           [13,44)     25     68  +0.01458  +0.01441  +0.00017
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_unmatched                      2          [44,inf)     17     71  +0.03486  +0.04292  -0.00806
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_matched                    0         [-inf,14)     22     53  +0.00955  +0.00820  +0.00135
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_matched                    1           [14,54)     22     52  +0.01742  +0.01671  +0.00071
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_matched                    2          [54,inf)     13     64  +0.03905  +0.04683  -0.00778
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_density_matched            0         [-inf,12)     18     45  +0.01105  +0.00536  +0.00570
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_density_matched            1           [12,37)     17     45  +0.01899  +0.01678  +0.00222
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_density_matched            2          [37,inf)     12     51  +0.04175  +0.05954  -0.01779
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_density_nbar300_matched    0         [-inf,14)     11     28  +0.01290  +0.00546  +0.00744
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_density_nbar300_matched    1           [14,51)     11     28  +0.01578  +0.03132  -0.01554
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all  placebo_vol_density_nbar300_matched    2          [51,inf)      8     31  +0.04491  +0.06013  -0.01522
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5   placebo_vol_density_matched            0         [-inf,50)      1      4  +0.01232  +0.00787  +0.00445
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5   placebo_vol_density_matched            1          [50,132)      2      3  +0.01396  +0.01041  +0.00354
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5   placebo_vol_density_matched            2         [132,inf)      1      5  +0.06204  +0.04234  +0.01970
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5   placebo_vol_density_nbar300_matched    0         [-inf,64)      1      1  +0.01232  +0.06186  -0.04953
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5   placebo_vol_density_nbar300_matched    1           [64,66)      0      3         -  +0.02106         -
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5   placebo_vol_density_nbar300_matched    2          [66,inf)      1      2  +0.00967  +0.07999  -0.07032
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5   placebo_vol_density_matched            0         [-inf,11)     14     38  +0.00696  +0.00775  -0.00080
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5   placebo_vol_density_matched            1           [11,32)     18     44  +0.02276  +0.00901  +0.01375
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5   placebo_vol_density_matched            2          [32,inf)     11     47  +0.03759  +0.06671  -0.02912
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5   placebo_vol_density_nbar300_matched    0         [-inf,16)     12     24  +0.01454  +0.00662  +0.00791
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5   placebo_vol_density_nbar300_matched    1           [16,49)      8     28  +0.01239  +0.02850  -0.01612
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5   placebo_vol_density_nbar300_matched    2          [49,inf)      8     29  +0.04741  +0.06394  -0.01653
+
+[11] THE POINT OF THIS RUN - what moved when the pre-anchor depth proxy
+     entered the match.  before = placebo_vol_density_matched (the arm
+     docs/64 s6-1 reported), after = placebo_vol_density_nbar300_matched.
+     Same cells, same sessions, same draws-per-event, one extra band.
+     fwd_gap = placebo forward-bar p50 MINUS real forward-bar p50: the
+     number docs/64 s9-1 could not close.  Positive = placebo deeper.
+     d_diff = after - before.  n falls because a third band pairs less;
+     that fall is the cost and it is printed, not hidden.
+ranking_type                    cell    tier  n_bef n_aft  diff_bef  diff_aft    d_diff fwdgap_bef fwdgap_aft                    ci95_aft
+TOP_GAINERS                     N50     all      96    46  -0.00387  -0.00188  +0.00199       -3.5       -2.5  [-0.01620,+0.00633]  cross
+TOP_GAINERS                     N50     o5       10     3  +0.01992  -0.00633  -0.02625       -4.5      +10.0                       NO CI
+TOP_GAINERS                     N50     u5       86    43  -0.00669  -0.00167  +0.00501       -5.5       -5.0  [-0.01793,+0.00679]  cross
+TOP_GAINERS                     K10     all     157    68  -0.00030  +0.00029  +0.00059       -3.0       +2.5  [-0.00737,+0.00445]  cross
+TOP_GAINERS                     K10     o5       21     4  +0.02574  +0.00250  -0.02324       +3.0      +99.5                       NO CI
+TOP_GAINERS                     K10     u5      136    64  -0.00592  +0.00006  +0.00598       -2.5       +0.5  [-0.00803,+0.00448]  cross
+TOP_GAINERS                     N50_M3  all      67    33  -0.00033  -0.00404  -0.00371       -6.0       -1.0  [-0.02061,+0.00557]  cross
+TOP_GAINERS                     N50_M3  o5        6     2  +0.02270  -0.01310  -0.03580       -8.0      +14.5                       NO CI
+TOP_GAINERS                     N50_M3  u5       61    31  -0.00417  -0.00369  +0.00048       -6.0       +5.0  [-0.02208,+0.00587]  cross
+TOSS_SECURITIES_TRADING_VOLUME  N50     all      53    33  -0.00433  -0.00951  -0.00518       +8.0       +8.0  [-0.02826,+0.00006]  cross
+TOSS_SECURITIES_TRADING_VOLUME  N50     o5        4     2  +0.00270  -0.03651  -0.03921       -6.5      +24.0                       NO CI
+TOSS_SECURITIES_TRADING_VOLUME  N50     u5       49    31  -0.00551  -0.01202  -0.00651       +6.0       +8.0   [-0.03312,-0.00201]  EXCL
+TOSS_SECURITIES_TRADING_VOLUME  K10     all      80    44  +0.00022  -0.00160  -0.00182       +2.5       +0.5  [-0.01839,+0.01025]  cross
+TOSS_SECURITIES_TRADING_VOLUME  K10     o5        8     1  +0.00625  -0.00874  -0.01499      +15.5      +49.0                       NO CI
+TOSS_SECURITIES_TRADING_VOLUME  K10     u5       73    42  -0.00215  -0.00074  +0.00141       +6.0       +0.5  [-0.01847,+0.01113]  cross
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  all      47    30  -0.00684  -0.01077  -0.00394       +6.0       +8.5  [-0.03281,+0.00220]  cross
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  o5        4     2  +0.00270  -0.03651  -0.03921       -6.5      +24.0                       NO CI
+TOSS_SECURITIES_TRADING_VOLUME  N50_M3  u5       43    28  -0.00826  -0.01139  -0.00314       +9.0       +6.0  [-0.03358,+0.00095]  cross
+
+==============================================================================
+This runner decides nothing.  It reports what was measured, the sample
+behind each number, and what could not be separated.
+==============================================================================
+-> C:\Users\dongh\AppData\Local\Temp\claude\C--Users-dongh-toss-trade\56902d54-907f-4780-b8ad-f0580ff95370\scratchpad\g2_confirmation.json

@@ -179,16 +179,27 @@ SELF_GAP_S = max(PROBE_HORIZONS_S) + VOL_LOOKBACK_S
 HEADLINE_H = 300
 HEADLINE = f"max_ret_{HEADLINE_H}s"
 
-#: ★★ **탐색 팔 9 세션** (`coordination/G2G3-PREREG.md` §2-1). 확증 팔은
-#: 2026-08-13 이후이고, 탐색이 그것을 보면 확증이 확증이 아니게 된다(같은 문서 §5-1).
+#: ★★ **탐색 팔 9 세션** (`coordination/G2G3-PREREG.md` §2-1). 탐색이 확증 팔을
+#: 보면 확증이 확증이 아니게 된다(같은 문서 §5-1).
 #: 목록을 상수로 박고 러너가 스스로 거른다 - 규율이 아니라 코드가 막는다.
 EXPLORATION_SESSIONS = (
     "2026-07-31", "2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06",
     "2026-08-07", "2026-08-10", "2026-08-11", "2026-08-12",
 )
 
-#: 확증 팔의 바닥. 탐색 모드는 이 시각 **이후 스냅을 읽지 않는다.**
-CONFIRMATION_FLOOR_UTC = "2026-08-13T00:00:00Z"
+#: 탐색 모드의 천장. 탐색은 이 시각 **이후 스냅을 읽지 않는다.**
+#: **확증 팔의 바닥과 같은 상수가 아니다** - 개정 2 는 바닥만 옮겼고 천장은 그대로다.
+#: 하나로 묶으면 바닥을 옮길 때 탐색의 시야가 조용히 같이 넓어진다.
+EXPLORATION_CEILING_UTC = "2026-08-13T00:00:00Z"
+
+#: 확증 팔의 바닥. **개정 2** (`G2G3-PREREG` §2-1, 2026-08-22 사용자 D-28 (나)) 가
+#: 08-13 -> 08-18 로 옮겼다. 확증 모드는 이 시각 **이전 스냅을 읽지 않는다.**
+CONFIRMATION_FLOOR_UTC = "2026-08-18T00:00:00Z"
+
+#: 어느 팔도 아닌 세션. `docs/64`·`docs/65` 가 탐색 산출물에 노출시켜 확증에서 뺐고,
+#: 탐색 팔은 9 세션으로 얼려 있어 거기에도 못 들어간다. **되돌릴 수 없다.**
+#: 바닥으로도 걸리지만 이름을 남긴다 - 바닥만 있으면 "왜 08-18 인가" 가 사라진다.
+DISCARDED_SESSIONS = ("2026-08-13", "2026-08-14", "2026-08-17")
 
 #: ★★ 전방 창 깊이의 **사전(앵커 이전) 대리 지표**. `docs/64` §9-1 의 구멍이 이 자리다 -
 #: `nbar60` 은 **60 초** 창의 밀도인데 결과 창은 **300 초**다. **창 길이가 다르다.**
@@ -294,8 +305,8 @@ LABELS = (
     "the 9 sessions (07-31, 08-03..07, 08-10..12) can never be reused for confirmation",
     "those 9 sessions sit under a 12.4s poll: 29% of the server's 10s grid ticks were "
     "never received and the rankings we did get were a median 16.1s old (docs/35, W1)",
-    "confirmation may use only data after 2026-08-13, and as of 2026-08-18 that is "
-    "3 sessions - not enough to open yet",
+    "confirmation uses only regular sessions from 2026-08-18 (G2G3-PREREG s2-1 "
+    "revision 2, 2026-08-22); 2026-08-13/14/17 belong to NEITHER arm",
     "label [3] itself has since moved: a live probe polled the same list at 1s, 5s "
     "and 12s and the ranking age came out 16.8 / 18.0 / 18.1s - near identical - "
     "while the '29% of grid ticks never received' turns out to be the server using "
@@ -303,6 +314,23 @@ LABELS = (
     "not tape we dropped (docs/35 s7-4, docs/62 s10-4). Which of the two readings "
     "is right is a D-8 / G-1a question and neither this runner nor docs/64 settles "
     "it - both numbers are printed with their source",
+)
+
+#: **확증 팔 산출물에 붙는 라벨 다섯.** 개수를 `LABELS` 와 맞춘 것은 소비자가 다섯을
+#: 세기 때문이다. 첫 줄이 다른 이유: 확증 팔은 판정이 지나가는 길이고, 거기에
+#: "NOT A VERDICT" 를 붙이면 그 말이 거짓이 된다. ASCII 로만 쓴다.
+CONFIRMATION_LABELS = (
+    "CONFIRMATION ARM - this is the G-2 verdict path (G2G3-PREREG s3)",
+    "the 9 exploration sessions (07-31, 08-03..07, 08-10..12) are excluded and can "
+    "never be reused here",
+    "2026-08-13 / 08-14 / 08-17 belong to NEITHER arm - docs/64 and docs/65 exposed "
+    "them to exploration output, so revision 2 (D-28 (b)) dropped them. Irreversible",
+    "E was frozen on 2026-08-22 (G2G3-PREREG s2-4), two days before the 5th arm "
+    "session, and was chosen on the exploration arm alone",
+    "the poll-age caveat still travels with every number: the ranking snapshots are "
+    "a median 16-18s old and the server skips some of its own 10s slots (docs/35 "
+    "s7-4, docs/62 s10-4). This is a D-8 / G-1a question that this runner does not "
+    "settle",
 )
 
 #: 이 모듈이 **쓰면 안 되는** 문구. 산출물 전체를 훑어 이 조각이 없는지 테스트가 본다.
@@ -881,27 +909,49 @@ def _blank_arm() -> dict:
 
 
 def run(db: Path, *, since_ms: int | None = None, until_ms: int | None = None,
-        exploration_only: bool = True, progress: bool = False) -> dict:
+        exploration_only: bool | None = None, confirmation: bool = False,
+        progress: bool = False) -> dict:
     """세션마다 사건을 만들고 앵커를 붙이고 위약 사다리를 태운다.
 
-    `exploration_only` 가 **기본 참**이다. 확증 팔(2026-08-13 이후)을 이 러너로
-    열면 `E` 를 확증 데이터에 맞춰 고르는 길이 열린다(`G2G3-PREREG` §5-1).
-    창을 좁히는 것과 세션 목록으로 거르는 것을 **둘 다** 건다 - 하나는 인자에
-    의존하고 다른 하나는 상수라, 인자를 잘못 줘도 상수가 남는다.
+    팔은 셋이고 **기본은 탐색**이다.
+
+    - `exploration_only` (기본): 탐색 팔 9 세션만. `E` 를 확증 데이터에 맞춰
+      고르는 길을 막는다(`G2G3-PREREG` §5-1).
+    - `confirmation`: **확증 팔만** = `CONFIRMATION_FLOOR_UTC` 이후이고 탐색 9 세션도
+      버린 3 세션도 아닌 정규장. G-2 판정이 지나가는 길이다.
+    - 둘 다 끄면 `unrestricted` — 팔이 섞이므로 **판정에 쓰면 안 된다.**
+
+    어느 팔이든 **창을 좁히는 것과 세션 목록으로 거르는 것을 둘 다** 건다 - 하나는
+    인자에 의존하고 다른 하나는 상수라, 인자를 잘못 줘도 상수가 남는다.
     """
+    if exploration_only is None:
+        exploration_only = not confirmation
+    if confirmation and exploration_only:
+        raise ValueError(
+            "confirmation and exploration_only are mutually exclusive - "
+            "G2G3-PREREG s2-1 keeps the two arms apart")
     conn = HE.open_ro(db)
     try:
         floor_ms = HE.holdout_floor_ms()
         if since_ms is not None:
             floor_ms = max(floor_ms, int(since_ms))
+        if confirmation:
+            # 인자가 아니라 상수가 바닥을 정한다. `since_ms` 로 더 내려갈 수 없다.
+            floor_ms = max(floor_ms, HE.iso_ms(CONFIRMATION_FLOOR_UTC))
         db_max = int(conn.execute("SELECT MAX(snap_ms) FROM rankings_snap").fetchone()[0])
         until = int(until_ms) if until_ms is not None else db_max
         if exploration_only:
-            until = min(until, HE.iso_ms(CONFIRMATION_FLOOR_UTC) - 1)
+            until = min(until, HE.iso_ms(EXPLORATION_CEILING_UTC) - 1)
         sessions = scan_sessions(conn, floor_ms, until)
         if exploration_only:
             sessions = [s for s in sessions
                         if s["session"] in EXPLORATION_SESSIONS]
+        if confirmation:
+            # 바닥이 이미 셋을 걸러내지만 이름으로도 막는다 - 바닥 상수가 언젠가
+            # 또 움직여도 버린 세션은 계속 버려진 채로 남아야 한다.
+            sessions = [s for s in sessions
+                        if s["session"] not in EXPLORATION_SESSIONS
+                        and s["session"] not in DISCARDED_SESSIONS]
         cells: dict = {}
 
         for s in sessions:
@@ -1008,6 +1058,7 @@ def run(db: Path, *, since_ms: int | None = None, until_ms: int | None = None,
                 "since_utc": HE.ms_iso(floor_ms), "until_ms": until,
                 "until_utc": HE.ms_iso(until), "db_max_snap_utc": HE.ms_iso(db_max),
                 "exploration_only": bool(exploration_only),
+                "confirmation": bool(confirmation),
                 "sessions": sessions, "cells": cells}
     finally:
         conn.close()
@@ -1132,9 +1183,13 @@ def balance_records(res: dict) -> list:
 
 
 def build_report(res: dict) -> dict:
-    """산출물 하나. **문서에 실리는 수치는 전부 여기를 지나간다.**"""
+    """산출물 하나. **문서에 실리는 수치는 전부 여기를 지나간다.**
+
+    확증 팔이면 **라벨이 갈린다** - `LABELS` 의 첫 줄이 "NOT A VERDICT" 라서
+    확증 산출물에 그대로 붙이면 거짓말이 된다.
+    """
     return {
-        "labels": list(LABELS),
+        "labels": list(CONFIRMATION_LABELS if res.get("confirmation") else LABELS),
         "conditions": HE.MEASUREMENT_CONDITIONS,
         "db": res["db"],
         "window": {"since_utc": res["since_utc"], "until_utc": res["until_utc"],
@@ -1142,16 +1197,25 @@ def build_report(res: dict) -> dict:
                    "d21_boundary_utc": HE.D21_BOUNDARY_UTC,
                    "eras_in_window": sorted({s["era"] for s in res["sessions"]})},
         "arm": {
-            "name": "exploration" if res["exploration_only"] else "unrestricted",
+            "name": ("exploration" if res["exploration_only"]
+                     else "confirmation" if res.get("confirmation")
+                     else "unrestricted"),
             "exploration_only": res["exploration_only"],
+            "confirmation": bool(res.get("confirmation")),
             "sessions_allowed": list(EXPLORATION_SESSIONS),
             "sessions_used": [s["session"] for s in res["sessions"]],
+            "exploration_ceiling_utc": EXPLORATION_CEILING_UTC,
             "confirmation_floor_utc": CONFIRMATION_FLOOR_UTC,
+            "discarded_sessions": list(DISCARDED_SESSIONS),
             "why": ("G2G3-PREREG s2-1 splits the sessions into an exploration arm "
-                    "(9 sessions) and a post-2026-08-13 arm reserved for the "
-                    "verdict. Choosing the event definition E while looking at the "
-                    "reserved arm would destroy what that arm is for (s5-1), so "
-                    "this runner refuses to read past the floor by default."),
+                    "(9 sessions, ceiling 2026-08-13) and a confirmation arm "
+                    "(floor 2026-08-18, revision 2) reserved for the verdict. "
+                    "2026-08-13/14/17 belong to NEITHER - docs/64 and docs/65 "
+                    "exposed them to exploration output, so revision 2 dropped "
+                    "them and the exploration arm is frozen at 9. Choosing the "
+                    "event definition E while looking at the reserved arm would "
+                    "destroy what that arm is for (s5-1), so this runner refuses "
+                    "to read past the ceiling by default."),
         },
         "holdout": {"window": [SS.HOLDOUT_START, SS.HOLDOUT_END]},
         "design": {
@@ -1542,14 +1606,18 @@ def main(argv: list) -> int:
     name = "ranking_forward_path"
     # 확증 팔을 여는 것은 **명시적인 한 마디**여야 한다. 기본은 탐색 팔이다.
     exploration_only = True
+    confirmation = False
     args = list(argv[1:])
     i = 0
     while i < len(args):
         a = args[i]
         if a == "--all-sessions":
             exploration_only = False; i += 1
+        elif a == "--confirmation":
+            # 확증 팔만. 판정이 지나가는 유일한 길이다.
+            exploration_only = False; confirmation = True; i += 1
         elif a == "--exploration":
-            exploration_only = True; i += 1
+            exploration_only = True; confirmation = False; i += 1
         elif a == "--until-ms":
             until_ms = int(args[i + 1]); i += 2
         elif a == "--since-ms":
@@ -1567,7 +1635,8 @@ def main(argv: list) -> int:
     print("scanning sessions (UTC session x ranking type x cell x tier) ...",
           flush=True)
     res = run(db, since_ms=since_ms, until_ms=until_ms,
-              exploration_only=exploration_only, progress=True)
+              exploration_only=exploration_only, confirmation=confirmation,
+              progress=True)
     rep = build_report(res)
     out_dir.mkdir(parents=True, exist_ok=True)
     p = out_dir / f"{name}.json"

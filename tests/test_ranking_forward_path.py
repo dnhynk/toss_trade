@@ -1,4 +1,4 @@
-"""랭킹 사건의 **전방 가격 경로** (`docs/64` · `docs/65`). 이 파일이 지키는 것 열둘.
+"""랭킹 사건의 **전방 가격 경로** (`docs/64` · `docs/65`). 이 파일이 지키는 것 열셋.
 
 1. **사건 정의에 가격이 한 번도 들어가지 않는다.** `last_u` 를 통째로 뒤흔들어도
    앵커가 붙는 사건 수가 같아야 한다. 설계 A 가 *"탐지가 상승을 소진한다"* 로 죽은
@@ -23,8 +23,15 @@
     `match_fwd=False` 에서 `draw_stratified` 와 **배열까지** 같아야 한다.
 11. **새 정합 키가 미래를 안 쓴다.** `nbar300` 은 직전 300 초다 - 뒤를 잘라내고 다시
     불러도 같은 값이어야 한다. 이 성질이 이 키를 정합 축에 넣을 수 있는 유일한 근거다.
-12. **확증 팔을 안 연다.** 2026-08-13 이후 세션이 산출물에 닿으면 `E` 를 확증 데이터에
-    맞춰 고르는 길이 열린다(`G2G3-PREREG` §5-1). 규율이 아니라 코드가 막는지 본다.
+12. **탐색이 확증 팔을 안 연다.** 탐색 산출물에 `EXPLORATION_CEILING_UTC`(08-13) 이후
+    세션이 닿으면 `E` 를 확증 데이터에 맞춰 고르는 길이 열린다(`G2G3-PREREG` §5-1).
+    규율이 아니라 코드가 막는지 본다.
+
+개정 2(`G2G3-PREREG` §2-1, 2026-08-22)가 더한 하나:
+
+13. **확증 팔에 탐색 세션도 버린 셋(08-13·08-14·08-17)도 못 들어온다.** 개정 2 이전에는
+    확증 모드가 **아예 없었다** - `exploration_only=False` 는 팔을 안 가리는
+    `unrestricted` 였다. 그대로 판정을 돌렸으면 버린 셋이 예외도 경고도 없이 섞였다.
 """
 from __future__ import annotations
 
@@ -93,7 +100,8 @@ def _trade_rows(day: str) -> list:
     return rows
 
 
-def _make_db(path, *, scramble: bool = False, with_holdout: bool = True):
+def _make_db(path, *, scramble: bool = False, with_holdout: bool = True,
+             days: tuple | None = None):
     conn = sqlite3.connect(path)
     conn.executescript("""
         CREATE TABLE rankings_snap (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,7 +122,7 @@ def _make_db(path, *, scramble: bool = False, with_holdout: bool = True):
             updated_ms INTEGER NOT NULL);
     """)
     rows, trades = [], []
-    for d in DAYS:
+    for d in (DAYS if days is None else days):
         rows += _rank_rows(d, scramble=scramble)
         trades += _trade_rows(d)
     if with_holdout:
@@ -704,7 +712,10 @@ def test_the_exploration_arm_is_nine_named_sessions():
     assert RFP.EXPLORATION_SESSIONS[0] == "2026-07-31"
     assert RFP.EXPLORATION_SESSIONS[-1] == "2026-08-12"
     assert all(s < "2026-08-13" for s in RFP.EXPLORATION_SESSIONS)
-    assert RFP.CONFIRMATION_FLOOR_UTC.startswith("2026-08-13")
+    # 탐색 팔을 가두는 것은 **천장**이다. 개정 2 이전에는 확증 바닥이 같은 값이라
+    # 한 상수가 둘을 겸했고, 그래서 바닥을 옮기면 천장이 따라갈 뻔했다.
+    assert RFP.EXPLORATION_CEILING_UTC.startswith("2026-08-13")
+    assert RFP.CONFIRMATION_FLOOR_UTC.startswith("2026-08-18")
 
 
 def test_a_session_past_the_floor_is_planted_but_never_reaches_the_report(tmp_path):
@@ -782,3 +793,76 @@ def test_tiers_carry_only_the_two_strongest_arms(report):
         if r["tier"] == "all":
             continue
         assert set(r["diff"]) <= set(RFP.TIER_ARMS)
+
+
+# --------------------------------------------------------------------------- #
+# 확증 팔 — 개정 2 (G2G3-PREREG §2-1, 2026-08-22 사용자 D-28 (나))
+#
+# 이 여섯은 **한 가지**를 지킨다: 확증 팔에 탐색 세션도, 버린 세 세션도 절대 못
+# 들어온다. 개정 2 이전 코드에는 확증 모드 자체가 없었고 `exploration_only=False`
+# 는 팔을 안 가리는 `unrestricted` 였다 — 그대로 판정을 돌렸으면 버린 셋이 조용히
+# 섞였을 것이다. 예외도 경고도 없이.
+# --------------------------------------------------------------------------- #
+MIXED_DAYS = ("2026-08-10", "2026-08-11",          # 탐색 팔
+              "2026-08-13", "2026-08-14", "2026-08-17",   # 어느 팔도 아님
+              "2026-08-18", "2026-08-19", "2026-08-20")   # 확증 팔
+
+
+@pytest.fixture(scope="module")
+def mixed_db(tmp_path_factory):
+    return _make_db(tmp_path_factory.mktemp("rfp_mixed") / "t.db", days=MIXED_DAYS)
+
+
+def test_confirmation_arm_admits_only_sessions_from_the_floor(mixed_db):
+    res = RFP.run(mixed_db, confirmation=True)
+    used = {s["session"] for s in res["sessions"]}
+    assert used == {"2026-08-18", "2026-08-19", "2026-08-20"}
+
+
+def test_the_discarded_three_never_enter_the_confirmation_arm(mixed_db):
+    res = RFP.run(mixed_db, confirmation=True)
+    used = {s["session"] for s in res["sessions"]}
+    assert used.isdisjoint(set(RFP.DISCARDED_SESSIONS))
+    assert used.isdisjoint(set(RFP.EXPLORATION_SESSIONS))
+
+
+def test_since_ms_cannot_lower_the_confirmation_floor(mixed_db):
+    """바닥은 **상수**다. 인자로 더 내려갈 수 없다 - 러너의 원래 규율 그대로."""
+    res = RFP.run(mixed_db, confirmation=True,
+                  since_ms=HE.iso_ms("2026-08-01T00:00:00Z"))
+    used = {s["session"] for s in res["sessions"]}
+    assert used.isdisjoint(set(RFP.DISCARDED_SESSIONS))
+    assert res["since_ms"] >= HE.iso_ms(RFP.CONFIRMATION_FLOOR_UTC)
+
+
+def test_the_two_arms_cannot_be_opened_together(mixed_db):
+    with pytest.raises(ValueError):
+        RFP.run(mixed_db, confirmation=True, exploration_only=True)
+
+
+def test_moving_the_confirmation_floor_did_not_widen_exploration(mixed_db):
+    """개정 2 는 **바닥만** 옮겼다. 천장이 같이 따라가면 탐색이 버린 셋을 본다."""
+    assert RFP.EXPLORATION_CEILING_UTC == "2026-08-13T00:00:00Z"
+    assert RFP.CONFIRMATION_FLOOR_UTC == "2026-08-18T00:00:00Z"
+    used = {s["session"] for s in RFP.run(mixed_db, exploration_only=True)["sessions"]}
+    assert used <= set(RFP.EXPLORATION_SESSIONS)
+
+
+def test_confirmation_report_does_not_call_itself_not_a_verdict(mixed_db):
+    rep = RFP.build_report(RFP.run(mixed_db, confirmation=True))
+    assert rep["arm"]["name"] == "confirmation"
+    assert rep["labels"] == list(RFP.CONFIRMATION_LABELS) and len(rep["labels"]) == 5
+    assert "NOT A VERDICT" not in rep["labels"][0]
+    blob = " ".join(rep["labels"])
+    assert "2026-08-13 / 08-14 / 08-17" in blob and "NEITHER" in blob
+
+
+def test_the_discarded_sessions_really_exist_so_the_guard_is_what_removed_them(mixed_db):
+    """대조군. 이게 없으면 위 둘은 **데이터가 원래 없었을 때도 통과**한다.
+
+    `unrestricted` 로 열면 버린 셋이 실제로 나온다 - 즉 DB 에 있고, 확증 팔에서
+    사라지게 만든 것은 데이터가 아니라 `confirmation` 필터다.
+    """
+    used = {s["session"] for s in RFP.run(mixed_db, exploration_only=False)["sessions"]}
+    assert set(RFP.DISCARDED_SESSIONS) <= used
+    assert set(RFP.EXPLORATION_SESSIONS) & used
