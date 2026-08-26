@@ -80,6 +80,31 @@ orca orchestration check --run run_fd93b3d00b4b --wait \
 > 죽는다 (2026-08-26 실측, `ctx_7a6e9707f78f`). **Run·Task 를 먼저 만들고
 > `worker-start --agent claude --model <m> --effort <e>` 로 띄우는 것이 정석이다** —
 > 그 경로가 수명주기 preamble 을 같이 넣어줘서 워커가 `worker_done` 을 낼 수 있게 된다.
+>
+> ### ⚠⚠ `check --wait` 가 지금 **못 쓴다** — 런타임 결함 (2026-08-26 실측)
+>
+> 인박스에 **ack 이 안 되는 메시지 하나**가 박혀 있다:
+>
+> ```
+> id=msg_fe2f01df41e5  type=heartbeat  run_id=run_fd93b3d00b4b  read=0  seq=1492
+> ack -> {"code":"stale_delivery","message":"Delivery ... does not belong to this Run."}
+> ```
+>
+> **메시지 자신은 `run_id` 가 이 Run 이라고 적고 있는데 ack 은 아니라고 한다.**
+> `run-use --from <핸들>` 로 소비자 바인딩을 해도 같다.
+>
+> **그 결과 `check --wait` 가 매번 즉시 반환한다** — `--types` 로 걸러도 replay 경로로
+> 다시 나온다. 반증 시도까지 했다: `--timeout-ms 60000` 으로 걸었는데 **0 초 만에
+> `timedOut:false` 로 반환**했다. 그대로 재무장 루프를 돌리면 **헛도는 바쁜 루프**다.
+>
+> **그래서 이벤트 층을 갈아끼웠다** — 인박스 대신 **워커의 산출물**을 본다:
+> `Monitor` 가 60 초마다 (1) `feat/e2-design` 새 커밋 (2) 그 브랜치의 PR (3) 디스패치
+> 상태 변화·`failed`/`stopped`/`outcome_unknown`/`unreachable` 을 감시한다.
+> **실패 상태를 반드시 함께 덮어라** — 성공만 보는 감시자는 크래시에 침묵한다.
+>
+> ⚠ **`worker_done` 메시지는 여전히 인박스로 온다.** 그건 30 분 틱에서 `--wait` 없는
+> 평범한 `check` 로 훑는다. **원인을 모른 채 이 결함을 "고쳤다" 고 적지 마라** —
+> ack 이 왜 거부되는지는 **미규명**이다.
 
 **주의**
 - `orchestration check` 는 `--from` 을 **안 받는다.** 다른 명령
