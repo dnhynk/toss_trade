@@ -933,6 +933,64 @@ def _blank_arm() -> dict:
     return {"raw": {}, "real_paired": {}, "pairing": [], "profile": []}
 
 
+def arm_window(conn: sqlite3.Connection, *, since_ms: int | None = None,
+               until_ms: int | None = None, exploration_only: bool | None = None,
+               confirmation: bool = False, exploration_era: str = "A") -> dict:
+    """팔의 창과 세션 목록. **팔 규칙이 사는 유일한 자리다** — `run()` 도 다른 러너
+    (`candle_ruler`)도 여기를 지나간다. 규칙을 두 군데 두면 언젠가 갈라져 자가 둘이 된다.
+
+    어느 팔이든 **창을 좁히는 것과 세션 목록으로 거르는 것을 둘 다** 건다 - 하나는
+    인자에 의존하고 다른 하나는 상수라, 인자를 잘못 줘도 상수가 남는다.
+    """
+    if exploration_only is None:
+        exploration_only = not confirmation
+    if confirmation and exploration_only:
+        raise ValueError(
+            "confirmation and exploration_only are mutually exclusive - "
+            "G2G3-PREREG s2-1 keeps the two arms apart")
+    if exploration_only and exploration_era not in EXPLORATION_ERAS:
+        raise ValueError(
+            f"exploration_era must be one of {EXPLORATION_ERAS}, got "
+            f"{exploration_era!r} - one run opens ONE era (G2G3-PREREG s2-1 "
+            f"revision 4: the eras are never pooled)")
+    floor_ms = HE.holdout_floor_ms()
+    if since_ms is not None:
+        floor_ms = max(floor_ms, int(since_ms))
+    if confirmation:
+        # 인자가 아니라 상수가 바닥을 정한다. `since_ms` 로 더 내려갈 수 없다.
+        floor_ms = max(floor_ms, HE.iso_ms(CONFIRMATION_FLOOR_UTC))
+    db_max = int(conn.execute("SELECT MAX(snap_ms) FROM rankings_snap").fetchone()[0])
+    until = int(until_ms) if until_ms is not None else db_max
+    if exploration_only:
+        if exploration_era == "A":
+            until = min(until, HE.iso_ms(EXPLORATION_CEILING_UTC) - 1)
+        else:
+            # 탐색 B: 바닥과 천장을 **둘 다** 상수가 정한다. 천장이 확증 바닥과
+            # 같은 값이라 탐색 B 는 확증 팔을 한 스냅도 못 읽는다.
+            floor_ms = max(floor_ms, HE.iso_ms(EXPLORATION_B_FLOOR_UTC))
+            until = min(until, HE.iso_ms(EXPLORATION_B_CEILING_UTC) - 1)
+    sessions = scan_sessions(conn, floor_ms, until)
+    if exploration_only:
+        allowed = (EXPLORATION_SESSIONS if exploration_era == "A"
+                   else EXPLORATION_B_SESSIONS)
+        # 창이 이미 거르지만 이름으로도 막는다 - 버린 셋(08-13/14/17)은 탐색 B 의
+        # 창 안에 있지 않지만, 바닥 상수가 언젠가 또 움직여도 버려진 채 남아야 한다.
+        sessions = [s for s in sessions
+                    if s["session"] in allowed
+                    and s["session"] not in DISCARDED_SESSIONS]
+    if confirmation:
+        # 바닥이 이미 셋을 걸러내지만 이름으로도 막는다 - 바닥 상수가 언젠가
+        # 또 움직여도 버린 세션은 계속 버려진 채로 남아야 한다.
+        sessions = [s for s in sessions
+                    if s["session"] not in EXPLORATION_SESSIONS
+                    and s["session"] not in EXPLORATION_B_SESSIONS
+                    and s["session"] not in DISCARDED_SESSIONS]
+    return {"floor_ms": int(floor_ms), "until_ms": int(until), "db_max_ms": db_max,
+            "sessions": sessions, "exploration_only": bool(exploration_only),
+            "confirmation": bool(confirmation),
+            "exploration_era": (str(exploration_era) if exploration_only else None)}
+
+
 def run(db: Path, *, since_ms: int | None = None, until_ms: int | None = None,
         exploration_only: bool | None = None, confirmation: bool = False,
         exploration_era: str = "A", cell_grid: tuple = ALL_CELLS,
@@ -959,53 +1017,16 @@ def run(db: Path, *, since_ms: int | None = None, until_ms: int | None = None,
     어느 팔이든 **창을 좁히는 것과 세션 목록으로 거르는 것을 둘 다** 건다 - 하나는
     인자에 의존하고 다른 하나는 상수라, 인자를 잘못 줘도 상수가 남는다.
     """
-    if exploration_only is None:
-        exploration_only = not confirmation
-    if confirmation and exploration_only:
-        raise ValueError(
-            "confirmation and exploration_only are mutually exclusive - "
-            "G2G3-PREREG s2-1 keeps the two arms apart")
-    if exploration_only and exploration_era not in EXPLORATION_ERAS:
-        raise ValueError(
-            f"exploration_era must be one of {EXPLORATION_ERAS}, got "
-            f"{exploration_era!r} - one run opens ONE era (G2G3-PREREG s2-1 "
-            f"revision 4: the eras are never pooled)")
     primary_cells = tuple(tuple(c) for c in primary_cells)
     cell_grid = tuple(sorted(set(tuple(c) for c in cell_grid) | set(primary_cells)))
     conn = HE.open_ro(db)
     try:
-        floor_ms = HE.holdout_floor_ms()
-        if since_ms is not None:
-            floor_ms = max(floor_ms, int(since_ms))
-        if confirmation:
-            # 인자가 아니라 상수가 바닥을 정한다. `since_ms` 로 더 내려갈 수 없다.
-            floor_ms = max(floor_ms, HE.iso_ms(CONFIRMATION_FLOOR_UTC))
-        db_max = int(conn.execute("SELECT MAX(snap_ms) FROM rankings_snap").fetchone()[0])
-        until = int(until_ms) if until_ms is not None else db_max
-        if exploration_only:
-            if exploration_era == "A":
-                until = min(until, HE.iso_ms(EXPLORATION_CEILING_UTC) - 1)
-            else:
-                # 탐색 B: 바닥과 천장을 **둘 다** 상수가 정한다. 천장이 확증 바닥과
-                # 같은 값이라 탐색 B 는 확증 팔을 한 스냅도 못 읽는다.
-                floor_ms = max(floor_ms, HE.iso_ms(EXPLORATION_B_FLOOR_UTC))
-                until = min(until, HE.iso_ms(EXPLORATION_B_CEILING_UTC) - 1)
-        sessions = scan_sessions(conn, floor_ms, until)
-        if exploration_only:
-            allowed = (EXPLORATION_SESSIONS if exploration_era == "A"
-                       else EXPLORATION_B_SESSIONS)
-            # 창이 이미 거르지만 이름으로도 막는다 - 버린 셋(08-13/14/17)은 탐색 B 의
-            # 창 안에 있지 않지만, 바닥 상수가 언젠가 또 움직여도 버려진 채 남아야 한다.
-            sessions = [s for s in sessions
-                        if s["session"] in allowed
-                        and s["session"] not in DISCARDED_SESSIONS]
-        if confirmation:
-            # 바닥이 이미 셋을 걸러내지만 이름으로도 막는다 - 바닥 상수가 언젠가
-            # 또 움직여도 버린 세션은 계속 버려진 채로 남아야 한다.
-            sessions = [s for s in sessions
-                        if s["session"] not in EXPLORATION_SESSIONS
-                        and s["session"] not in EXPLORATION_B_SESSIONS
-                        and s["session"] not in DISCARDED_SESSIONS]
+        arm = arm_window(conn, since_ms=since_ms, until_ms=until_ms,
+                         exploration_only=exploration_only, confirmation=confirmation,
+                         exploration_era=exploration_era)
+        exploration_only = arm["exploration_only"]
+        floor_ms, until, db_max = arm["floor_ms"], arm["until_ms"], arm["db_max_ms"]
+        sessions = arm["sessions"]
         cells: dict = {}
 
         for s in sessions:
