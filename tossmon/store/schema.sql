@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS rankings_snap (
     last_u INTEGER NOT NULL,
     vol_qu INTEGER NOT NULL,
     amount_u INTEGER NOT NULL,
+    ranked_at_ms INTEGER,
     UNIQUE (snap_ms, ranking_type, duration, rank)
 );
 CREATE INDEX IF NOT EXISTS ix_rankings_symbol_ms ON rankings_snap (symbol, snap_ms);

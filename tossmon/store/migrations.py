@@ -8,7 +8,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -48,6 +48,11 @@ CREATE TABLE IF NOT EXISTS tape_gaps (
 CREATE INDEX IF NOT EXISTS ix_tape_gaps_symbol_ms ON tape_gaps (symbol, gap_lo_ms);
 CREATE INDEX IF NOT EXISTS ix_tape_gaps_ms ON tape_gaps (gap_lo_ms);
 """,
+    4: """
+-- v4: API 응답의 rankedAt 을 버리지 않고 서버 랭킹 발행 시각으로 저장한다.
+-- 기존 행에는 원값이 없으므로 NULL 허용이며, 테이블 재작성 없이 열 하나만 더한다.
+ALTER TABLE rankings_snap ADD COLUMN ranked_at_ms INTEGER;
+""",
 }
 
 
@@ -82,6 +87,13 @@ def apply_migrations(conn: sqlite3.Connection, schema_dir: Path | None = None) -
             sql = (schema_dir / "schema.sql").read_text(encoding="utf-8")
         else:
             sql = MIGRATIONS[target]
+        # schema.sql 도 최신 rankings_snap 모양을 선언하므로 새 DB 는 v1 생성 때 이미
+        # 이 열을 갖는다. 기존 v3 DB 에만 ALTER 를 실행하고, 새 DB 는 버전 표식만 전진한다.
+        if target == 4 and any(
+            row[1] == "ranked_at_ms"
+            for row in conn.execute("PRAGMA table_info(rankings_snap)")
+        ):
+            sql = ""
         # executescript commits any pending transaction first.  The explicit
         # transaction in the script keeps DDL and the version marker atomic.
         try:

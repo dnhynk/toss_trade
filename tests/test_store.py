@@ -109,6 +109,11 @@ def test_all_snapshot_writes_and_deduplication(tmp_path):
         assert store.insert_trades([trade]) == 0
         assert store.insert_rankings(1000, page) == 1
         assert store.insert_rankings(1000, page) == 1
+        updated_page = RankingPage("TOP_GAINERS", "1d", 1100, [row])
+        assert store.insert_rankings(1000, updated_page) == 1
+        assert store._conn.execute(
+            "SELECT COUNT(*), ranked_at_ms FROM rankings_snap"
+        ).fetchone() == (1, 1100)
         orderbook_id = store.insert_orderbook(1001, orderbook)
         assert orderbook_id > 0
         values = store._conn.execute(
@@ -257,6 +262,57 @@ def test_v3_adds_tape_gaps_to_an_existing_v2_database(tmp_path, monkeypatch):
     assert conn.execute("SELECT COUNT(*) FROM trades_snap").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM tape_gaps").fetchone()[0] == 0
     conn.close()
+
+
+def test_v4_adds_ranked_at_without_breaking_legacy_rows_or_reader(tmp_path):
+    """v3 DB 는 기존 행을 보존하고, 새 설치와 같은 rankings_snap 모양이 된다."""
+    db_path = tmp_path / "legacy3.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO meta VALUES ('schema_version', '3');
+        CREATE TABLE rankings_snap (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snap_ms INTEGER NOT NULL,
+            ranking_type TEXT NOT NULL,
+            duration TEXT NOT NULL,
+            rank INTEGER NOT NULL,
+            symbol TEXT NOT NULL,
+            last_u INTEGER NOT NULL,
+            vol_qu INTEGER NOT NULL,
+            amount_u INTEGER NOT NULL,
+            UNIQUE (snap_ms, ranking_type, duration, rank)
+        );
+        INSERT INTO rankings_snap
+            (snap_ms, ranking_type, duration, rank, symbol, last_u, vol_qu, amount_u)
+        VALUES (1000, 'TOP_GAINERS', '1d', 1, 'OLD', 1000000, 2000000, 3000000);
+        """
+    )
+    conn.commit()
+
+    assert apply_migrations(conn) == SCHEMA_VERSION
+    migrated_shape = [
+        (row[1], row[2], row[3], row[4], row[5])
+        for row in conn.execute("PRAGMA table_info(rankings_snap)")
+    ]
+    assert migrated_shape[-1] == ("ranked_at_ms", "INTEGER", 0, None, 0)
+    assert conn.execute(
+        "SELECT symbol, ranked_at_ms FROM rankings_snap"
+    ).fetchone() == ("OLD", None)
+    conn.close()
+
+    with Reader(db_path) as reader:
+        legacy = reader.read_rankings("TOP_GAINERS", 1000, 1000)
+        assert legacy.loc[0, "symbol"] == "OLD"
+        assert legacy.loc[0, "snap_ms"] == 1000
+
+    with Store(tmp_path / "fresh.db") as fresh:
+        fresh_shape = [
+            (row[1], row[2], row[3], row[4], row[5])
+            for row in fresh._conn.execute("PRAGMA table_info(rankings_snap)")
+        ]
+    assert fresh_shape == migrated_shape
 
 
 def test_tape_gap_rows_are_events_not_a_counter(tmp_path):

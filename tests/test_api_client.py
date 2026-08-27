@@ -20,6 +20,7 @@ from tossmon.api.errors import (
 from tossmon.api.limiter import GroupRateLimiter
 from tossmon.api.models import iso_to_ms
 from tossmon.api.tokens import TokenManager
+from tossmon.store.writer import Store
 
 
 # ---- 배치 청킹 경계 (199 / 200 / 201) -----------------------------------
@@ -334,6 +335,46 @@ async def test_rankings_nested_price_block_is_flattened(client):  # noqa: F811
     assert isinstance(row.last_u, int) and isinstance(row.base_u, int)
     assert isinstance(row.amount_u, int) and isinstance(row.vol_qu, int)
     assert row.change_rate is None or isinstance(row.change_rate, float)
+
+
+@pytest.mark.parametrize("ranked_at", ["2026-08-27T12:34:56+09:00", None])
+async def test_ranked_at_round_trips_from_response_to_store(
+        mock_server, tmp_path, ranked_at):  # noqa: F811
+    """_opt_ms 의 정수와 NULL 경로가 모두 실제 저장까지 이어져야 한다."""
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "result": {
+                "rankedAt": ranked_at,
+                "rankings": [{
+                    "rank": 1,
+                    "symbol": "ABCD",
+                    "price": {
+                        "lastPrice": "1.00",
+                        "basePrice": "0.90",
+                        "changeRate": "0.10",
+                    },
+                    "tradingVolume": "3",
+                    "tradingAmount": "4",
+                }],
+            }
+        })
+
+    c = make_client(mock_server.url, tmp_path)
+    c._http = httpx.AsyncClient(
+        base_url=mock_server.url, transport=httpx.MockTransport(handler))
+    try:
+        page = await c.get_rankings("MARKET_TRADING_VOLUME", duration="realtime")
+    finally:
+        await c.aclose()
+
+    expected = None if ranked_at is None else iso_to_ms(ranked_at)
+    assert page.ranked_at_ms == expected
+    with Store(tmp_path / "ranked-at.db") as store:
+        assert store.insert_rankings(1_788_000_000_000, page) == 1
+        stored = store._conn.execute(
+            "SELECT ranked_at_ms FROM rankings_snap"
+        ).fetchone()[0]
+    assert stored == expected
 
 
 async def test_calendar_keys_and_session_windows(client):  # noqa: F811

@@ -1760,7 +1760,8 @@ async def rankings_once(ctx: CollectorContext) -> int:
         page = await ctx.client.get_rankings(rtype, duration=duration, market="US",
                                              count=RANKING_COUNT)
         ctx.after_call(GROUP_RANKING)
-        # snap_ms 는 우리 관측 시각. rankedAt 은 12~23초 뒤처지므로 참고값으로만 쓴다.
+        # snap_ms 는 우리 관측 시각, rankedAt 은 서버 랭킹 발행 시각이다. 둘을 함께 저장해
+        # 받은 랭킹이 얼마나 늙었는지(snap_ms - ranked_at_ms)를 사후에 계속 잴 수 있게 한다.
         snap_ms = ctx.clock.now_ms()
         page = _clamp_ranking_page(ctx, page)
         if page.duration != duration:
