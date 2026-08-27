@@ -150,6 +150,7 @@ class Store:
                 row.last_u,
                 row.vol_qu,
                 row.amount_u,
+                page.ranked_at_ms,
             )
             for row in unique.values()
         ]
@@ -161,13 +162,14 @@ class Store:
                 """
                 INSERT INTO rankings_snap
                     (snap_ms, ranking_type, duration, rank, symbol, last_u,
-                     vol_qu, amount_u)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     vol_qu, amount_u, ranked_at_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(snap_ms, ranking_type, duration, rank) DO UPDATE SET
                     symbol=excluded.symbol,
                     last_u=excluded.last_u,
                     vol_qu=excluded.vol_qu,
-                    amount_u=excluded.amount_u
+                    amount_u=excluded.amount_u,
+                    ranked_at_ms=excluded.ranked_at_ms
                 """,
                 values,
             )
