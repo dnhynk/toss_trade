@@ -27,8 +27,9 @@ def test_example_yaml_parses_and_keys_match_dataclass():
                                     "mcap_max_usd", "tier1_max", "tier2_max", "tier3_max"}
     assert cfg.api.live is False                      # 예시는 mock 고정
     # 2026-08-04 사용자 결정: 폭(20->10)을 줄여 호가 밀도(16s->4s)를 샀다. 체결은 그대로 4s.
-    assert cfg.polling.tier3_trades_s == 4 and cfg.polling.tier3_orderbook_s == 4
-    assert cfg.universe.tier3_max == 10                # 예산 역산값 (5.18 <= 5.95)
+    # 2026-08-28 D-35 (나) 관측 모드: 둘 다 10s. 매매 논제가 닫혔다 (docs/80).
+    assert cfg.polling.tier3_trades_s == 10 and cfg.polling.tier3_orderbook_s == 10
+    assert cfg.universe.tier3_max == 10                # 예산 역산값 (2.18 <= 5.95)
 
 
 def test_usd_strings_become_micro_dollars():

@@ -209,6 +209,7 @@ $StopFile = Join-Path $StateDir "STOP"
 $HeartbeatFile = Join-Path $StateDir "watchdog_heartbeat.txt"
 $PlannedFile = Join-Path $StateDir "PLANNED"
 $SentinelHeartbeatFile = Join-Path $StateDir "sentinel_heartbeat.txt"
+$CycleDoneFile = Join-Path $StateDir "watchdog_cycle_done.txt"
 $CollectorLog = Join-Path $DataDir "collector.log"
 $StateJson = Join-Path $DataDir "collector_state.json"
 $TokenStateFile = Join-Path $DataDir "token_state.json"
@@ -224,7 +225,11 @@ function Write-Log([string]$line) {
 
 function Load-State {
     if (Test-Path $StateFile) {
-        try { return Get-Content $StateFile -Raw | ConvertFrom-Json } catch { }
+        # 2026-08-28: a BOM-only / empty file (torn write on a full disk) parses to $null
+        # WITHOUT throwing, and a $null state kills Set-Prop on the next line of every cycle
+        # (45 min of silent death with a green sentinel). "Parsed to nothing" is the same as
+        # "failed to parse": start from an empty state and let the cycle rebuild it.
+        try { $s = Get-Content $StateFile -Raw | ConvertFrom-Json; if ($null -ne $s) { return $s } } catch { }
     }
     return New-Object PSObject
 }
@@ -233,6 +238,13 @@ function Save-State($state) {
     $dir = Split-Path -Parent $StateFile
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force $dir | Out-Null }
     [IO.File]::WriteAllText($StateFile, ($state | ConvertTo-Json -Depth 6), [Text.Encoding]::UTF8)
+}
+
+# The heartbeat is written at the START of a watchdog cycle, so a watchdog that dies
+# mid-cycle keeps a fresh heartbeat forever (2026-08-28). This marker is written only at
+# the END of a cycle; the sentinel checks both and alerts on "started but never finished".
+function Mark-CycleDone {
+    try { [IO.File]::WriteAllText($CycleDoneFile, "$NowStamp epoch=$NowEpoch", [Text.Encoding]::UTF8) } catch { }
 }
 
 function Get-Prop($obj, [string]$name, $default) {
@@ -1371,7 +1383,26 @@ if ($Role -eq "sentinel") {
             "Re-kicking task '$WatchdogTaskName'.") 3600 | Out-Null
         try { & schtasks /Run /TN $WatchdogTaskName 2>&1 | Out-Null } catch { }
     }
-    if ($ok) { Write-Log "sentinel OK (watchdog heartbeat fresh)" }
+    # 2026-08-28: a fresh heartbeat only proves the cycle STARTED. If the end-of-cycle
+    # marker is missing or stale while the heartbeat is fresh, the watchdog is starting every
+    # 5 min and dying before it watches anything - exactly the failure the heartbeat cannot see.
+    if ($ok) {
+        $doneAge = $null
+        if (Test-Path $CycleDoneFile) {
+            $doneAge = $NowEpoch - [int](Get-Item $CycleDoneFile).LastWriteTimeUtc.Subtract(
+                [datetime]'1970-01-01').TotalSeconds
+        }
+        if ($null -eq $doneAge -or $doneAge -gt $WatchdogStaleS) {
+            $ok = $false
+            $doneTxt = "missing"; if ($null -ne $doneAge) { $doneTxt = "$([int]$doneAge)s old" }
+            Raise-Alert $state "watchdog_cycle_incomplete" "CRIT" (
+                "Watchdog heartbeat is fresh but the end-of-cycle marker ($CycleDoneFile) is " +
+                "$doneTxt (threshold $WatchdogStaleS s): the watchdog starts and dies before " +
+                "finishing a cycle. Check $StateFile (a BOM-only/empty state file from a full " +
+                "disk did this on 2026-08-28) and watchdog.log for the missing summary lines.") 3600 | Out-Null
+        } else { Clear-AlertKey $state "watchdog_cycle_incomplete" }
+    }
+    if ($ok) { Write-Log "sentinel OK (watchdog heartbeat fresh, last cycle completed)" }
     Save-State $state
     exit 0
 }
@@ -1392,6 +1423,7 @@ if (Test-Path $StopFile) {
     }
     Write-Log "STOP present - standing down"
     Save-State $state
+    Mark-CycleDone
     exit 0
 }
 if (Get-Prop $state "stop_seen" $false) {
@@ -2424,6 +2456,7 @@ else { $summary = "OK $summary" }
 Write-Log $summary
 
 Save-State $state
+Mark-CycleDone
 if ($null -ne $restartReason) { exit 2 }
 if ($problems.Count -gt 0) { exit 1 }
 exit 0

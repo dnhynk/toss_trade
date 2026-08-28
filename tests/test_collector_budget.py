@@ -52,12 +52,13 @@ def guard(p=None, **kw):
 
 
 def test_plan_rates_reproduce_the_config_arithmetic():
-    """config 주석의 5.18 req/s 가 코드에서도 같은 값으로 나와야 한다."""
+    """config 주석의 2.18 req/s 가 코드에서도 같은 값으로 나와야 한다."""
     rates = plan().rates()
-    assert rates[GROUP_MARKET_DATA] == pytest.approx(8 / 45 + 10 / 4 + 10 / 4, rel=1e-9)
-    assert rates[GROUP_MARKET_DATA] == pytest.approx(5.1778, abs=1e-3)
+    # D-35 (나) 관측 모드: tier3 10s/10s. (4s/4s 시절: 8/45 + 10/4 + 10/4 = 5.18)
+    assert rates[GROUP_MARKET_DATA] == pytest.approx(8 / 45 + 10 / 10 + 10 / 10, rel=1e-9)
+    assert rates[GROUP_MARKET_DATA] == pytest.approx(2.1778, abs=1e-3)
     assert rates[GROUP_CHART] == pytest.approx(300 / 110, abs=1e-6)
-    assert rates[GROUP_RANKING] == pytest.approx(3 / 12, abs=1e-6)   # 2026-08-07: 3종
+    assert rates[GROUP_RANKING] == pytest.approx(3 / 60, abs=1e-6)   # 2026-08-07: 3종; D-35: 60s
     assert guard().validate_plan() == {}                     # 예산 안
 
 
@@ -79,14 +80,14 @@ def test_from_config_matches_shipped_defaults():
     uni = SHIPPED.universe
     p = TierPlan.from_config(SHIPPED, tier1_symbols=uni.tier1_max,
                              tier2_symbols=uni.tier2_max, tier3_symbols=uni.tier3_max)
-    assert p.rates()[GROUP_MARKET_DATA] == pytest.approx(5.1778, abs=1e-3)
+    assert p.rates()[GROUP_MARKET_DATA] == pytest.approx(2.1778, abs=1e-3)   # D-35 (나)
     # from_config 의 기본 ranking_types 는 budget 상수, plan() 은 실제 목록을 센다.
     assert p.rates() == plan().rates()
 
 
 def test_tier3_30_would_overrun_market_data():
     """코디네이터가 잡아낸 초과 — tier3_max=30 이면 9.55 req/s 로 7.0 을 넘는다."""
-    g = guard(plan(tier3=30, book_s=16))
+    g = guard(plan(tier3=30, trades_s=4, book_s=16))
     over = g.validate_plan()
     assert set(over) == {GROUP_MARKET_DATA}
     # 검증 천장은 이제 축소 판정과 **같은** target x HEADROOM (7.0 x 0.95 = 6.65) 이다.
@@ -98,7 +99,7 @@ def test_alternative_combo_25_symbols_5s_20s_fits():
 
 
 def test_should_shrink_brings_the_plan_back_under_budget():
-    g = guard(plan(tier3=30, book_s=16), clock=FrozenClock(0))
+    g = guard(plan(tier3=30, trades_s=4, book_s=16), clock=FrozenClock(0))
     orders = g.should_shrink()
     assert orders and GROUP_MARKET_DATA in orders
     assert SHRINK_TIER[GROUP_MARKET_DATA] == 3               # tier3 를 줄이라는 지시
@@ -209,7 +210,7 @@ def test_429_forces_shrink_and_is_counted_as_an_incident():
 
 def test_shrink_has_a_cooldown_to_avoid_flapping():
     clock = FrozenClock(0)
-    g = guard(plan(tier3=30, book_s=16), clock=clock)
+    g = guard(plan(tier3=30, trades_s=4, book_s=16), clock=clock)
     assert g.should_shrink()
     assert g.should_shrink() is None                           # 쿨다운 중
     clock.advance(31)
@@ -415,7 +416,7 @@ def test_plan_and_shrink_use_the_same_ceiling():
 
 def test_reserve_deficit_flags_a_plan_with_no_room_left():
     """여유를 못 남기는 계획은 조용히 넘어가면 안 된다 (구 출하 설정 20종목/16s)."""
-    g = guard(plan(tier3=20, book_s=16))
+    g = guard(plan(tier3=20, trades_s=4, book_s=16))
     deficit = g.reserve_deficit()
     assert GROUP_MARKET_DATA in deficit                       # 계획 6.43 > 천장 5.95
     assert deficit[GROUP_MARKET_DATA] == pytest.approx(6.4278 - 7.0 * 0.85, abs=1e-2)
@@ -444,16 +445,18 @@ def test_shipped_config_boots_without_shrinking_and_keeps_reserve():
     assert g.should_shrink() is None                          # 기동 즉시 축소 없음
 
     rate = g.plan.rates()[GROUP_MARKET_DATA]
-    assert rate == pytest.approx(5.178, abs=1e-3)             # tier1 .178 + 2.5 + 2.5
-    assert g.shrink_ceiling(GROUP_MARKET_DATA) - rate == pytest.approx(1.472, abs=1e-3)
-    assert g.plan_ceiling(GROUP_MARKET_DATA) - rate == pytest.approx(0.772, abs=1e-3)
+    # 2026-08-28 D-35 (나) 관측 모드: tier3 4s/4s -> 10s/10s. 5.178 이었다.
+    assert rate == pytest.approx(2.178, abs=1e-3)             # tier1 .178 + 1.0 + 1.0
+    assert g.shrink_ceiling(GROUP_MARKET_DATA) - rate == pytest.approx(4.472, abs=1e-3)
+    assert g.plan_ceiling(GROUP_MARKET_DATA) - rate == pytest.approx(3.772, abs=1e-3)
 
 
 def test_shipped_tier3_settings_are_the_decided_ones():
     """설정이 조용히 되돌아가면 위 여유 계산이 무의미해진다 — 값 자체를 고정한다."""
     assert SHIPPED.universe.tier3_max == 10
-    assert SHIPPED.polling.tier3_orderbook_s == 4
-    assert SHIPPED.polling.tier3_trades_s == 4                # 체결 주기는 건드리지 않았다
+    # 2026-08-28 D-35 (나): 4s/4s -> 10s/10s. 매매 논제가 닫혀(docs/80) 테이프·호가는 관측용이다.
+    assert SHIPPED.polling.tier3_orderbook_s == 10
+    assert SHIPPED.polling.tier3_trades_s == 10
 
 
 def test_ranking_budget_is_linear_in_the_number_of_lists():
@@ -486,7 +489,7 @@ def test_third_ranking_type_stays_far_under_the_ranking_budget():
     rate = g.plan.rates()[GROUP_RANKING]
     before = guard(plan(ranking_types=2)).plan.rates()[GROUP_RANKING]
     assert rate - before == pytest.approx(1 / SHIPPED.polling.ranking_snap_s, abs=1e-9)
-    assert rate == pytest.approx(0.25, abs=1e-3)              # 3 / 12s
+    assert rate == pytest.approx(0.05, abs=1e-3)              # 3 / 60s (D-35 (나); 12s 시절 0.25)
     # 계획 천장은 축소 천장에서 계획 밖 호출용 여유를 뺀 값이다. 3종은 그 아래로 한참이다.
     assert rate < g.plan_ceiling(GROUP_RANKING)
     assert g.validate_plan() == {} and g.reserve_deficit() == {}
@@ -509,7 +512,7 @@ def test_quote_density_is_what_the_decision_bought():
     poll = SHIPPED.polling
     # 종목당 호가 주기 / 체결 주기 = 호가 사이에 들어오는 체결 폴 수.
     polls_between_quotes = poll.tier3_orderbook_s / poll.tier3_trades_s
-    assert polls_between_quotes == 1.0                        # 16/4 = 4 였다
+    assert polls_between_quotes == 1.0                        # 16/4 = 4 였다; 4/4 = 1; D-35 뒤 10/10 = 1
 
 
 # --------------------------------------------------------------------------- #
