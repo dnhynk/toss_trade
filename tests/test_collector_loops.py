@@ -1968,7 +1968,8 @@ def test_config_signature_records_the_collection_shape(tmp_path):
     assert sig == ctx.telemetry()["config_sig"]                # 5분마다 나가는 리포트에 실린다
     assert " " not in sig                                      # 한 줄 파싱을 깨지 않는다
     # 결정된 값이 지문에 그대로 보여야 사람이 로그만 보고 확인할 수 있다.
-    assert "rank3:" in sig and "t3max10" in sig and "ob4s" in sig and "tr4s" in sig
+    # D-35 (나) 관측 모드(2026-08-28): 4s/4s -> 10s/10s. 배포 경계는 이 지문이 바뀌는 자리다.
+    assert "rank3:" in sig and "t3max10" in sig and "ob10s" in sig and "tr10s" in sig
     ctx.store.close()
 
 

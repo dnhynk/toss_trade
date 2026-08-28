@@ -1322,6 +1322,60 @@ function Test-RS5-WithinARankTheThreadHeavyProcessIsDumpedFirst {
 Write-Host "watchdog self-test - sandbox root: $Root"
 Write-Host "watchdog under test: $Watchdog"
 New-Item -ItemType Directory -Force $Root | Out-Null
+# --------------------------------------------------------------------------- #
+# 2026-08-28: the watchdog died silently for 45 min. The disk hit 0 GB, Save-State wrote
+# a BOM-only watchdog_state.json, Load-State returned $null, Set-Prop threw before the
+# first Write-Log, and the sentinel stayed green because the heartbeat is written BEFORE
+# the crash. Two fixes, one case each.
+# --------------------------------------------------------------------------- #
+
+function Test-W1-ABomOnlyStateFileMustNotKillTheCycle {
+    # THE PRE-FIX FAILURE, replayed: the state file is exactly EF BB BF.
+    $d = New-Sandbox
+    $sd = Join-Path $d "data\ops_state"
+    New-Item -ItemType Directory -Force $sd | Out-Null
+    $sf = Join-Path $sd "watchdog_state.json"
+    [IO.File]::WriteAllBytes($sf, [byte[]](0xEF, 0xBB, 0xBF))
+    Invoke-Watchdog $d | Out-Null
+    $log = Get-WatchdogLog $d
+    Assert "W1" "the cycle reached its summary line (pre-fix: no log line at all)" ($log -match "sup=") $log
+    $len = (Get-Item $sf).Length
+    Assert "W1" "the state file was rebuilt (pre-fix: stays 3 bytes)" ($len -gt 3) "len=$len"
+    $parsed = $null
+    try { $parsed = Get-Content $sf -Raw | ConvertFrom-Json } catch { }
+    Assert "W1" "and it parses to a real object again" ($null -ne $parsed) "len=$len"
+    Assert "W1" "the end-of-cycle marker was written" (Test-Path (Join-Path $sd "watchdog_cycle_done.txt")) ""
+}
+
+function Test-W2-SentinelCatchesAWatchdogThatHeartbeatsButNeverFinishes {
+    # Heartbeat fresh (the cycle started), end-of-cycle marker stale -> CRIT.
+    $d = New-Sandbox
+    _WriteHeartbeat $d "watchdog_heartbeat.txt" 30
+    _WriteHeartbeat $d "watchdog_cycle_done.txt" 2000
+    Invoke-Watchdog $d @{ Role = "sentinel" } | Out-Null
+    $alerts = Get-Alerts $d "ALERT"
+    Assert "W2" "a fresh heartbeat with a stale completion marker is an ALERT" `
+        (@($alerts | Where-Object { $_ -match "watchdog_cycle_incomplete" }).Count -eq 1) ($alerts -join ",")
+    Assert "W2" "and it is not reported as watchdog_silent (the heartbeat IS fresh)" `
+        (@($alerts | Where-Object { $_ -match "watchdog_silent" }).Count -eq 0) ($alerts -join ",")
+    # Missing marker (never completed once) is the same failure.
+    $d2 = New-Sandbox
+    _WriteHeartbeat $d2 "watchdog_heartbeat.txt" 30
+    Invoke-Watchdog $d2 @{ Role = "sentinel" } | Out-Null
+    $alerts2 = Get-Alerts $d2 "ALERT"
+    Assert "W2" "a missing completion marker with a fresh heartbeat is also an ALERT" `
+        (@($alerts2 | Where-Object { $_ -match "watchdog_cycle_incomplete" }).Count -eq 1) ($alerts2 -join ",")
+    # CONTROL: both fresh -> quiet. If this goes red the fix alerts on healthy watchdogs.
+    $d3 = New-Sandbox
+    _WriteHeartbeat $d3 "watchdog_heartbeat.txt" 30
+    _WriteHeartbeat $d3 "watchdog_cycle_done.txt" 60
+    Invoke-Watchdog $d3 @{ Role = "sentinel" } | Out-Null
+    $alerts3 = Get-Alerts $d3 "ALERT"
+    Assert "W2" "a completed recent cycle is quiet" `
+        (@($alerts3 | Where-Object { $_ -match "watchdog_cycle_incomplete|watchdog_silent" }).Count -eq 0) ($alerts3 -join ",")
+    Assert "W2" "and the OK line says the cycle completed" ((Get-WatchdogLog $d3) -match "last cycle completed") (Get-WatchdogLog $d3)
+}
+
 Start-Dummies
 try {
     $cases = @(
@@ -1378,7 +1432,9 @@ try {
         "Test-RS2-AnExhaustedBudgetIsWrittenDownNotSilent",
         "Test-RS3-WithoutPySpyTheOtherThreeSectionsSurvive",
         "Test-RS4-TheCollectorIsDumpedBeforeTheSupervisor",
-        "Test-RS5-WithinARankTheThreadHeavyProcessIsDumpedFirst")
+        "Test-RS5-WithinARankTheThreadHeavyProcessIsDumpedFirst",
+        "Test-W1-ABomOnlyStateFileMustNotKillTheCycle",
+        "Test-W2-SentinelCatchesAWatchdogThatHeartbeatsButNeverFinishes")
     foreach ($c in $cases) {
         try { & $c } catch { Assert $c "case ran to completion" $false $_.Exception.Message }
     }
